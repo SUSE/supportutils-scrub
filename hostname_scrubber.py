@@ -1,5 +1,8 @@
 # scrubber/hostname_scrubber.py
 
+import re
+
+
 class HostnameScrubber:
     def __init__(self):
         self.hostname_dict = {}
