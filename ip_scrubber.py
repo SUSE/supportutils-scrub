@@ -1,3 +1,5 @@
+# scrubber/ip_scrubber.py
+
 import re
 
 class IPScrubber:
