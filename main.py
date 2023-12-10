@@ -13,17 +13,18 @@ from translator import Translator
 from supportutils_scrub_logger import SupportutilsScrubLogger
 
  
-def process_file(file_path, config, ip_scrubber, domain_scrubber, user_scrubber, hostname_scrubber, logger, verbose_flag):
+def process_file(file_path, config, ip_scrubber, domain_scrubber, user_scrubber, hostname_scrubber, logger:SupportutilsScrubLogger, verbose_flag):
     """
     Process a supportconfig file, obfuscating sensitive information.
 
     Parameters:
     - file_path: Path to the supportconfig file.
-    - config: Configuration dictionary.
+    - config: Configuration file to enable various options.
     - ip_scrubber: Instance of IPScrubber.
     - domain_scrubber: Instance of DomainScrubber.
     - user_scrubber: Instance of UserScrubber.
     - hostname_scrubber: Instance of HostnameScrubber.
+    - logger: Instance of SupportutilsScrubLogger. 
     - verbose_flag: Boolean indicating verbose output.
 
     Returns:
@@ -50,6 +51,7 @@ def process_file(file_path, config, ip_scrubber, domain_scrubber, user_scrubber,
                     obfuscated_ip = ip_scrubber.scrub_ip(ip)  # Corrected method name
                     ip_dict[ip] = obfuscated_ip
                     line = line.replace(ip, obfuscated_ip)
+                    obfuscation_occurred = True
 
 
             # Replace the line in the file with obfuscated content
@@ -57,6 +59,11 @@ def process_file(file_path, config, ip_scrubber, domain_scrubber, user_scrubber,
 
         # Write the changes back to the file
         with open(file_path, "w") as file:
+            # Add a warning header if obfuscation occcured
+            if obfuscation_occurred:
+                file.write("#" + "-" * 93 + "\n")
+                file.write("# WARNING: Sensitive information in this file has been obfuscated by supportutils-scrub.\n")
+                file.write("#" + "-" * 93 + "\n\n")
             file.writelines(lines)
 
     except Exception as e:
@@ -85,7 +92,7 @@ def main():
     hostname_scrubber = HostnameScrubber()
 
     # List of filenames to exclude from scrubbing
-    exclude_files = ["env.txt", "fs-btrfs.txt", "fs-diskio.txt"]
+    exclude_files = ["memory.txt", "env.txt"]
 
     # Extract Supportconfig and get the list of report files
     report_files = extract_supportconfig(supportconfig_path)
@@ -103,11 +110,11 @@ def main():
 
         # Print the translation dictionaries (for verbose output)
         if verbose_flag:
-            logger.info("Translation Dictionaries:")
-            logger.info(f"IP Dictionary: {ip_dict}")
-            logger.info(f"Domain Dictionary: {domain_dict}")
-            logger.info(f"User Dictionary: {user_dict}")
-            logger.info(f"Hostname Dictionary: {hostname_dict}")
+            logger.info("Obfuscation mappings in json output:")
+            logger.info(f"IP mappings: {ip_dict}")
+            logger.info(f"Domain mappings: {domain_dict}")
+            logger.info(f"User mappings: {user_dict}")
+            logger.info(f"Hostname mappings: {hostname_dict}")
             logger.info("-" * 20)
 
 
