@@ -1,0 +1,6 @@
+*.pyc
+*.pyo
+*.pyd
+*.pyc
+.DS_Store
+/.vscode/
