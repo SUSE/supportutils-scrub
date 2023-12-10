@@ -21,5 +21,5 @@ class ConfigReader:
                         key, value = parts
                         config[key] = value.lower() == "yes"
         except FileNotFoundError:
-            pass  # You may handle the absence of the config file differently if needed
+            pass 
         return config
