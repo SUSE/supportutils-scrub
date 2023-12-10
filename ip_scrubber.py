@@ -37,7 +37,6 @@ class IPScrubber:
         """
         Generate a fake IP address.
         """
-        # You can implement a more sophisticated logic here if needed
         return "42.42.{}.{}".format(len(self.ip_dict) + 1, len(self.ip_dict) + 2)
 
     @staticmethod
