@@ -1,5 +1,8 @@
 # scrubber/domain_scrubber.py
 
+import re
+
+
 class DomainScrubber:
     def __init__(self):
         self.domain_dict = {}
