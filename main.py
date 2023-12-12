@@ -11,9 +11,10 @@ from hostname_scrubber import HostnameScrubber
 from extractor import extract_supportconfig
 from translator import Translator
 from supportutils_scrub_logger import SupportutilsScrubLogger
+from keyword_scrubber import KeywordScrubber
 
  
-def process_file(file_path, config, ip_scrubber, domain_scrubber, user_scrubber, hostname_scrubber, logger:SupportutilsScrubLogger, verbose_flag):
+def process_file(file_path, config, ip_scrubber, domain_scrubber, user_scrubber, hostname_scrubber, logger:SupportutilsScrubLogger, verbose_flag, keyword_scrubber=None):
     """
     Process a supportconfig file, obfuscating sensitive information.
 
@@ -34,6 +35,7 @@ def process_file(file_path, config, ip_scrubber, domain_scrubber, user_scrubber,
     domain_dict = {}
     user_dict = {}
     hostname_dict = {}
+    keyword_dict = {} 
 
     try:
         logger.info(f"Scrubbing file: {file_path}")
@@ -48,11 +50,32 @@ def process_file(file_path, config, ip_scrubber, domain_scrubber, user_scrubber,
             if config["obfuscate_ip"]:
                 ip_list = IPScrubber.extract_ips(line)
                 for ip in ip_list:
-                    obfuscated_ip = ip_scrubber.scrub_ip(ip)  # Corrected method name
+                    obfuscated_ip = ip_scrubber.scrub_ip(ip)  
                     ip_dict[ip] = obfuscated_ip
                     line = line.replace(ip, obfuscated_ip)
                     obfuscation_occurred = True
 
+            # Scrub keywords
+            #if True:
+            if config.get('use_key_words_file', False) and keyword_scrubber:
+                original_line = line
+            #    #logger.info(f"Line:"+ line)
+                line, line_keyword_dict = keyword_scrubber.scrub(line)  
+                keyword_dict.update(line_keyword_dict) 
+            #    logger.debug(f"Original: {original_line}, Scrubbed: {line}, Keywords Found: {line_keyword_dict}")
+
+                if line != original_line:
+                    obfuscation_occurred = True
+
+
+            # Scrub keywords
+            #if config.get('use_key_words_file', False) and keyword_scrubber:
+            #    for i, line in enumerate(lines):
+            #        original_line = line
+            #        line, line_keyword_dict = keyword_scrubber.scrub(line)  
+            #        keyword_dict.update(line_keyword_dict)  
+            #        if line != original_line:
+            #            obfuscation_occurred = True
 
             # Replace the line in the file with obfuscated content
             lines[i] = line
@@ -69,7 +92,7 @@ def process_file(file_path, config, ip_scrubber, domain_scrubber, user_scrubber,
     except Exception as e:
         logger.error(f"Error processing file {file_path}: {str(e)}")
 
-    return ip_dict, domain_dict, user_dict, hostname_dict
+    return ip_dict, domain_dict, user_dict, hostname_dict, keyword_dict
 
 
 def main():
@@ -85,17 +108,39 @@ def main():
     # Use the ConfigReader class to read the configuration
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(config_path)
+    logger.info(f"Config dictionary {config}")  # Remove, debuging only
 
+    # Initialize scrubbers
     ip_scrubber = IPScrubber()
     domain_scrubber = DomainScrubber()
     user_scrubber = UserScrubber()
     hostname_scrubber = HostnameScrubber()
+   
+    # Conditional instantiation of KeywordScrubber
+    if config.get('use_key_words_file', False):
+        keyword_scrubber = KeywordScrubber(config['key_words_file'])
+        keyword_scrubber.load_keywords()
+
+        if not keyword_scrubber.is_loaded():
+            logger.error("No keywords loaded. Check keyword file.")
+            return
+    else:
+        keyword_scrubber = None
+        logger.info("Keyword scrubbing not enabled.")
+
 
     # List of filenames to exclude from scrubbing
     exclude_files = ["memory.txt", "env.txt"]
 
     # Extract Supportconfig and get the list of report files
     report_files = extract_supportconfig(supportconfig_path)
+
+    # Dictionaries to store obfuscation mappings
+    total_ip_dict = {}
+    total_domain_dict = {}
+    total_user_dict = {}
+    total_hostname_dict = {}
+    total_keyword_dict = {}    
 
     for report_file in report_files:
         # Check if the current file should be excluded
@@ -104,9 +149,16 @@ def main():
             continue
 
         # Process with the report file
-        ip_dict, domain_dict, user_dict, hostname_dict = process_file(
-            report_file, config, ip_scrubber, domain_scrubber, user_scrubber, hostname_scrubber, logger, verbose_flag
+        ip_dict, domain_dict, user_dict, hostname_dict, keyword_dict = process_file(
+            report_file, config, ip_scrubber, domain_scrubber, user_scrubber, hostname_scrubber, logger, verbose_flag, keyword_scrubber
         )
+
+        # Aggregate the translation dictionaries
+        total_ip_dict.update(ip_dict)
+        total_domain_dict.update(domain_dict)
+        total_user_dict.update(user_dict)
+        total_hostname_dict.update(hostname_dict)
+        total_keyword_dict.update(keyword_dict)
 
         # Print the translation dictionaries (for verbose output)
         if verbose_flag:
@@ -115,14 +167,18 @@ def main():
             logger.info(f"Domain mappings: {domain_dict}")
             logger.info(f"User mappings: {user_dict}")
             logger.info(f"Hostname mappings: {hostname_dict}")
+            logger.info(f"Keyword mappings: {keyword_dict}")
+
             logger.info("-" * 20)
 
 
     # Save translation dictionaries to JSON files
-    Translator.save_translation('ip_translation.json', ip_dict)
-    Translator.save_translation('domain_translation.json', domain_dict)
-    Translator.save_translation('user_translation.json', user_dict)
-    Translator.save_translation('hostname_translation.json', hostname_dict)
+    Translator.save_translation('ip_translation.json', total_ip_dict)
+    Translator.save_translation('domain_translation.json', total_domain_dict)
+    Translator.save_translation('user_translation.json', total_user_dict)
+    Translator.save_translation('hostname_translation.json', total_hostname_dict)
+    Translator.save_translation('keyword_translation.json', total_keyword_dict)  # Saving keyword translations
+
 
     if not verbose_flag:
         logger.info("Translation files saved.")

@@ -5,7 +5,7 @@ import shutil
 
 def extract_supportconfig(supportconfig_path):
     """
-    Extract Supportconfig files and return a list of report files.
+    Extract Supportconfig files and return a list of  files.
     """
     report_files = []
     
