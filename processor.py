@@ -73,7 +73,14 @@ class FileProcessor:
                     keyword_dict.update(line_keyword_dict) 
                     if line != original_line:
                         obfuscation_occurred = True
-        
+
+                # Scrub domain names
+                if self.config["obfuscate_domain"]:
+                    # Scrub domains in the line using the DomainScrubber instance
+                    scrubbed_line = self.domain_scrubber.extract_and_scrub_domains(line)
+                    line = scrubbed_line
+                    obfuscation_occurred = True
+
                 # Replace the line in the file with obfuscated content
                 lines[i] = line
 
