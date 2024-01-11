@@ -1,4 +1,4 @@
-# scrubber/main.py
+# main.py
 
 import sys
 import os
@@ -8,94 +8,14 @@ from ip_scrubber import IPScrubber
 from domain_scrubber import DomainScrubber
 from user_scrubber import UserScrubber
 from hostname_scrubber import HostnameScrubber
+from keyword_scrubber import KeywordScrubber
 from extractor import extract_supportconfig
 from translator import Translator
 from supportutils_scrub_logger import SupportutilsScrubLogger
-from keyword_scrubber import KeywordScrubber
-
- 
-def process_file(file_path, config, ip_scrubber, domain_scrubber, user_scrubber, hostname_scrubber, logger:SupportutilsScrubLogger, verbose_flag, keyword_scrubber=None):
-    """
-    Process a supportconfig file, obfuscating sensitive information.
-
-    Parameters:
-    - file_path: Path to the supportconfig file.
-    - config: Configuration file to enable various options.
-    - ip_scrubber: Instance of IPScrubber.
-    - domain_scrubber: Instance of DomainScrubber.
-    - user_scrubber: Instance of UserScrubber.
-    - hostname_scrubber: Instance of HostnameScrubber.
-    - logger: Instance of SupportutilsScrubLogger. 
-    - verbose_flag: Boolean indicating verbose output.
-
-    Returns:
-    - Tuple of dictionaries (ip_dict, domain_dict, user_dict, hostname_dict).
-    """
-    ip_dict = {}
-    domain_dict = {}
-    user_dict = {}
-    hostname_dict = {}
-    keyword_dict = {} 
-
-    try:
-        logger.info(f"Scrubbing file: {file_path}")
-        with open(file_path, "r") as file:
-            lines = file.readlines()
-
-        # A switch to print a header if file was modified
-        obfuscation_occurred = False
-
-        for i, line in enumerate(lines):
-            # Scrub IP addresses
-            if config["obfuscate_ip"]:
-                ip_list = IPScrubber.extract_ips(line)
-                for ip in ip_list:
-                    obfuscated_ip = ip_scrubber.scrub_ip(ip)  
-                    ip_dict[ip] = obfuscated_ip
-                    line = line.replace(ip, obfuscated_ip)
-                    obfuscation_occurred = True
-
-            # Scrub keywords
-            #if True:
-            if config.get('use_key_words_file', False) and keyword_scrubber:
-                original_line = line
-            #    #logger.info(f"Line:"+ line)
-                line, line_keyword_dict = keyword_scrubber.scrub(line)  
-                keyword_dict.update(line_keyword_dict) 
-            #    logger.debug(f"Original: {original_line}, Scrubbed: {line}, Keywords Found: {line_keyword_dict}")
-
-                if line != original_line:
-                    obfuscation_occurred = True
-
-
-            # Scrub keywords
-            #if config.get('use_key_words_file', False) and keyword_scrubber:
-            #    for i, line in enumerate(lines):
-            #        original_line = line
-            #        line, line_keyword_dict = keyword_scrubber.scrub(line)  
-            #        keyword_dict.update(line_keyword_dict)  
-            #        if line != original_line:
-            #            obfuscation_occurred = True
-
-            # Replace the line in the file with obfuscated content
-            lines[i] = line
-
-        # Write the changes back to the file
-        with open(file_path, "w") as file:
-            # Add a warning header if obfuscation occcured
-            if obfuscation_occurred:
-                file.write("#" + "-" * 93 + "\n")
-                file.write("# WARNING: Sensitive information in this file has been obfuscated by supportutils-scrub.\n")
-                file.write("#" + "-" * 93 + "\n\n")
-            file.writelines(lines)
-
-    except Exception as e:
-        logger.error(f"Error processing file {file_path}: {str(e)}")
-
-    return ip_dict, domain_dict, user_dict, hostname_dict, keyword_dict
-
+from processor import FileProcessor
 
 def main():
+ 
     # Parse command-line arguments
     args = sys.argv[1:]
     supportconfig_path = args[0] if args else None
@@ -111,7 +31,7 @@ def main():
     logger.info(f"Config dictionary {config}")  # Remove, debuging only
 
     # Initialize scrubbers
-    ip_scrubber = IPScrubber()
+    ip_scrubber = IPScrubber(config)
     domain_scrubber = DomainScrubber()
     user_scrubber = UserScrubber()
     hostname_scrubber = HostnameScrubber()
@@ -128,6 +48,8 @@ def main():
         keyword_scrubber = None
         logger.info("Keyword scrubbing not enabled.")
 
+    # Initialize FileProcessor
+    file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, user_scrubber, hostname_scrubber, keyword_scrubber)
 
     # List of filenames to exclude from scrubbing
     exclude_files = ["memory.txt", "env.txt"]
@@ -148,10 +70,8 @@ def main():
             logger.info(f"\x1b[33mSkipping file: {report_file} (Excluded)\x1b[0m")
             continue
 
-        # Process with the report file
-        ip_dict, domain_dict, user_dict, hostname_dict, keyword_dict = process_file(
-            report_file, config, ip_scrubber, domain_scrubber, user_scrubber, hostname_scrubber, logger, verbose_flag, keyword_scrubber
-        )
+        # Use FileProcessor to process the file
+        ip_dict, domain_dict, user_dict, hostname_dict, keyword_dict = file_processor.process_file(report_file, logger, verbose_flag)
 
         # Aggregate the translation dictionaries
         total_ip_dict.update(ip_dict)
@@ -168,7 +88,6 @@ def main():
             logger.info(f"User mappings: {user_dict}")
             logger.info(f"Hostname mappings: {hostname_dict}")
             logger.info(f"Keyword mappings: {keyword_dict}")
-
             logger.info("-" * 20)
 
 

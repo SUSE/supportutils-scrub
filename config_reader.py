@@ -1,4 +1,4 @@
-# scrubber/config_reader.py
+# config_reader.py
 
 class ConfigReader:
     def __init__(self, default_config_path):
@@ -14,7 +14,22 @@ class ConfigReader:
         if config_path is None:
             config_path = self.default_config_path
 
-        config = {}
+        # Default settings
+        default_settings = {
+            'obfuscate_private_ip': 'no',
+            'obfuscate_public_ip': 'yes',
+            'obfuscate_domain': 'yes',
+            'obfuscate_username': 'yes',
+            'obfuscate_hostname': 'yes',
+            'verbose': 'true',
+            'log_level': 'verbose',
+            'use_key_words_file': 'yes',
+            'key_words_file': '/etc/supportutils-scrub-keywords.txt'
+        }
+
+
+        config = default_settings.copy()
+
         try:
             with open(config_path, "r") as config_file:
                 for line in config_file:
@@ -31,8 +46,8 @@ class ConfigReader:
                         config['key_words_file'] = value.strip()
 
         except FileNotFoundError:
-            print(f"Configuration file not found: {config_path}")
+            print(f"\x1b[33mConfiguration file not found: {config_path}. Using default settings.\x1b[0m")
         except Exception as e:
-            print(f"Error reading configuration file: {e}")
+            print(f"Error reading configuration file: {e}. Using defaults settings.")
 
         return config

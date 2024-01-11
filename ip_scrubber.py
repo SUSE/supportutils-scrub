@@ -1,10 +1,11 @@
-# scrubber/ip_scrubber.py
+# ip_scrubber.py
 
 import re
 
 class IPScrubber:
-    def __init__(self):
+    def __init__(self, config):
         self.ip_dict = {}
+        self.config = config
 
     def scrub_ip(self, ip):
         """
@@ -17,11 +18,16 @@ class IPScrubber:
 
     def is_private_ip(self, ip):
         """
-        Check if the IP is a private IP address.
+        Check if it is a private IP address.
         """
+        # If the configuration is set to also obfuscate private IPs, treat all IPs as public
+        if self.config.get('obfuscate_private_ip', 'no') == 'yes':
+            return False
+        
         private_ip_patterns = [
-           # re.compile(r"^10\."),
-           # re.compile(r"^192\.168\."),
+            re.compile(r"^127\."),
+            re.compile(r"^10\."),
+            re.compile(r"^192\.168\."),
             re.compile(r"^172\.(1[6-9]|2[0-9]|3[0-1])\.")
         ]
         return any(pattern.match(ip) for pattern in private_ip_patterns)
