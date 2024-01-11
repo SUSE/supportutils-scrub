@@ -15,12 +15,14 @@ class KeywordScrubber:
             for line in file:
                 keyword = line.strip()
                 if keyword:
-                    self.keyword_dict[keyword] = self._generate_obfuscated_keyword(keyword)
+                    self.keyword_dict[keyword] = self._generate_obfuscated_keyword()
         logging.info("Loaded keywords: %s", self.keyword_dict)
 
-    def _generate_obfuscated_keyword(self, keyword):
-        # Simple obfuscation: replace each character with an asterisk
-        return '-X-' * len(keyword)
+        
+    def _generate_obfuscated_keyword(self):
+        # Generate a random length between 7 and 10
+        random_length = random.randint(7, 10)
+        return 'x' * random_length
 
     def scrub(self, text):
         obfuscated_dict = {}
