@@ -1,36 +1,35 @@
-# scrubber/domain_scrubber.py
+# domain_scrubber.py
 
 import re
-
 
 class DomainScrubber:
     def __init__(self):
         self.domain_dict = {}
         self.fake_domain_counter = 0
+        self.regex_pattern = r'\b(?:[a-zA-Z0-9-]+\.){2,}[a-zA-Z]{2,}\b'
+        self.exclusions = ["target.wants", "org.opensuse", "org.freedesktop", "net.ipv6", "raw.sig", "org.fedoraproject" ]
 
     def scrub_domain(self, domain):
         """
         Obfuscate a domain name. Each domain gets a unique fake domain.
         """
-        if domain in self.domain_dict:
-            return self.domain_dict[domain]
-        obfuscated_domain = self.generate_fake_domain()
-        self.domain_dict[domain] = obfuscated_domain
-        return obfuscated_domain
+        if domain not in self.domain_dict:
+            obfuscated_domain = f"fakeDomain{self.fake_domain_counter}.com"
+            self.domain_dict[domain] = obfuscated_domain
+            self.fake_domain_counter += 1
+        return self.domain_dict[domain]
 
-    def generate_fake_domain(self):
+    def extract_and_scrub_domains(self, text):
         """
-        Generate a unique fake domain name.
+        Extract domain names from a given text and scrub them, excluding specified patterns.
         """
-        fake_domain = f"fake.domain_{self.fake_domain_counter}"
-        self.fake_domain_counter += 1
-        return fake_domain
+        for domain in re.findall(self.regex_pattern, text):
+            # Skip domains that contain any part of the exclusion patterns
+            if any(exclusion in domain for exclusion in self.exclusions):
+                continue
 
-    @staticmethod
-    def extract_domains(text):
-        """
-        Extract domain names from a given text.
-        """
-        domain_pattern = r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b"
-        return re.findall(domain_pattern, text)
+            obfuscated_domain = self.scrub_domain(domain)
+            text = text.replace(domain, obfuscated_domain)
 
+        #print("Domain mappings:", self.domain_dict)
+        return text
