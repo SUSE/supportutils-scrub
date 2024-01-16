@@ -59,12 +59,14 @@ class FileProcessor:
 
                 # Scrub IP addresses
                 if self.config["obfuscate_public_ip"]:
+                    original_line = line
                     ip_list = IPScrubber.extract_ips(line)
                     for ip in ip_list:
                         obfuscated_ip = self.ip_scrubber.scrub_ip(ip)  
                         ip_dict[ip] = obfuscated_ip
                         line = line.replace(ip, obfuscated_ip)
-                        obfuscation_occurred = True
+                        if line != original_line:
+                            obfuscation_occurred = True
 
                 # Scrub keywords
                 if self.config.get('use_key_words_file', False) and self.keyword_scrubber:
@@ -76,10 +78,12 @@ class FileProcessor:
 
                 # Scrub domain names
                 if self.config["obfuscate_domain"]:
-                    # Scrub domains in the line using the DomainScrubber instance
-                    scrubbed_line = self.domain_scrubber.extract_and_scrub_domains(line)
+                    original_line = line
+                    scrubbed_line = self.domain_scrubber.scrub(line)
                     line = scrubbed_line
-                    obfuscation_occurred = True
+                    domain_dict.update(self.domain_scrubber.domain_dict)
+                    if line != original_line:
+                        obfuscation_occurred = True
 
                 # Replace the line in the file with obfuscated content
                 lines[i] = line
@@ -88,7 +92,7 @@ class FileProcessor:
             if obfuscation_occurred:
                 with open(file_path, "w") as file:
                     file.write("#" + "-" * 93 + "\n")
-                    file.write("# WARNING: Sensitive information in this file has been obfuscated.\n")
+                    file.write("# WARNING: Sensitive information in this file has been obfuscated by supportutils-scrub.\n")
                     file.write("#" + "-" * 93 + "\n\n")
                     file.writelines(lines)
 

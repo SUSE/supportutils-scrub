@@ -4,6 +4,7 @@ import logging
 class SupportutilsScrubLogger:
     def __init__(self, log_level="normal"):
         self.logger = logging.getLogger("supportutils_scrub_logger")
+        self.logger.propagate = False  
         self.logger.setLevel(logging.DEBUG)
 
         # Define a formatter

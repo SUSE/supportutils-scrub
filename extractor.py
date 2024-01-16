@@ -1,7 +1,9 @@
-# scrubber/extractor.py
+# extractor.py
 
 import os
 import shutil
+import logging
+
 
 def extract_supportconfig(supportconfig_path):
     """
@@ -16,9 +18,10 @@ def extract_supportconfig(supportconfig_path):
         # Supportconfig is an XZ archive
         report_files = extract_xz_archive(supportconfig_path)
     else:
+        logging.error(f"Unsupported file type: {supportconfig_path}")
         raise Exception(f"Unsupported file type: {supportconfig_path}")
 
-    print(f"Extraction successful. Return path: {supportconfig_path}")
+    logging.info(f"Extraction successful. Return path: {supportconfig_path}")
     return report_files
 
 def walk_supportconfig(folder_path):

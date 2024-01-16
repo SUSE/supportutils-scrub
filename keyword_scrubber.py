@@ -1,4 +1,4 @@
-# scrubber/keyword_scrubber.py
+# keyword_scrubber.py
 
 import random
 import string
