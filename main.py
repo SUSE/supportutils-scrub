@@ -2,6 +2,7 @@
 
 import sys
 import os
+import re
 from config import DEFAULT_CONFIG_PATH
 from config_reader import ConfigReader
 from ip_scrubber import IPScrubber
@@ -13,6 +14,31 @@ from extractor import extract_supportconfig
 from translator import Translator
 from supportutils_scrub_logger import SupportutilsScrubLogger
 from processor import FileProcessor
+
+
+def extract_domains_from_section(file_name, section_start):
+    pattern = r'\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b'
+    domains = []
+    try:
+        with open(file_name, 'r') as file:
+            section_found = False
+            for line in file:
+                if section_start in line:
+                    section_found = True
+                    continue 
+                # Check if the line is the start of a new section, indicating the end of the current section
+                if section_found and "#==[" in line:
+                    break
+                # Extract domains from the line if we are in the correct section
+                if section_found:
+                    found_domains = re.findall(pattern, line)
+                    domains.extend(found_domains)
+
+    except FileNotFoundError:
+        print(f"File not found: {file_name}")
+
+    return domains
+
 
 def main():
  
@@ -28,22 +54,29 @@ def main():
     # Use the ConfigReader class to read the configuration
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(config_path)
-    logger.info(f"Config dictionary {config}")  # Remove, debuging only
 
+    domain_dict = {}
     # Initialize scrubbers
     ip_scrubber = IPScrubber(config)
-    domain_scrubber = DomainScrubber()
+    domain_scrubber = DomainScrubber(domain_dict)
     user_scrubber = UserScrubber()
     hostname_scrubber = HostnameScrubber()
-   
+
     # Conditional instantiation of KeywordScrubber
     if config.get('use_key_words_file', False):
-        keyword_scrubber = KeywordScrubber(config['key_words_file'])
-        keyword_scrubber.load_keywords()
+        keyword_file_path = config['key_words_file']
+        
+        # Check if the keyword file exists and is not empty
+        if os.path.exists(keyword_file_path) and os.path.getsize(keyword_file_path) > 0:
+            keyword_scrubber = KeywordScrubber(keyword_file_path)
+            keyword_scrubber.load_keywords()
 
-        if not keyword_scrubber.is_loaded():
-            logger.error("No keywords loaded. Check keyword file.")
-            return
+            if not keyword_scrubber.is_loaded():
+                logger.error("No keywords loaded. Check keyword file.")
+                return
+        else:
+            logger.info("Keyword file is missing or empty. Skipping keyword scrubbing.")
+            keyword_scrubber = None
     else:
         keyword_scrubber = None
         logger.info("Keyword scrubbing not enabled.")
@@ -64,8 +97,31 @@ def main():
     total_hostname_dict = {}
     total_keyword_dict = {}    
 
+
+    # Extract domains from specific files
+    for file in report_files:
+        if 'sysconfig.txt' in file:
+            domains = extract_domains_from_section(file, '# /etc/hosts')
+        elif 'network.txt' in file:
+            domains = extract_domains_from_section(file, '# /etc/resolv.conf')
+        elif 'etc.conf' in file:
+            domains = extract_domains_from_section(file, '.snapshots/resolv.conf')
+        elif 'nfs.txt' in file:
+            domains = extract_domains_from_section(file, '# /bin/egrep')
+        else:
+            continue
+
+        # Update the domain dictionary with the extracted domains
+        domain_counter = 0
+        for domain in domains:
+            if domain not in domain_dict:
+                obfuscated_domain = f"masked_domain_{domain_counter}"
+                domain_dict[domain] = obfuscated_domain
+                domain_counter += 1
+
+
+    # Process supportcong files
     for report_file in report_files:
-        # Check if the current file should be excluded
         if os.path.basename(report_file) in exclude_files:
             logger.info(f"\x1b[33mSkipping file: {report_file} (Excluded)\x1b[0m")
             continue
@@ -80,7 +136,7 @@ def main():
         total_hostname_dict.update(hostname_dict)
         total_keyword_dict.update(keyword_dict)
 
-        # Print the translation dictionaries (for verbose output)
+        # Print the translation dictionaries (when verbose enabled)
         if verbose_flag:
             logger.info("Obfuscation mappings in json output:")
             logger.info(f"IP mappings: {ip_dict}")
@@ -96,7 +152,7 @@ def main():
     Translator.save_translation('domain_translation.json', total_domain_dict)
     Translator.save_translation('user_translation.json', total_user_dict)
     Translator.save_translation('hostname_translation.json', total_hostname_dict)
-    Translator.save_translation('keyword_translation.json', total_keyword_dict)  # Saving keyword translations
+    Translator.save_translation('keyword_translation.json', total_keyword_dict)  
 
 
     if not verbose_flag:
