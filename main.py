@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # main.py
 
 import sys
@@ -16,28 +17,35 @@ from supportutils_scrub_logger import SupportutilsScrubLogger
 from processor import FileProcessor
 
 
-def extract_domains_from_section(file_name, section_start):
-    pattern = r'\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b'
-    domains = []
-    try:
-        with open(file_name, 'r') as file:
-            section_found = False
-            for line in file:
-                if section_start in line:
-                    section_found = True
-                    continue 
-                # Check if the line is the start of a new section, indicating the end of the current section
-                if section_found and "#==[" in line:
-                    break
-                # Extract domains from the line if we are in the correct section
-                if section_found:
-                    found_domains = re.findall(pattern, line)
-                    domains.extend(found_domains)
+def extract_domains(report_files):
+    domain_dict = {}
+    domain_counter = 0
 
-    except FileNotFoundError:
-        print(f"File not found: {file_name}")
+    # Extract domains from specific files
+    for file in report_files:
+        if 'sysconfig.txt' in file:
+            domains = DomainScrubber.extract_domains_from_section(file, '# /etc/hosts')
+        elif 'network.txt' in file:
+            domains = DomainScrubber.extract_domains_from_section(file, '# /etc/resolv.conf')
+        elif 'etc.conf' in file:
+            domains = DomainScrubber.extract_domains_from_section(file, '.snapshots/resolv.conf')
+        elif 'nfs.txt' in file:
+            domains = DomainScrubber.extract_domains_from_section(file, '# /bin/egrep')
+        elif 'ntp.txt' in file:
+            domains = DomainScrubber.extract_domains_from_section(file, '# /etc/ntp.conf')
+        elif 'y2log.txt' in file:
+            domains = DomainScrubber.extract_domains_from_section(file, '# /var/adm/autoinstall/cache/installedSystem.xml')
+        else:
+            continue
 
-    return domains
+        # Update the domain dictionary with the extracted domains
+        for domain in domains:
+            if domain not in domain_dict:
+                obfuscated_domain = f"masked_domain_{domain_counter}"
+                domain_dict[domain] = obfuscated_domain
+                domain_counter += 1
+    
+    return domain_dict
 
 
 def main():
@@ -58,7 +66,6 @@ def main():
     domain_dict = {}
     # Initialize scrubbers
     ip_scrubber = IPScrubber(config)
-    domain_scrubber = DomainScrubber(domain_dict)
     user_scrubber = UserScrubber()
     hostname_scrubber = HostnameScrubber()
 
@@ -81,6 +88,13 @@ def main():
         keyword_scrubber = None
         logger.info("Keyword scrubbing not enabled.")
 
+
+    report_files = extract_supportconfig(supportconfig_path, logger)
+
+    # Populate the domains dictuonary
+    domain_dict = extract_domains(report_files)
+    domain_scrubber = DomainScrubber(domain_dict)
+
     # Initialize FileProcessor
     file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, user_scrubber, hostname_scrubber, keyword_scrubber)
 
@@ -88,7 +102,6 @@ def main():
     exclude_files = ["memory.txt", "env.txt"]
 
     # Extract Supportconfig and get the list of report files
-    report_files = extract_supportconfig(supportconfig_path)
 
     # Dictionaries to store obfuscation mappings
     total_ip_dict = {}
@@ -96,29 +109,6 @@ def main():
     total_user_dict = {}
     total_hostname_dict = {}
     total_keyword_dict = {}    
-
-
-    # Extract domains from specific files
-    for file in report_files:
-        if 'sysconfig.txt' in file:
-            domains = extract_domains_from_section(file, '# /etc/hosts')
-        elif 'network.txt' in file:
-            domains = extract_domains_from_section(file, '# /etc/resolv.conf')
-        elif 'etc.conf' in file:
-            domains = extract_domains_from_section(file, '.snapshots/resolv.conf')
-        elif 'nfs.txt' in file:
-            domains = extract_domains_from_section(file, '# /bin/egrep')
-        else:
-            continue
-
-        # Update the domain dictionary with the extracted domains
-        domain_counter = 0
-        for domain in domains:
-            if domain not in domain_dict:
-                obfuscated_domain = f"masked_domain_{domain_counter}"
-                domain_dict[domain] = obfuscated_domain
-                domain_counter += 1
-
 
     # Process supportcong files
     for report_file in report_files:
