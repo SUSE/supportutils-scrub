@@ -56,7 +56,7 @@ class FileProcessor:
             obfuscation_occurred = False
 
             for i, line in enumerate(lines):
-
+                
                 # Scrub IP addresses
                 if self.config["obfuscate_public_ip"]:
                     original_line = line
