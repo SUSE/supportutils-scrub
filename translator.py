@@ -9,5 +9,5 @@ class Translator:
         Save translation dictionary to a JSON file.
         """
         with open(file_path, 'w') as json_file:
-            json.dump(translation_dict, json_file)
+            json.dump(translation_dict, json_file, indent = 4)
 
