@@ -5,6 +5,7 @@ import sys
 import os
 import re
 import json
+import argparse
 from config import DEFAULT_CONFIG_PATH
 from config_reader import ConfigReader
 from ip_scrubber import IPScrubber
@@ -50,12 +51,23 @@ def extract_domains(report_files):
 
 
 def main():
- 
-    # Parse command-line arguments
-    args = sys.argv[1:]
-    supportconfig_path = args[0] if args else None
-    config_path = args[args.index("--config") + 1] if "--config" in args else "/etc/supportutils-scrub.conf"
-    verbose_flag = "--verbose" in args
+    parser = argparse.ArgumentParser(description='Process and scrub supportconfig files.')
+    parser.add_argument('supportconfig_path', type=str, help='Path to the supportconfig file or directory.')
+    parser.add_argument('--config', type=str, default='/etc/supportutils-scrub.conf',
+                        help='Path to the configuration file. Default: /etc/supportutils-scrub.conf')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose output.')
+    parser.add_argument('--mappings', type=str, help='Path to a JSON file containing data mappings.')
+    args = parser.parse_args()
+    supportconfig_path = args.supportconfig_path
+    config_path = args.config
+    verbose_flag = args.verbose
+    mappings_path = args.mappings 
+
+    # You would load and use the mappings from mappings_path if provided
+    if mappings_path:
+        # Load and use the mappings
+        print(f"Using mappings from: {mappings_path}")
+
 
     # Initialize the logger
     logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
