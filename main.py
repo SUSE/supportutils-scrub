@@ -4,6 +4,7 @@
 import sys
 import os
 import re
+import json
 from config import DEFAULT_CONFIG_PATH
 from config_reader import ConfigReader
 from ip_scrubber import IPScrubber
@@ -126,27 +127,24 @@ def main():
         total_hostname_dict.update(hostname_dict)
         total_keyword_dict.update(keyword_dict)
 
-        # Print the translation dictionaries (when verbose enabled)
-        if verbose_flag:
-            logger.info("Obfuscation mappings in json output:")
-            logger.info(f"IP mappings: {ip_dict}")
-            logger.info(f"Domain mappings: {domain_dict}")
-            logger.info(f"User mappings: {user_dict}")
-            logger.info(f"Hostname mappings: {hostname_dict}")
-            logger.info(f"Keyword mappings: {keyword_dict}")
-            logger.info("-" * 20)
+    dataset_dict = {
+        'ip': total_ip_dict,
+        'domain': total_domain_dict,
+        'user': total_user_dict,
+        'hostname': total_hostname_dict,
+        'keyword': total_keyword_dict
+    }
+
+    dataset_path = '/usr/lib/supportconfig/obfuscation_dataset_mappings.json'
+    Translator.save_datasets(dataset_path, dataset_dict)
 
 
-    # Save translation dictionaries to JSON files
-    Translator.save_translation('ip_translation.json', total_ip_dict)
-    Translator.save_translation('domain_translation.json', total_domain_dict)
-    Translator.save_translation('user_translation.json', total_user_dict)
-    Translator.save_translation('hostname_translation.json', total_hostname_dict)
-    Translator.save_translation('keyword_translation.json', total_keyword_dict)  
-
-
-    if not verbose_flag:
-        logger.info("Translation files saved.")
+    if verbose_flag:
+        print(f"\nObfuscation dataset mappings saved at: {dataset_path}")
+        print("Obfuscated mapping content:")
+        print(json.dumps(datasets_dict, indent=4))
+    else:
+        logger.info(f"\033[1mObfuscation datasets mappings saved at: {dataset_path}\033[0m")
 
 if __name__ == "__main__":
     main()
