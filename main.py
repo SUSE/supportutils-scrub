@@ -142,7 +142,7 @@ def main():
     if verbose_flag:
         print(f"\nObfuscation dataset mappings saved at: {dataset_path}")
         print("Obfuscated mapping content:")
-        print(json.dumps(datasets_dict, indent=4))
+        print(json.dumps(dataset_dict, indent=4))
     else:
         logger.info(f"\033[1mObfuscation datasets mappings saved at: {dataset_path}\033[0m")
 
