@@ -25,12 +25,10 @@ def extract_domains(report_files):
 
     # Extract domains from specific files
     for file in report_files:
-        if 'sysconfig.txt' in file:
-            domains = DomainScrubber.extract_domains_from_section(file, '# /etc/hosts')
-        elif 'network.txt' in file:
-            domains = DomainScrubber.extract_domains_from_section(file, '# /etc/resolv.conf')
-        elif 'etc.conf' in file:
-            domains = DomainScrubber.extract_domains_from_section(file, '.snapshots/resolv.conf')
+        if 'network.txt' in file:
+            domains = DomainScrubber.extract_domains_from_hosts(file, '# /etc/hosts')
+        elif 'etc.txt' in file:
+            domains = DomainScrubber.extract_domains_from_resolv_conf(file, '# /etc/resolv.conf')
         elif 'nfs.txt' in file:
             domains = DomainScrubber.extract_domains_from_section(file, '# /bin/egrep')
         elif 'ntp.txt' in file:
@@ -43,7 +41,7 @@ def extract_domains(report_files):
         # Update the domain dictionary with the extracted domains
         for domain in domains:
             if domain not in domain_dict:
-                obfuscated_domain = f"masked_domain_{domain_counter}"
+                obfuscated_domain = f"domain_{domain_counter}"
                 domain_dict[domain] = obfuscated_domain
                 domain_counter += 1
     return domain_dict
