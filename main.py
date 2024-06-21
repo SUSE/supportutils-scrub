@@ -19,27 +19,36 @@ from supportutils_scrub_logger import SupportutilsScrubLogger
 from processor import FileProcessor
 
 
-def extract_domains(report_files):
+def extract_domains(report_files, additional_domains):
     domain_dict = {}
     domain_counter = 0
+    all_domains = []
 
     # Extract domains from specific files
     for file in report_files:
-        if 'network.txt' in file:
-            domains = DomainScrubber.extract_domains_from_hosts(file, '# /etc/hosts')
-        elif 'etc.txt' in file:
+        
+        if 'etc.txt' in file:
             domains = DomainScrubber.extract_domains_from_resolv_conf(file, '# /etc/resolv.conf')
-        elif 'nfs.txt' in file:
-            domains = DomainScrubber.extract_domains_from_section(file, '# /bin/egrep')
-        elif 'ntp.txt' in file:
-            domains = DomainScrubber.extract_domains_from_section(file, '# /etc/ntp.conf')
-        elif 'y2log.txt' in file:
-            domains = DomainScrubber.extract_domains_from_section(file, '# /var/adm/autoinstall/cache/installedSystem.xml')
+            all_domains.extend(domains)
+        elif 'network.txt' in file:
+            domains = DomainScrubber.extract_domains_from_hosts(file, '# /etc/hosts')
+            all_domains.extend(domains)
+
+        #elif 'nfs.txt' in file:
+        #    domains = DomainScrubber.extract_domains_from_section(file, '# /bin/egrep')
+        #    all_domains.extend(domains)
+        #elif 'ntp.txt' in file:
+        #    domains = DomainScrubber.extract_domains_from_section(file, '# /etc/ntp.conf')
+        #    all_domains.extend(domains)
+        #elif 'y2log.txt' in file:
+        #    domains = DomainScrubber.extract_domains_from_section(file, '# /var/adm/autoinstall/cache/installedSystem.xml')
+        #    all_domains.extend(domains)
         else:
             continue
 
+        all_domains.extend(additional_domains)
         # Update the domain dictionary with the extracted domains
-        for domain in domains:
+        for domain in all_domains:
             if domain not in domain_dict:
                 obfuscated_domain = f"domain_{domain_counter}"
                 domain_dict[domain] = obfuscated_domain
@@ -78,7 +87,9 @@ def main():
                         help='Path to the configuration file. Default: /etc/supportutils-scrub.conf')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output.')
     parser.add_argument('--mappings', type=str, help='Path to a JSON file containing data mappings.')
-    parser.add_argument('--username', type=str, help='Additional usernames to obfuscate')
+    parser.add_argument('--username', type=str, help='Additional usernames to obfuscate (comma, semicolon, or space-separated)')
+    parser.add_argument('--domain', type=str, help='Additional domains to obfuscate (comma, semicolon, or space-separated)')
+   
 
     args = parser.parse_args()
     supportconfig_path = args.supportconfig_path
@@ -133,10 +144,13 @@ def main():
     report_files = extract_supportconfig(supportconfig_path, logger)
 
     # Populate the domains dictuonary
-    domain_dict = extract_domains(report_files)
+    additional_domains = []
+    if args.domain:
+        additional_domains = re.split(r'[,\s;]+', args.domain)
+    domain_dict = extract_domains(report_files, additional_domains)
     domain_scrubber = DomainScrubber(domain_dict)
-    # Extract and build the username dictionary from pam.txt
 
+    # Extract and build the username dictionary from pam.txt
     additional_usernames = []
     if args.username:
         additional_usernames = re.split(r'[,\s;]+', args.username)
@@ -160,7 +174,7 @@ def main():
 
 
 
-    # Process supportcong files
+    # Process supportconfig files
     for report_file in report_files:
         if os.path.basename(report_file) in exclude_files:
             logger.info(f"\x1b[33mSkipping file: {report_file} (Excluded)\x1b[0m")
