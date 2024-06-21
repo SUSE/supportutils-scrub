@@ -139,7 +139,7 @@ def main():
     domain_scrubber = DomainScrubber(domain_dict)
     # Extract and build the username dictionary from pam.txt
 
-
+    additional_usernames = []
     if args.username:
         additional_usernames = re.split(r'[,\s;]+', args.username)
     username_dict = extract_usernames(report_files, additional_usernames)
