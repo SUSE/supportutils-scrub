@@ -48,7 +48,7 @@ def extract_domains(report_files):
                 domain_counter += 1
     return domain_dict
 
-def extract_usernames(report_files):
+def extract_usernames(report_files, additional_usernames):
     username_dict={}
     username_counter=0
     for file in report_files:
@@ -56,6 +56,8 @@ def extract_usernames(report_files):
             usernames=UsernameScrubber.extract_usernames_from_section(file, '# /usr/bin/getent passwd')
         else:
             continue
+
+        usernames.extend(additional_usernames)
         # Update the username dictionary with the extracted usernames
         for username in usernames:
             if username not in username_dict:
@@ -73,11 +75,14 @@ def main():
                         help='Path to the configuration file. Default: /etc/supportutils-scrub.conf')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output.')
     parser.add_argument('--mappings', type=str, help='Path to a JSON file containing data mappings.')
+    parser.add_argument('--username', type=str, help='Additional usernames to obfuscate')
+
     args = parser.parse_args()
     supportconfig_path = args.supportconfig_path
     config_path = args.config
     verbose_flag = args.verbose
     mappings_path = args.mappings 
+
 
     # You would load and use the mappings from mappings_path if provided
     if mappings_path:
@@ -128,7 +133,11 @@ def main():
     domain_dict = extract_domains(report_files)
     domain_scrubber = DomainScrubber(domain_dict)
     # Extract and build the username dictionary from pam.txt
-    username_dict = extract_usernames(report_files)
+
+
+    if args.username:
+        additional_usernames = re.split(r'[,\s;]+', args.username)
+    username_dict = extract_usernames(report_files, additional_usernames)
     username_scrubber = UsernameScrubber(username_dict)
 
     # Initialize FileProcessor
