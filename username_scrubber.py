@@ -52,7 +52,17 @@ class UsernameScrubber:
                     break
                 username = line.split(':')[0]
                 if not is_excluded(username):
-                    usernames.append(username)
-        
+                    usernames.append(username)      
         return usernames
 
+    def extract_usernames_from_messages(file_name):
+        pattern = re.compile(r"session opened for user (\w+)")
+        usernames = []
+
+        with open(file_name, 'r') as file:
+            for line in file:
+                match = pattern.search(line)
+                if match:
+                    usernames.append(match.group(1))
+        
+        return usernames

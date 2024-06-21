@@ -51,15 +51,19 @@ def extract_domains(report_files):
 def extract_usernames(report_files, additional_usernames):
     username_dict={}
     username_counter=0
+    all_usernames = []
+
     for file in report_files:
         if 'pam.txt' in file:
             usernames=UsernameScrubber.extract_usernames_from_section(file, '# /usr/bin/getent passwd')
-        else:
-            continue
+            all_usernames.extend(usernames)
+        elif 'messages.txt' in file:
+            usernames = UsernameScrubber.extract_usernames_from_messages(file) 
+            all_usernames.extend(usernames)           
 
-        usernames.extend(additional_usernames)
+        all_usernames.extend(additional_usernames)
         # Update the username dictionary with the extracted usernames
-        for username in usernames:
+        for username in all_usernames:
             if username not in username_dict:
                 obfuscated_username= f"user_{username_counter}"
                 username_dict[username] = obfuscated_username
