@@ -55,7 +55,8 @@ def extract_usernames(report_files, additional_usernames):
 
     for file in report_files:
         if 'pam.txt' in file:
-            usernames=UsernameScrubber.extract_usernames_from_section(file, '# /usr/bin/getent passwd')
+            section_starts= ['# /usr/bin/getent passwd', '# /etc/passwd']
+            usernames=UsernameScrubber.extract_usernames_from_section(file, section_starts)
             all_usernames.extend(usernames)
         elif 'messages.txt' in file:
             usernames = UsernameScrubber.extract_usernames_from_messages(file) 
