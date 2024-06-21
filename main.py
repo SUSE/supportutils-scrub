@@ -10,7 +10,7 @@ from config import DEFAULT_CONFIG_PATH
 from config_reader import ConfigReader
 from ip_scrubber import IPScrubber
 from domain_scrubber import DomainScrubber
-from user_scrubber import UserScrubber
+from username_scrubber import UsernameScrubber
 from hostname_scrubber import HostnameScrubber
 from keyword_scrubber import KeywordScrubber
 from extractor import extract_supportconfig
@@ -46,8 +46,24 @@ def extract_domains(report_files):
                 obfuscated_domain = f"masked_domain_{domain_counter}"
                 domain_dict[domain] = obfuscated_domain
                 domain_counter += 1
-    
     return domain_dict
+
+def extract_usernames(report_files):
+    username_dict={}
+    username_counter=0
+    for file in report_files:
+        if 'pam.txt' in file:
+            usernames=UsernameScrubber.extract_usernames_from_section(file, '# /usr/bin/getent passwd')
+        else:
+            continue
+        # Update the username dictionary with the extracted usernames
+        for username in usernames:
+            if username not in username_dict:
+                obfuscated_username= f"user_{username_counter}"
+                username_dict[username] = obfuscated_username
+                username_counter += 1
+    return username_dict
+
 
 
 def main():
@@ -76,10 +92,14 @@ def main():
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(config_path)
 
-    domain_dict = {}
+    mappings = {}
+    if args.mappings:
+        with open(args.mappings, 'r') as f:
+            mappings = json.load(f)
+            
+    #domain_dict = {}
     # Initialize scrubbers
-    ip_scrubber = IPScrubber(config)
-    user_scrubber = UserScrubber()
+    ip_scrubber = IPScrubber(config, mappings=mappings)
     hostname_scrubber = HostnameScrubber()
 
     # Conditional instantiation of KeywordScrubber
@@ -107,21 +127,26 @@ def main():
     # Populate the domains dictuonary
     domain_dict = extract_domains(report_files)
     domain_scrubber = DomainScrubber(domain_dict)
+    # Extract and build the username dictionary from pam.txt
+    username_dict = extract_usernames(report_files)
+    username_scrubber = UsernameScrubber(username_dict)
 
     # Initialize FileProcessor
-    file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, user_scrubber, hostname_scrubber, keyword_scrubber)
+    file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber, hostname_scrubber, keyword_scrubber)
 
     # List of filenames to exclude from scrubbing
-    exclude_files = ["memory.txt", "env.txt"]
+    exclude_files = ["memory.txt", "env.txt", "open-files.txt"]
 
     # Extract Supportconfig and get the list of report files
 
     # Dictionaries to store obfuscation mappings
     total_ip_dict = {}
     total_domain_dict = {}
-    total_user_dict = {}
+    total_user_dict = {}  
     total_hostname_dict = {}
     total_keyword_dict = {}    
+
+
 
     # Process supportcong files
     for report_file in report_files:
@@ -130,12 +155,12 @@ def main():
             continue
 
         # Use FileProcessor to process the file
-        ip_dict, domain_dict, user_dict, hostname_dict, keyword_dict = file_processor.process_file(report_file, logger, verbose_flag)
+        ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict = file_processor.process_file(report_file, logger, verbose_flag)
 
         # Aggregate the translation dictionaries
         total_ip_dict.update(ip_dict)
         total_domain_dict.update(domain_dict)
-        total_user_dict.update(user_dict)
+        total_user_dict.update(username_dict)
         total_hostname_dict.update(hostname_dict)
         total_keyword_dict.update(keyword_dict)
 

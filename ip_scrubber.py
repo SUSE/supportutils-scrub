@@ -3,9 +3,10 @@
 import re
 
 class IPScrubber:
-    def __init__(self, config):
+    def __init__(self, config, mappings=None):
         self.ip_dict = {}
         self.config = config
+        self.mappings = mappings.get('ip', {}) if mappings else {}
 
     def scrub_ip(self, ip):
         """
@@ -46,6 +47,7 @@ class IPScrubber:
         Generate a fake IP address.
         """
         return "42.42.{}.{}".format(len(self.ip_dict) + 1, len(self.ip_dict) + 2)
+    
 
     @staticmethod
     def extract_ips(text):

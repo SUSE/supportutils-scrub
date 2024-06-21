@@ -6,22 +6,22 @@ from config import DEFAULT_CONFIG_PATH
 from config_reader import ConfigReader
 from ip_scrubber import IPScrubber
 from domain_scrubber import DomainScrubber
-from user_scrubber import UserScrubber
 from hostname_scrubber import HostnameScrubber
 from extractor import extract_supportconfig
 from translator import Translator
 from supportutils_scrub_logger import SupportutilsScrubLogger
 from keyword_scrubber import KeywordScrubber
+from username_scrubber import UsernameScrubber
 
 
 class FileProcessor:
-    def __init__(self, config, ip_scrubber: IPScrubber, domain_scrubber: DomainScrubber, user_scrubber: UserScrubber, hostname_scrubber: HostnameScrubber, keyword_scrubber: KeywordScrubber = None):
+    def __init__(self, config, ip_scrubber: IPScrubber, domain_scrubber: DomainScrubber, username_scrubber: UsernameScrubber, hostname_scrubber: HostnameScrubber, keyword_scrubber: KeywordScrubber = None):
         self.config = config
         self.ip_scrubber = ip_scrubber
         self.domain_scrubber = domain_scrubber
-        self.user_scrubber = user_scrubber
         self.hostname_scrubber = hostname_scrubber
         self.keyword_scrubber = keyword_scrubber
+        self.username_scrubber = username_scrubber
 
     def process_file(self, file_path, logger: SupportutilsScrubLogger, verbose_flag):
         """
@@ -43,7 +43,7 @@ class FileProcessor:
 
         ip_dict = {}
         domain_dict = {}
-        user_dict = {}
+        username_dict = {}
         hostname_dict = {}
         keyword_dict = {} 
 
@@ -85,6 +85,16 @@ class FileProcessor:
                     if line != original_line:
                         obfuscation_occurred = True
 
+                # Scrub usernames
+                if self.config["obfuscate_username"]:
+                    original_line = line
+                    scrubbed_line = self.username_scrubber.scrub(line)
+                    line = scrubbed_line
+                    username_dict.update(self.username_scrubber.username_dict)
+                    if line != original_line:
+                        obfuscation_occurred = True
+
+
                 # Replace the line in the file with obfuscated content
                 lines[i] = line
 
@@ -92,11 +102,11 @@ class FileProcessor:
             if obfuscation_occurred:
                 with open(file_path, "w") as file:
                     file.write("#" + "-" * 93 + "\n")
-                    file.write("# WARNING: Sensitive information in this file has been obfuscated by supportutils-scrub.\n")
+                    file.write("# INFO: Sensitive information in this file has been obfuscated by supportutils-scrub.\n")
                     file.write("#" + "-" * 93 + "\n\n")
                     file.writelines(lines)
 
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {str(e)}")
 
-        return ip_dict, domain_dict, user_dict, hostname_dict, keyword_dict
+        return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict
