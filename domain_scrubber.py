@@ -9,7 +9,9 @@ class DomainScrubber:
 
 
     def scrub(self, text):
-        for domain, obfuscated in self.domain_dict.items():
+        sorted_domains = sorted(self.domain_dict.keys(), key=len, reverse=True)
+        for domain in sorted_domains:
+            obfuscated = self.domain_dict[domain]
             text = text.replace(domain, obfuscated)
         return text
     
@@ -36,6 +38,7 @@ class DomainScrubber:
             print(f"File not found: {file_name}")
         return domains
 
+
     @staticmethod
     def extract_domains_from_hosts(file_name, section_start):
         pattern = r'\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b'
@@ -51,20 +54,20 @@ class DomainScrubber:
                         break
                     if section_found:
                         parts = line.split()
-                        if len(parts) > 1:
+                        if len(parts) > 2:  # Ensure there are at least two fields after the IP address
                             for part in parts[1:]:
-                                found_domains = re.findall(pattern, part)
-                                for domain in found_domains:
-                                    # Split domain and add segments
-                                    segments = domain.split('.')
-                                    for i in range(len(segments) - 1):
-                                        domain_segment = '.'.join(segments[i:])
-                                        domains.add(domain_segment)
+                                if '.' in part:
+                                    found_domains = re.findall(pattern, part)
+                                    for domain in found_domains:
+                                        if domain.split('.')[0] not in parts[1:]:
+                                            segments = domain.split('.')
+                                            for i in range(len(segments) - 1):
+                                                domain_segment = '.'.join(segments[i:])
+                                                domains.add(domain_segment)
         except FileNotFoundError:
             print(f"File not found: {file_name}")
         
         return list(domains)
-
     
 
     @staticmethod
