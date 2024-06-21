@@ -16,7 +16,7 @@ class UsernameScrubber:
     
 
     @staticmethod
-    def extract_usernames_from_section(file_name, section_start):
+    def extract_usernames_from_section(file_name, section_starts):
         excluded_users = {
             "root", "bin", "daemon", "lp", "mail", "news", "uucp", "games", "man",
             "wwwrun", "ftp", "nobody", "messagebus", "systemd-timesync", "uuidd",
@@ -41,18 +41,34 @@ class UsernameScrubber:
 
         in_section = False
         usernames = []
+        new_lines = []
 
         for line in lines:
-            if line.strip() == section_start:
+            if line.strip() in section_starts:
                 in_section = True
+                new_lines.append(line)
                 continue
 
             if in_section:
                 if line.strip() == "" or line.startswith("#"):
-                    break
-                username = line.split(':')[0]
+                    in_section = False
+                    new_lines.append(line)
+                    continue
+                parts = line.split(':')
+                username = parts[0]
                 if not is_excluded(username):
-                    usernames.append(username)      
+                    usernames.append(username)
+                    parts[4] = "obfuscated user information"
+                    new_line = ':'.join(parts)
+                    new_lines.append(new_line)
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+
+        with open(file_name, 'w') as file:
+            file.writelines(new_lines)
+
         return usernames
 
     def extract_usernames_from_messages(file_name):
