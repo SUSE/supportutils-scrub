@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# Path to the Python interpreter
+PYTHON_BIN=$(which python3)
+
+# Path to the main Python script
+SCRIPT_DIR=$(dirname $(realpath $0))
+MAIN_SCRIPT="$SCRIPT_DIR/main.py"
+
+# Run the main Python script with the provided arguments
+$PYTHON_BIN $MAIN_SCRIPT "$@"
