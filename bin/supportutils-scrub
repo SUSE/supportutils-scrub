@@ -4,7 +4,7 @@
 PYTHON_BIN=$(which python3)
 
 # Path to the main Python script
-SCRIPT_DIR=$(dirname $(realpath $0))
+SCRIPT_DIR=$(dirname $(realpath $0))/../src
 MAIN_SCRIPT="$SCRIPT_DIR/main.py"
 
 # Run the main Python script with the provided arguments

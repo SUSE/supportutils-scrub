@@ -13,7 +13,7 @@ from domain_scrubber import DomainScrubber
 from username_scrubber import UsernameScrubber
 from hostname_scrubber import HostnameScrubber
 from keyword_scrubber import KeywordScrubber
-from extractor import extract_supportconfig
+from extractor import create_txz, extract_supportconfig
 from translator import Translator
 from supportutils_scrub_logger import SupportutilsScrubLogger
 from processor import FileProcessor
@@ -164,7 +164,12 @@ def main():
         logger.info("Keyword scrubbing not enabled.")
 
 
-    report_files = extract_supportconfig(supportconfig_path, logger)
+    try:
+        report_files, clean_folder_path = extract_supportconfig(supportconfig_path, logger)
+        logger.info(f"Extraction completed. Clean folder path: {clean_folder_path}")
+    except Exception as e:
+        logger.error(f"Error during extraction: {e}")
+        raise
 
     # Populate the domains dictuonary
     additional_domains = []
@@ -205,11 +210,13 @@ def main():
 
 
     # Process supportconfig files
+    logger.info("Scrubbing:")
     for report_file in report_files:
         if os.path.basename(report_file) in exclude_files:
-            logger.info(f"\x1b[33mSkipping file: {report_file} (Excluded)\x1b[0m")
+            print(f"        {os.path.basename(report_file)} (Excluded)")
             continue
-
+        print(f"        {os.path.basename(report_file)}")
+    
         # Use FileProcessor to process the file
         ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict = file_processor.process_file(report_file, logger, verbose_flag)
 
@@ -231,9 +238,13 @@ def main():
     dataset_path = '/usr/lib/supportconfig/obfuscation_dataset_mappings.json'
     Translator.save_datasets(dataset_path, dataset_dict)
 
+    base_name = os.path.splitext(args.supportconfig_path)[0]
+    new_txz_file_path = base_name + "_scrubbed.txz"
+    create_txz(clean_folder_path, new_txz_file_path)
+    logger.info(f"\033[1mNew scrubbed TXZ file created at: {new_txz_file_path}\033[0m")
 
     if verbose_flag:
-        print(f"\nObfuscation dataset mappings saved at: {dataset_path}")
+        logger.info(f"\033[1mObfuscation datasets mappings saved at: {dataset_path}\033[0m")
         print("Obfuscated mapping content:")
         print(json.dumps(dataset_dict, indent=4))
     else:
