@@ -2,8 +2,6 @@
 
 import re
 
-# username_scrubber.py
-
 class UsernameScrubber:
     def __init__(self, username_dict):
         self.username_dict = username_dict

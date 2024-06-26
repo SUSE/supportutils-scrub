@@ -26,23 +26,21 @@ def extract_domains(report_files, additional_domains):
 
     # Extract domains from specific files
     for file in report_files:
-        
         if 'etc.txt' in file:
             domains = DomainScrubber.extract_domains_from_resolv_conf(file, '# /etc/resolv.conf')
             all_domains.extend(domains)
         elif 'network.txt' in file:
             domains = DomainScrubber.extract_domains_from_hosts(file, '# /etc/hosts')
             all_domains.extend(domains)
-
-        #elif 'nfs.txt' in file:
-        #    domains = DomainScrubber.extract_domains_from_section(file, '# /bin/egrep')
-        #    all_domains.extend(domains)
-        #elif 'ntp.txt' in file:
-        #    domains = DomainScrubber.extract_domains_from_section(file, '# /etc/ntp.conf')
-        #    all_domains.extend(domains)
-        #elif 'y2log.txt' in file:
-        #    domains = DomainScrubber.extract_domains_from_section(file, '# /var/adm/autoinstall/cache/installedSystem.xml')
-        #    all_domains.extend(domains)
+        elif 'nfs.txt' in file:
+            domains = DomainScrubber.extract_domains_from_section(file, '# /bin/egrep')
+            all_domains.extend(domains)
+        elif 'ntp.txt' in file:
+            domains = DomainScrubber.extract_domains_from_section(file, '# /etc/ntp.conf')
+            all_domains.extend(domains)
+        elif 'y2log.txt' in file:
+            domains = DomainScrubber.extract_domains_from_section(file, '# /var/adm/autoinstall/cache/installedSystem.xml')
+            all_domains.extend(domains)
         else:
             continue
 
@@ -53,7 +51,35 @@ def extract_domains(report_files, additional_domains):
                 obfuscated_domain = f"domain_{domain_counter}"
                 domain_dict[domain] = obfuscated_domain
                 domain_counter += 1
+    
     return domain_dict
+
+
+def extract_hostnames(report_files, additional_hostnames):
+    hostname_dict = {}
+    hostname_counter = 0
+    all_hostnames = []
+    
+    # Extract hostnames from network.txt
+    for file in report_files:
+        if 'network.txt' in file:
+            hostnames_from_hosts = HostnameScrubber.extract_hostnames_from_hosts(file)
+            hostnames_from_hostname = HostnameScrubber.extract_hostnames_from_hostname_section(file)
+            all_hostnames.extend(hostnames_from_hosts)
+            all_hostnames.extend(hostnames_from_hostname)
+
+    # Add additional hostnames
+    all_hostnames.extend(additional_hostnames)
+
+    # Update the hostname dictionary with the extracted hostnames
+    for hostname in all_hostnames:
+        if hostname not in hostname_dict:
+            obfuscated_hostname = f"hostname_{hostname_counter}"
+            hostname_dict[hostname] = obfuscated_hostname
+            hostname_counter += 1
+
+    return hostname_dict
+
 
 def extract_usernames(report_files, additional_usernames):
     username_dict={}
@@ -79,7 +105,6 @@ def extract_usernames(report_files, additional_usernames):
     return username_dict
 
 
-
 def main():
     parser = argparse.ArgumentParser(description='Process and scrub supportconfig files.')
     parser.add_argument('supportconfig_path', type=str, help='Path to the supportconfig file or directory.')
@@ -89,7 +114,8 @@ def main():
     parser.add_argument('--mappings', type=str, help='Path to a JSON file containing data mappings.')
     parser.add_argument('--username', type=str, help='Additional usernames to obfuscate (comma, semicolon, or space-separated)')
     parser.add_argument('--domain', type=str, help='Additional domains to obfuscate (comma, semicolon, or space-separated)')
-   
+    parser.add_argument('--hostname', type=str, help='List of hostnames separated by space, comma, or semicolon')
+
 
     args = parser.parse_args()
     supportconfig_path = args.supportconfig_path
@@ -116,10 +142,7 @@ def main():
         with open(args.mappings, 'r') as f:
             mappings = json.load(f)
             
-    #domain_dict = {}
-    # Initialize scrubbers
     ip_scrubber = IPScrubber(config, mappings=mappings)
-    hostname_scrubber = HostnameScrubber()
 
     # Conditional instantiation of KeywordScrubber
     if config.get('use_key_words_file', False):
@@ -156,6 +179,13 @@ def main():
         additional_usernames = re.split(r'[,\s;]+', args.username)
     username_dict = extract_usernames(report_files, additional_usernames)
     username_scrubber = UsernameScrubber(username_dict)
+
+    # Extract hostnames and build dictionary
+    additional_hostnames = []
+    if args.hostname:
+        additional_hostnames = re.split(r'[,\s;]+', args.hostname)
+    hostname_dict = extract_hostnames(report_files, additional_hostnames)
+    hostname_scrubber = HostnameScrubber(hostname_dict)
 
     # Initialize FileProcessor
     file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber, hostname_scrubber, keyword_scrubber)

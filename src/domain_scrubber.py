@@ -9,9 +9,7 @@ class DomainScrubber:
 
 
     def scrub(self, text):
-        sorted_domains = sorted(self.domain_dict.keys(), key=len, reverse=True)
-        for domain in sorted_domains:
-            obfuscated = self.domain_dict[domain]
+        for domain, obfuscated in self.domain_dict.items():
             text = text.replace(domain, obfuscated)
         return text
     
@@ -59,15 +57,15 @@ class DomainScrubber:
                                 if '.' in part:
                                     found_domains = re.findall(pattern, part)
                                     for domain in found_domains:
-                                        if domain.split('.')[0] not in parts[1:]:
-                                            segments = domain.split('.')
-                                            for i in range(len(segments) - 1):
-                                                domain_segment = '.'.join(segments[i:])
-                                                domains.add(domain_segment)
+                                        segments = domain.split('.')
+                                        for i in range(len(segments) - 1):
+                                            domain_segment = '.'.join(segments[i:])
+                                            domains.add(domain_segment)
         except FileNotFoundError:
             print(f"File not found: {file_name}")
         
         return list(domains)
+
     
 
     @staticmethod

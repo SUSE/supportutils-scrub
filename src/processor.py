@@ -76,6 +76,15 @@ class FileProcessor:
                     if line != original_line:
                         obfuscation_occurred = True
 
+                # Scrub hostnames names
+                if self.config["obfuscate_hostname"]:
+                    original_line = line
+                    scrubbed_line = self.hostname_scrubber.scrub(line)
+                    line = scrubbed_line
+                    hostname_dict.update(self.hostname_scrubber.hostname_dict)
+                    if line != original_line:
+                        obfuscation_occurred = True
+
                 # Scrub domain names
                 if self.config["obfuscate_domain"]:
                     original_line = line
