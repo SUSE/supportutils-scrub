@@ -48,7 +48,6 @@ class FileProcessor:
         keyword_dict = {} 
 
         try:
-            logger.info(f"Scrubbing file: {file_path}")
             with open(file_path, "r") as file:
                 lines = file.readlines()
 
