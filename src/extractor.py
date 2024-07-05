@@ -43,7 +43,7 @@ def extract_xz_archive(archive_path, logger):
     extract_base_folder = os.path.dirname(archive_path)
     base_name = os.path.basename(archive_path)
     base_name_no_ext = os.path.splitext(base_name)[0]
-    clean_folder_name = base_name_no_ext + "_clean"
+    clean_folder_name = base_name_no_ext + "_scrubbed"
     clean_folder_path = os.path.join(extract_base_folder, clean_folder_name)
 
     if os.path.exists(clean_folder_path):
@@ -65,7 +65,7 @@ def extract_tgz_archive(archive_path, logger):
     extract_base_folder = os.path.dirname(archive_path)
     base_name = os.path.basename(archive_path)
     base_name_no_ext = os.path.splitext(base_name)[0]
-    clean_folder_name = base_name_no_ext + "_clean"
+    clean_folder_name = base_name_no_ext + "_scrubbed"
     clean_folder_path = os.path.join(extract_base_folder, clean_folder_name)
 
     if os.path.exists(clean_folder_path):

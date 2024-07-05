@@ -21,6 +21,8 @@ class ConfigReader:
             'obfuscate_domain': 'yes',
             'obfuscate_username': 'yes',
             'obfuscate_hostname': 'yes',
+            'obfuscate_hostname': 'yes',
+            'obfuscate_hostname': 'yes',
             'verbose': 'true',
             'log_level': 'verbose',
             'use_key_words_file': 'yes',

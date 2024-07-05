@@ -206,7 +206,8 @@ def main():
     total_user_dict = {}  
     total_hostname_dict = {}
     total_keyword_dict = {}    
-
+    total_ipv6_dict = {}    
+    total_mac_dict = {} 
 
 
     # Process supportconfig files
@@ -232,7 +233,9 @@ def main():
         'domain': total_domain_dict,
         'user': total_user_dict,
         'hostname': total_hostname_dict,
-        'keyword': total_keyword_dict
+        'keyword': total_keyword_dict,
+        'mac': total_keyword_dict,
+        'ipv6': total_keyword_dict
     }
 
     dataset_path = '/usr/lib/supportconfig/obfuscation_dataset_mappings.json'

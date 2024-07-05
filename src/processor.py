@@ -56,7 +56,7 @@ class FileProcessor:
 
             for i, line in enumerate(lines):
                 
-                # Scrub IP addresses
+                # Scrub IPv4 addresses
                 if self.config["obfuscate_public_ip"]:
                     original_line = line
                     ip_list = IPScrubber.extract_ips(line)
