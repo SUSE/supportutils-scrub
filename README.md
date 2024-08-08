@@ -1,13 +1,14 @@
-# supportutils-scrub	
-Supportutils-scrub is a python-based application dedicated to sanitizing and eleminataing sensitive or unwanted data from SUSE supportconfig tarballs. This tool helps users and organizations to align with organizational data protection policies, privacy requirements and GPDR compliance standards.
+# supportutils-scrub
 
-Usage:
+Supportutils-scrub is a python-based application dedicated to sanitizing and eliminating sensitive or unwanted data from SUSE supportconfig tarballs. This tool helps users and organizations to align with organizational data protection policies, privacy requirements and GDPR compliance standards.
 
+## Usage:
+
+```sh
 git clone https://github.com/pinaronald/supportutils-scrub.git
-# cd supportutils-scrub/bin
-# ./supportutils-scrub /var/log/scc_supportconfig_240419_0503.txz --verbose --username ron,alex --hostname zitrone,terminus --domain suse.de,example.com
- 
- 
+cd supportutils-scrub/bin
+./supportutils-scrub /var/log/scc_supportconfig_240419_0503.txz --verbose --username ron,alex --hostname zitrone,terminus --domain suse.de,example.com
+
 INFO: Keyword file is missing or empty. Skipping keyword scrubbing.
 INFO: Extracted .txz to: /var/log/scc_supportconfig_240419_0503_scrubbed
 INFO: Extraction completed. Clean folder path: /var/log/scc_supportconfig_240419_0503_scrubbed
@@ -22,7 +23,6 @@ INFO: Scrubbing:
     ...
 INFO: New scrubbed TXZ file created at: /var/log/scc_supportconfig_240419_0503_scrubbed.txz
 INFO: Obfuscation datasets mappings saved at: /usr/lib/supportconfig/obfuscation_dataset_mappings.json
-Obfuscated mapping content:
 {
  "ip": {
     "10.203.195.4": "42.42.1.2",
@@ -50,7 +50,7 @@ Obfuscated mapping content:
     "root": "user_3",
     "g3padm": "user_4",
     "j3padm": "user_5",
-    "admin_atharva: "user_6",
+    "admin_atharva": "user_6",
     ...
   },
  "hostname": {
@@ -61,12 +61,35 @@ Obfuscated mapping content:
     "SVTF3": "hostname_4",
     "smt-gce": "hostname_15",
     "zitrone": "hostname_16",
-    "terminus": "hostname_17"
+    "terminus": "hostname_17",
     ...
   },
-  
-  "keyword": {},
-  "mac": {},
-  "ipv6": {}
- 
+    "mac": {
+        "04:7b:cb:68:bc:e5": "00:1A:2B:01:02:03",
+        "88:a4:c2:d6:1a:9c": "00:1A:2B:02:03:04",
+        "02:42:e3:e7:9b:8e": "00:1A:2B:03:04:05",
+        "00:00:00:00:00:00": "00:00:00:00:00:00",
+        "38:d5:7a:44:42:bf": "00:1A:2B:04:05:06",
+        "02:42:08:c6:18:c3": "00:1A:2B:05:06:07",
+        "cc:d3:c1:f6:5e:bf": "00:1A:2B:06:07:08",
+        "00:09:0f:09:00:1e": "00:1A:2B:07:08:09",
+        "33:33:00:00:00:01": "00:1A:2B:08:09:0A",
+        "52:54:00:1a:97:48": "00:1A:2B:12:13:14"
+    },
+    "ipv6": {
+        "2a01:4f8:1c0c:44b8::2": "2001:0db8:85a3::0:1:2",
+        "2a05:d014:fc5:9a00:38e:25ed:3c41:88ec": "2001:0db8:85a3::1:2:3",
+        "fe80::19fa:6a99:15db:bc09": "2001:0db8:85a3::2:3:4",
+        "2001:9e8:3d3f:9b00:847c:ba7c:cc93:39c": "2001:0db8:85a3::3:4:5",
+        "fd00::7642:7fff:fe91:5a8": "2001:0db8:85a3::4:5:6",
+        "2001:9e8:3d3f:9b00:7642:7fff:fe91:5a8": "2001:0db8:85a3::5:6:7",
+        "2001:9e8:3d3f:9b00:8c9:68a1:9949:c6cc": "2001:0db8:85a3::6:7:8",
+        "fd00::2dfa:bef0:de32:689b": "2001:0db8:85a3::7:8:9",
+        "fd00::f6ad:1c64:4a39:2a6b": "2001:0db8:85a3::8:9:a",
+        "2001:9e8:3d08:1d00:5d0c:7ec3:2a98:d6f4": "2001:0db8:85a3::9:a:b",
+        "2a00:1450:4001:0829:0000:0000:0000:200e": "2001:0db8:85a3::45:46:47",
+        "2001:4860:4860:0000:0000:0000:0000:8844": "2001:0db8:85a3::46:47:48",
+        "2a00:1450:4001:082b:0000:0000:0000:200a": "2001:0db8:85a3::47:48:49"
+    },
+ "keyword": {},
 }
