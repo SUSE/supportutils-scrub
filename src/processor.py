@@ -12,33 +12,26 @@ from translator import Translator
 from supportutils_scrub_logger import SupportutilsScrubLogger
 from keyword_scrubber import KeywordScrubber
 from username_scrubber import UsernameScrubber
-
+from mac_scrubber import MACScrubber
+from ipv6_scrubber import IPv6Scrubber
 
 class FileProcessor:
-    def __init__(self, config, ip_scrubber: IPScrubber, domain_scrubber: DomainScrubber, username_scrubber: UsernameScrubber, hostname_scrubber: HostnameScrubber, keyword_scrubber: KeywordScrubber = None):
+    def __init__(self, config, ip_scrubber: IPScrubber, domain_scrubber: DomainScrubber, username_scrubber: UsernameScrubber, hostname_scrubber: HostnameScrubber, mac_scrubber: MACScrubber, ipv6_scrubber: IPv6Scrubber, keyword_scrubber: KeywordScrubber = None):
         self.config = config
         self.ip_scrubber = ip_scrubber
         self.domain_scrubber = domain_scrubber
         self.hostname_scrubber = hostname_scrubber
         self.keyword_scrubber = keyword_scrubber
         self.username_scrubber = username_scrubber
+        self.mac_scrubber = mac_scrubber
+        self.ipv6_scrubber = ipv6_scrubber
 
     def process_file(self, file_path, logger: SupportutilsScrubLogger, verbose_flag):
         """
         Process a supportconfig file, obfuscating sensitive information.
 
-        Parameters:
-        - file_path: Path to the supportconfig file.
-        - config: Configuration file to enable various options.
-        - ip_scrubber: Instance of IPScrubber.
-        - domain_scrubber: Instance of DomainScrubber.
-        - user_scrubber: Instance of UserScrubber.
-        - hostname_scrubber: Instance of HostnameScrubber.
-        - logger: Instance of SupportutilsScrubLogger. 
-        - verbose_flag: Boolean indicating verbose output.
-
         Returns:
-        - Tuple of dictionaries (ip_dict, domain_dict, user_dict, hostname_dict).
+        - Tuple of dictionaries (ip_dict, domain_dict, user_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict).
         """
 
         ip_dict = {}
@@ -46,6 +39,9 @@ class FileProcessor:
         username_dict = {}
         hostname_dict = {}
         keyword_dict = {} 
+        mac_dict = {}
+        ipv6_dict = {}
+
 
         try:
             with open(file_path, "r") as file:
@@ -67,6 +63,28 @@ class FileProcessor:
                         if line != original_line:
                             obfuscation_occurred = True
 
+                #Scrub IPv6 addresses
+                if self.config["obfuscate_ipv6"]:
+                    original_line = line
+                    ipv6_list = IPv6Scrubber.extract_ipv6(line)
+                    for ipv6 in ipv6_list:
+                        obfuscated_ipv6 = self.ipv6_scrubber.scrub_ipv6(ipv6)  
+                        ipv6_dict[ipv6] = obfuscated_ipv6
+                        line = line.replace(ipv6, obfuscated_ipv6)
+                        if line != original_line:
+                            obfuscation_occurred = True
+
+                # Scrub MAC addresses
+                if self.config["obfuscate_mac"]:
+                    original_line = line
+                    mac_list = MACScrubber.extract_mac(line)
+                    for mac in mac_list:
+                        obfuscated_mac = self.mac_scrubber.scrub_mac(mac)  
+                        mac_dict[mac] = obfuscated_mac
+                        line = line.replace(mac, obfuscated_mac)
+                        if line != original_line:
+                            obfuscation_occurred = True                                            
+
                 # Scrub keywords
                 if self.config.get('use_key_words_file', False) and self.keyword_scrubber:
                     original_line = line
@@ -78,6 +96,7 @@ class FileProcessor:
                 # Scrub hostnames names
                 if self.config["obfuscate_hostname"]:
                     original_line = line
+    
                     scrubbed_line = self.hostname_scrubber.scrub(line)
                     line = scrubbed_line
                     hostname_dict.update(self.hostname_scrubber.hostname_dict)
@@ -117,4 +136,4 @@ class FileProcessor:
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {str(e)}")
 
-        return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict
+        return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict

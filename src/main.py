@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # main.py
 
+import logging
 import sys
 import os
 import re
@@ -17,6 +18,8 @@ from extractor import create_txz, extract_supportconfig
 from translator import Translator
 from supportutils_scrub_logger import SupportutilsScrubLogger
 from processor import FileProcessor
+from mac_scrubber import MACScrubber
+from ipv6_scrubber import IPv6Scrubber
 
 
 def extract_domains(report_files, additional_domains):
@@ -26,32 +29,33 @@ def extract_domains(report_files, additional_domains):
 
     # Extract domains from specific files
     for file in report_files:
-        if 'etc.txt' in file:
-            domains = DomainScrubber.extract_domains_from_resolv_conf(file, '# /etc/resolv.conf')
-            all_domains.extend(domains)
-        elif 'network.txt' in file:
-            domains = DomainScrubber.extract_domains_from_hosts(file, '# /etc/hosts')
-            all_domains.extend(domains)
-        elif 'nfs.txt' in file:
-            domains = DomainScrubber.extract_domains_from_section(file, '# /bin/egrep')
-            all_domains.extend(domains)
-        elif 'ntp.txt' in file:
-            domains = DomainScrubber.extract_domains_from_section(file, '# /etc/ntp.conf')
-            all_domains.extend(domains)
-        elif 'y2log.txt' in file:
-            domains = DomainScrubber.extract_domains_from_section(file, '# /var/adm/autoinstall/cache/installedSystem.xml')
-            all_domains.extend(domains)
-        else:
-            continue
+        try:
+            with open(file, 'r', encoding='utf-8', errors='ignore') as f:
+                if 'etc.txt' in file:
+                    domains = DomainScrubber.extract_domains_from_resolv_conf(f, '# /etc/resolv.conf')
+                elif 'network.txt' in file:
+                    domains = DomainScrubber.extract_domains_from_hosts(f, '# /etc/hosts')
+                elif 'nfs.txt' in file:
+                    domains = DomainScrubber.extract_domains_from_section(f, '# /bin/egrep')
+                elif 'ntp.txt' in file:
+                    domains = DomainScrubber.extract_domains_from_section(f, '# /etc/ntp.conf')
+                elif 'y2log.txt' in file:
+                    domains = DomainScrubber.extract_domains_from_section(f, '# /var/adm/autoinstall/cache/installedSystem.xml')
+                else:
+                    continue
 
-        all_domains.extend(additional_domains)
-        # Update the domain dictionary with the extracted domains
-        for domain in all_domains:
-            if domain not in domain_dict:
-                obfuscated_domain = f"domain_{domain_counter}"
-                domain_dict[domain] = obfuscated_domain
-                domain_counter += 1
-    
+                all_domains.extend(domains)
+        except Exception as e:
+            logging.error(f"Error reading file {file}: {e}")
+
+    all_domains.extend(additional_domains)
+    # Update the domain dictionary with the extracted domains
+    for domain in all_domains:
+        if domain not in domain_dict:
+            obfuscated_domain = f"domain_{domain_counter}"
+            domain_dict[domain] = obfuscated_domain
+            domain_counter += 1
+
     return domain_dict
 
 
@@ -124,9 +128,7 @@ def main():
     mappings_path = args.mappings 
 
 
-    # You would load and use the mappings from mappings_path if provided
     if mappings_path:
-        # Load and use the mappings
         print(f"Using mappings from: {mappings_path}")
 
 
@@ -141,10 +143,15 @@ def main():
     if args.mappings:
         with open(args.mappings, 'r') as f:
             mappings = json.load(f)
-            
-    ip_scrubber = IPScrubber(config, mappings=mappings)
+   
+    try: 
+        ip_scrubber = IPScrubber(config, mappings=mappings)
+        mac_scrubber = MACScrubber(config, mappings=mappings)
+        ipv6_scrubber = IPv6Scrubber(config, mappings=mappings)
+    except Exception as e:  
+        logger.error(f"Error initializing FileProcessor: {e}")
+        sys.exit(1)    
 
-    # Conditional instantiation of KeywordScrubber
     if config.get('use_key_words_file', False):
         keyword_file_path = config['key_words_file']
         
@@ -193,10 +200,14 @@ def main():
     hostname_scrubber = HostnameScrubber(hostname_dict)
 
     # Initialize FileProcessor
-    file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber, hostname_scrubber, keyword_scrubber)
+    try:
+        file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber, hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
+    except Exception as e:
+            logger.error(f"Error initializing FileProcessor: {e}")
+            sys.exit(1)
 
     # List of filenames to exclude from scrubbing
-    exclude_files = ["memory.txt", "env.txt", "open-files.txt"]
+    exclude_files = []
 
     # Extract Supportconfig and get the list of report files
 
@@ -205,9 +216,9 @@ def main():
     total_domain_dict = {}
     total_user_dict = {}  
     total_hostname_dict = {}
-    total_keyword_dict = {}    
-    total_ipv6_dict = {}    
+    total_keyword_dict = {}
     total_mac_dict = {} 
+    total_ipv6_dict = {}    
 
 
     # Process supportconfig files
@@ -219,7 +230,7 @@ def main():
         print(f"        {os.path.basename(report_file)}")
     
         # Use FileProcessor to process the file
-        ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict = file_processor.process_file(report_file, logger, verbose_flag)
+        ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = file_processor.process_file(report_file, logger, verbose_flag)
 
         # Aggregate the translation dictionaries
         total_ip_dict.update(ip_dict)
@@ -227,15 +238,18 @@ def main():
         total_user_dict.update(username_dict)
         total_hostname_dict.update(hostname_dict)
         total_keyword_dict.update(keyword_dict)
+        total_mac_dict.update(mac_dict)
+        total_ipv6_dict.update(ipv6_dict)
+
 
     dataset_dict = {
         'ip': total_ip_dict,
         'domain': total_domain_dict,
         'user': total_user_dict,
         'hostname': total_hostname_dict,
-        'keyword': total_keyword_dict,
-        'mac': total_keyword_dict,
-        'ipv6': total_keyword_dict
+        'mac': total_mac_dict,
+        'ipv6': total_ipv6_dict,
+        'keyword': total_keyword_dict
     }
 
     dataset_path = '/usr/lib/supportconfig/obfuscation_dataset_mappings.json'
