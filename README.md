@@ -15,6 +15,7 @@ Clone the repository and navigate to the `bin` directory to get started:
 ```bash
 git clone https://github.com/pinaronald/supportutils-scrub.git
 cd supportutils-scrub/bin
+```
 
 ## Usage
 
@@ -104,3 +105,4 @@ INFO: Obfuscation datasets mappings saved at: /usr/lib/supportconfig/obfuscation
     },
  "keyword": {},
 }
+```
