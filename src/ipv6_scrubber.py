@@ -5,9 +5,8 @@ import ipaddress
 
 class IPv6Scrubber:
     def __init__(self, config, mappings=None):
-        self.ipv6_dict = {}
+        self.ipv6_dict = mappings.get('ipv6', {}) if mappings else {}
         self.config = config
-        self.mappings = mappings.get('ipv6', {}) if mappings else {}
 
     def scrub_ipv6(self, ipv6):
         """
@@ -58,7 +57,7 @@ class IPv6Scrubber:
         """
         Extract IPv6 addresses from a given text.
         """
-        # Use the detailed regex pattern for IPv6 addresses
+        # regex pattern for IPv6 addresses
         ipv6_pattern = (
             r"(?<![:\\.\\-a-z0-9])"
             r"((([0-9a-f]{1,4})(:[0-9a-f]{1,4}){7})|"

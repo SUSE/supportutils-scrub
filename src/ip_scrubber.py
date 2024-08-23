@@ -4,9 +4,10 @@ import re
 
 class IPScrubber:
     def __init__(self, config, mappings=None):
-        self.ip_dict = {}
-        self.config = config
-        self.mappings = mappings.get('ip', {}) if mappings else {}
+
+        # Load the existing mappings or initialize an empty dictionary
+        self.ip_dict = mappings.get('ip', {}) if mappings else {}
+        self.config = config       
 
     def scrub_ip(self, ip):
         """

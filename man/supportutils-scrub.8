@@ -1,0 +1,81 @@
+.TH SUPPORTUTILS-SCRUB 8 "23 Aug 2024" "supportutils" "Support Utilities Manual"
+.SH NAME
+supportutils-scrub \- Obfuscate sensitive data from SUSE supportconfig tarballs
+.SH SYNOPSIS
+\fBsupportutils-scrub\fR \fITARGET\fR [\fIOPTIONS\fR]
+.SH DESCRIPTION
+\fBsupportutils-scrub\fR is a utility designed to sanitize and remove sensitive or unwanted data from SUSE supportconfig tarballs. This tool assists users and organizations in aligning with data protection policies, privacy requirements, and GDPR compliance standards.
+
+The tool will process the specified \fITARGET\fR, which can be either a supportconfig tarball or a directory. After processing, an obfuscated version of the tarball is created. The original unprocessed tarball or directory remains untouched unless specified otherwise.
+
+All obfuscations are performed consistently, ensuring that sensitive information, such as IP addresses, domain names, usernames, hostnames, IPv6 addresses, and MAC addresses, are replaced uniformly throughout the report. The obfuscation mappings are saved and can be reused to maintain consistency across multiple supportconfig files.
+
+.SH OPTIONS
+.TP
+\fB\-\-config\fR \fIPATH\fR
+Specify the path to the configuration file. If not provided, the default configuration file located at \fI/etc/supportutils-scrub.conf\fR will be used.
+.TP
+\fB\-\-domains\fR \fIDOMAINS\fR
+Provide a comma-delimited list of domain names to obfuscate, in addition to those found in the report. Subdomains matching the specified domains will also be obfuscated.
+
+For example, if \fB\-\-domains example.com\fR is specified, 'example.com' will be obfuscated, as will 'www.example.com' and subdomains such as 'sub.example.com'.
+.TP
+\fB\-\-keywords\fR \fIKEYWORDS\fR
+Provide a comma-delimited list of keywords to obfuscate in addition to the default parsers. Keywords are obfuscated consistently throughout the report and are replaced in both standalone and substring matches.
+.TP
+\fB\-\-keyword-file\fR \fIFILE\fR
+Specify a file that contains a list of keywords to obfuscate. Each keyword should be listed on a separate line.
+.TP
+\fB\-\-mappings\fR \fIFILE\fR
+Provide a path to a mapping file to use as a reference for existing obfuscation pairs. If provided, this file is loaded before the obfuscation process begins, ensuring consistency across multiple runs. By default, a mapping file is written to the same location as the resulting archive.
+.TP
+\fB\-\-verbose\fR
+Enable verbose output to provide more detailed logging information during the obfuscation process.
+
+.SH EXAMPLES
+.TP
+\fBsupportutils-scrub\fR /var/log/scc_supportconfig.txz
+Processes the specified tarball and creates an obfuscated version in the same directory.
+.TP
+\fBsupportutils-scrub\fR /var/log/scc_supportconfig.txz \-\-domains example.com
+Obfuscates the specified tarball and additionally obfuscates all occurrences of 'example.com' and its subdomains.
+.TP
+\fBsupportutils-scrub\fR /var/log/scc_supportconfig.txz \-\-config /path/to/custom-config.conf
+Processes the specified tarball using a custom configuration file located at \fI/path/to/custom-config.conf\fR.
+.TP
+\fBsupportutils-scrub\fR /var/log/scc_supportconfig.txz \-\-verbose \-\-mappings /usr/lib/supportconfig/obfuscation_dataset_mappings.json
+Processes the specified tarball using a predefined mappings file, providing detailed logging information during the obfuscation process.
+.TP
+\fBsupportutils-scrub\fR /var/log/scc_supportconfig.txz \-\-verbose \-\-mappings /usr/lib/supportconfig/obfuscation_dataset_mappings.json
+Processes the specified tarball using an existing mappings file generated from another supportconfig, ensuring consistent obfuscation across different supportconfig files.
+
+.SH FILES
+.I /etc/supportutils-scrub.conf
+.RS
+The default configuration file for \fBsupportutils-scrub\fR. See 
+.BR supportutils-scrub.conf (5)
+for further details.
+.RE
+.I /usr/lib/supportutils-scrub/plugins
+.RS
+The plugin directory for \fBsupportutils-scrub\fR. Custom scripts placed here will be executed during the obfuscation process, allowing additional customization.
+.RE
+
+.SH AUTHOR
+Ronald Pina <ronald.pina@suse.com>
+.SH COPYRIGHT
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; version 2 of the License.
+.PP
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+.PP
+You should have received a copy of the GNU General Public License
+along with this program; if not, see <http://www.gnu.org/licenses/>.
+
+.SH SEE ALSO
+.BR supportutils-scrub.conf (5),
+.BR supportconfig (8)
