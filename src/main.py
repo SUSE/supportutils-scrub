@@ -22,9 +22,9 @@ from mac_scrubber import MACScrubber
 from ipv6_scrubber import IPv6Scrubber
 
 
-def extract_domains(report_files, additional_domains):
-    domain_dict = {}
-    domain_counter = 0
+def extract_domains(report_files, additional_domains, mappings):
+    domain_dict = mappings.get('domain', {})
+    domain_counter = len(domain_dict)
     all_domains = []
 
     # Extract domains from specific files
@@ -59,9 +59,9 @@ def extract_domains(report_files, additional_domains):
     return domain_dict
 
 
-def extract_hostnames(report_files, additional_hostnames):
-    hostname_dict = {}
-    hostname_counter = 0
+def extract_hostnames(report_files, additional_hostnames, mappings):
+    hostname_dict = mappings.get('hostname', {})
+    hostname_counter = len(hostname_dict)
     all_hostnames = []
     
     # Extract hostnames from network.txt
@@ -85,9 +85,9 @@ def extract_hostnames(report_files, additional_hostnames):
     return hostname_dict
 
 
-def extract_usernames(report_files, additional_usernames):
-    username_dict={}
-    username_counter=0
+def extract_usernames(report_files, additional_usernames, mappings):
+    username_dict= mappings.get('user', {})
+    username_counter=len(username_dict)
     all_usernames = []
 
     for file in report_files:
@@ -182,21 +182,21 @@ def main():
     additional_domains = []
     if args.domain:
         additional_domains = re.split(r'[,\s;]+', args.domain)
-    domain_dict = extract_domains(report_files, additional_domains)
+    domain_dict = extract_domains(report_files, additional_domains, mappings)
     domain_scrubber = DomainScrubber(domain_dict)
 
     # Extract and build the username dictionary from pam.txt
     additional_usernames = []
     if args.username:
         additional_usernames = re.split(r'[,\s;]+', args.username)
-    username_dict = extract_usernames(report_files, additional_usernames)
+    username_dict = extract_usernames(report_files, additional_usernames, mappings)
     username_scrubber = UsernameScrubber(username_dict)
 
     # Extract hostnames and build dictionary
     additional_hostnames = []
     if args.hostname:
         additional_hostnames = re.split(r'[,\s;]+', args.hostname)
-    hostname_dict = extract_hostnames(report_files, additional_hostnames)
+    hostname_dict = extract_hostnames(report_files, additional_hostnames, mappings)
     hostname_scrubber = HostnameScrubber(hostname_dict)
 
     # Initialize FileProcessor

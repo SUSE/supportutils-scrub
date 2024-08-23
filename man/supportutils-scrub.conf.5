@@ -1,0 +1,118 @@
+.TH SUPPORTUTILS-SCRUB.CONF 5 "Thu Aug 23 2024"
+.SH NAME
+supportutils-scrub.conf \- Configuration file for supportutils-scrub
+.SH SYNOPSIS
+.B /etc/supportutils-scrub.conf
+.SH DESCRIPTION
+\fBsupportutils-scrub.conf\fR is the configuration file for \fBsupportutils-scrub\fR, a tool designed to sanitize and remove sensitive data from SUSE supportconfig tarballs. This configuration file controls various aspects of the obfuscation process, including which types of data are obfuscated and the verbosity of the output.
+
+The configuration file is typically located at \fB/etc/supportutils-scrub.conf\fR, but an alternative path can be specified when running the \fBsupportutils-scrub\fR command.
+
+.SH CONFIGURATION OPTIONS
+Each configuration option is specified as a key-value pair in the format \fBkey = value\fR. Lines beginning with \fB#\fR are treated as comments and ignored.
+
+.TP
+.B obfuscate_private_ip
+Determines whether private IP addresses (e.g., 10.x.x.x, 192.168.x.x) should be obfuscated. 
+.PD 0
+.IP * 2
+\fBValues\fR: \fIyes\fR or \fIno\fR (default: no)
+.PD
+.TP
+.B obfuscate_public_ip
+Specifies whether public IP addresses should be obfuscated.
+.PD 0
+.IP * 2
+\fBValues\fR: \fIyes\fR or \fIno\fR (default: yes)
+.PD
+.TP
+.B obfuscate_domain
+Indicates whether domain names should be obfuscated.
+.PD 0
+.IP * 2
+\fBValues\fR: \fIyes\fR or \fIno\fR (default: yes)
+.PD
+.TP
+.B obfuscate_username
+Specifies whether usernames should be obfuscated.
+.PD 0
+.IP * 2
+\fBValues\fR: \fIyes\fR or \fIno\fR (default: yes)
+.PD
+.TP
+.B obfuscate_hostname
+Determines whether hostnames should be obfuscated.
+.PD 0
+.IP * 2
+\fBValues\fR: \fIyes\fR or \fIno\fR (default: yes)
+.PD
+.TP
+.B obfuscate_ipv6
+Indicates whether IPv6 addresses should be obfuscated.
+.PD 0
+.IP * 2
+\fBValues\fR: \fIyes\fR or \fIno\fR (default: yes)
+.PD
+.TP
+.B obfuscate_mac
+Specifies whether MAC addresses should be obfuscated.
+.PD 0
+.IP * 2
+\fBValues\fR: \fIyes\fR or \fIno\fR (default: yes)
+.PD
+.TP
+.B verbose
+Enables or disables verbose output during the obfuscation process. When enabled, more detailed logging information is provided.
+.PD 0
+.IP * 2
+\fBValues\fR: \fItrue\fR or \fIfalse\fR (default: true)
+.PD
+.TP
+.B log_level
+Specifies the logging level for the application. This setting determines the amount of detail included in the logs.
+.PD 0
+.IP * 2
+\fBValues\fR: \fInormal\fR or \fIverbose\fR (default: verbose)
+.PD
+.TP
+.B use_key_words_file
+Determines whether a file containing specific keywords should be used for obfuscation. If enabled, keywords found in the specified file will be obfuscated according to the configuration.
+.PD 0
+.IP * 2
+\fBValues\fR: \fIyes\fR or \fIno\fR (default: yes)
+.PD
+.TP
+.B key_words_file
+Specifies the path to the file containing keywords to be obfuscated. Each keyword should be listed on a separate line.
+.PD 0
+.IP * 2
+\fBDefault\fR: \fI/etc/supportutils-scrub-keywords.txt\fR
+.PD
+
+.SH FILES
+.TP
+.B /etc/supportutils-scrub.conf
+Default configuration file for \fBsupportutils-scrub\fR.
+.TP
+.B /etc/supportutils-scrub-keywords.txt
+Default file containing keywords to be obfuscated, if \fBuse_key_words_file\fR is set to \fIyes\fR.
+
+.SH AUTHOR
+Ronald Pina <ronald.pina@suse.com>
+.SH COPYRIGHT
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; version 2 of the License.
+.PP
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+.PP
+You should have received a copy of the GNU General Public License
+along with this program; if not, see <http://www.gnu.org/licenses/>.
+
+.SH SEE ALSO
+.BR supportutils-scrub (1)
+.BR supportconfig (1)
+
