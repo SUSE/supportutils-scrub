@@ -1,12 +1,26 @@
 # supportutils-scrub
 
-Supportutils-scrub is a python-based application dedicated to sanitizing and eliminating sensitive or unwanted data from SUSE supportconfig tarballs. This tool helps users and organizations to align with organizational data protection policies, privacy requirements and GDPR compliance standards.
+**supportutils-scrub** is a Python-based application designed to sanitize and eliminate sensitive or unwanted data from SUSE supportconfig tarballs. This tool assists users and organizations in aligning with data protection policies, privacy requirements, and GDPR compliance standards.
 
-## Usage:
+## Features
 
-```sh
+- **Comprehensive Data Obfuscation**: Obfuscates sensitive information such as IP addresses (both IPv4 and IPv6), domain names, usernames, hostnames, MAC addresses, and keywords.
+- **Consistency Across Runs**: Utilizes obfuscation mappings to ensure consistent data obfuscation across multiple supportconfig files.
+- **Configurable**: Offers a variety of command-line options and supports a customizable configuration file for tailored scrubbing operations.
+
+## Installation
+
+Clone the repository and navigate to the `bin` directory to get started:
+
+```bash
 git clone https://github.com/pinaronald/supportutils-scrub.git
 cd supportutils-scrub/bin
+
+## Usage
+
+The supportutils-scrub tool processes a specified supportconfig tarball or directory, creating an obfuscated version. The original data remains untouched unless otherwise specified.
+
+```bash
 ./supportutils-scrub /var/log/scc_supportconfig_240419_0503.txz --verbose --username ron,alex --hostname zitrone,terminus --domain suse.de,example.com
 
 INFO: Keyword file is missing or empty. Skipping keyword scrubbing.

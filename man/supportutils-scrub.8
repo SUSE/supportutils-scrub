@@ -20,6 +20,12 @@ Provide a comma-delimited list of domain names to obfuscate, in addition to thos
 
 For example, if \fB\-\-domains example.com\fR is specified, 'example.com' will be obfuscated, as will 'www.example.com' and subdomains such as 'sub.example.com'.
 .TP
+\fB\-\-username\fR \fIUSERNAMES\fR
+Provide a comma, semicolon, or space-separated list of additional usernames to obfuscate. These usernames will be consistently replaced throughout the report.
+.TP
+\fB\-\-hostname\fR \fIHOSTNAMES\fR
+Provide a comma, semicolon, or space-separated list of additional hostnames to obfuscate. These hostnames will be consistently replaced throughout the report.
+.TP
 \fB\-\-keywords\fR \fIKEYWORDS\fR
 Provide a comma-delimited list of keywords to obfuscate in addition to the default parsers. Keywords are obfuscated consistently throughout the report and are replaced in both standalone and substring matches.
 .TP
