@@ -8,7 +8,7 @@ supportutils-scrub \- Obfuscate sensitive data from SUSE supportconfig tarballs
 
 The tool will process the specified \fITARGET\fR, which can be either a supportconfig tarball or a directory. After processing, an obfuscated version of the tarball is created. The original unprocessed tarball or directory remains untouched unless specified otherwise.
 
-All obfuscations are performed consistently, ensuring that sensitive information, such as IP addresses, domain names, usernames, hostnames, IPv6 addresses, and MAC addresses, are replaced uniformly throughout the report. The obfuscation mappings are saved and can be reused to maintain consistency across multiple supportconfig files.
+All obfuscations are performed consistently, ensuring that sensitive information, such as IP addresses, domain names, usernames, hostnames, IPv6 addresses, and MAC addresses, are replaced uniformly throughout the supportconfig. The obfuscation mappings are saved in /usr/lib/supportconfig/obfuscation_dataset_mappings.json and can be reused to maintain consistency across multiple supportconfig files.
 
 .SH OPTIONS
 .TP
@@ -16,9 +16,7 @@ All obfuscations are performed consistently, ensuring that sensitive information
 Specify the path to the configuration file. If not provided, the default configuration file located at \fI/etc/supportutils-scrub.conf\fR will be used.
 .TP
 \fB\-\-domains\fR \fIDOMAINS\fR
-Provide a comma-delimited list of domain names to obfuscate, in addition to those found in the report. Subdomains matching the specified domains will also be obfuscated.
-
-For example, if \fB\-\-domains example.com\fR is specified, 'example.com' will be obfuscated, as will 'www.example.com' and subdomains such as 'sub.example.com'.
+Provide a comma, semicolon, or space-separated list of domain names to obfuscate, along with those already detected in the supportconfig.
 .TP
 \fB\-\-username\fR \fIUSERNAMES\fR
 Provide a comma, semicolon, or space-separated list of additional usernames to obfuscate. These usernames will be consistently replaced throughout the report.
@@ -27,13 +25,13 @@ Provide a comma, semicolon, or space-separated list of additional usernames to o
 Provide a comma, semicolon, or space-separated list of additional hostnames to obfuscate. These hostnames will be consistently replaced throughout the report.
 .TP
 \fB\-\-keywords\fR \fIKEYWORDS\fR
-Provide a comma-delimited list of keywords to obfuscate in addition to the default parsers. Keywords are obfuscated consistently throughout the report and are replaced in both standalone and substring matches.
+Provide a comma, semicolon, or space-separated list of keywords to obfuscate in addition to the default parsers. Keywords are obfuscated consistently throughout the report and are replaced in both standalone and substring matches.
 .TP
 \fB\-\-keyword-file\fR \fIFILE\fR
-Specify a file that contains a list of keywords to obfuscate. Each keyword should be listed on a separate line.
+Provide a file with a list of keywords to be obfuscated, ensuring each keyword is placed on its own line."
 .TP
 \fB\-\-mappings\fR \fIFILE\fR
-Provide a path to a mapping file to use as a reference for existing obfuscation pairs. If provided, this file is loaded before the obfuscation process begins, ensuring consistency across multiple runs. By default, a mapping file is written to the same location as the resulting archive.
+Specify the path to a mapping file that contains existing obfuscation pairs. If this file is provided, it will be loaded prior to the start of the obfuscation process, ensuring consistent results across multiple executions. 
 .TP
 \fB\-\-verbose\fR
 Enable verbose output to provide more detailed logging information during the obfuscation process.
@@ -51,9 +49,6 @@ Processes the specified tarball using a custom configuration file located at \fI
 .TP
 \fBsupportutils-scrub\fR /var/log/scc_supportconfig.txz \-\-verbose \-\-mappings /usr/lib/supportconfig/obfuscation_dataset_mappings.json
 Processes the specified tarball using a predefined mappings file, providing detailed logging information during the obfuscation process.
-.TP
-\fBsupportutils-scrub\fR /var/log/scc_supportconfig.txz \-\-verbose \-\-mappings /usr/lib/supportconfig/obfuscation_dataset_mappings.json
-Processes the specified tarball using an existing mappings file generated from another supportconfig, ensuring consistent obfuscation across different supportconfig files.
 
 .SH FILES
 .I /etc/supportutils-scrub.conf
@@ -62,10 +57,7 @@ The default configuration file for \fBsupportutils-scrub\fR. See
 .BR supportutils-scrub.conf (5)
 for further details.
 .RE
-.I /usr/lib/supportutils-scrub/plugins
-.RS
-The plugin directory for \fBsupportutils-scrub\fR. Custom scripts placed here will be executed during the obfuscation process, allowing additional customization.
-.RE
+
 
 .SH AUTHOR
 Ronald Pina <ronald.pina@suse.com>
