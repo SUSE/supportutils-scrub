@@ -26,6 +26,10 @@ class FileProcessor:
         self.mac_scrubber = mac_scrubber
         self.ipv6_scrubber = ipv6_scrubber
 
+        # Initialize keyword scrubber if not already done
+        if self.keyword_scrubber and not self.keyword_scrubber.is_loaded():
+            self.keyword_scrubber.load_keywords()
+
     def process_file(self, file_path, logger: SupportutilsScrubLogger, verbose_flag):
         """
         Process a supportconfig file, obfuscating sensitive information.

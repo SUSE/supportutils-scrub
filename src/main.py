@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-# main.py
-
 import logging
 import sys
 import os
@@ -21,13 +19,11 @@ from processor import FileProcessor
 from mac_scrubber import MACScrubber
 from ipv6_scrubber import IPv6Scrubber
 
-
 def extract_domains(report_files, additional_domains, mappings):
     domain_dict = mappings.get('domain', {})
     domain_counter = len(domain_dict)
     all_domains = []
 
-    # Extract domains from specific files
     for file in report_files:
         try:
             with open(file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -49,7 +45,7 @@ def extract_domains(report_files, additional_domains, mappings):
             logging.error(f"Error reading file {file}: {e}")
 
     all_domains.extend(additional_domains)
-    # Update the domain dictionary with the extracted domains
+
     for domain in all_domains:
         if domain not in domain_dict:
             obfuscated_domain = f"domain_{domain_counter}"
@@ -58,13 +54,11 @@ def extract_domains(report_files, additional_domains, mappings):
 
     return domain_dict
 
-
 def extract_hostnames(report_files, additional_hostnames, mappings):
     hostname_dict = mappings.get('hostname', {})
     hostname_counter = len(hostname_dict)
     all_hostnames = []
-    
-    # Extract hostnames from network.txt
+
     for file in report_files:
         if 'network.txt' in file:
             hostnames_from_hosts = HostnameScrubber.extract_hostnames_from_hosts(file)
@@ -72,10 +66,8 @@ def extract_hostnames(report_files, additional_hostnames, mappings):
             all_hostnames.extend(hostnames_from_hosts)
             all_hostnames.extend(hostnames_from_hostname)
 
-    # Add additional hostnames
     all_hostnames.extend(additional_hostnames)
 
-    # Update the hostname dictionary with the extracted hostnames
     for hostname in all_hostnames:
         if hostname not in hostname_dict:
             obfuscated_hostname = f"hostname_{hostname_counter}"
@@ -84,30 +76,29 @@ def extract_hostnames(report_files, additional_hostnames, mappings):
 
     return hostname_dict
 
-
 def extract_usernames(report_files, additional_usernames, mappings):
-    username_dict= mappings.get('user', {})
-    username_counter=len(username_dict)
+    username_dict = mappings.get('user', {})
+    username_counter = len(username_dict)
     all_usernames = []
 
     for file in report_files:
         if 'pam.txt' in file:
-            section_starts= ['# /usr/bin/getent passwd', '# /etc/passwd']
-            usernames=UsernameScrubber.extract_usernames_from_section(file, section_starts)
+            section_starts = ['# /usr/bin/getent passwd', '# /etc/passwd']
+            usernames = UsernameScrubber.extract_usernames_from_section(file, section_starts)
             all_usernames.extend(usernames)
         elif 'messages.txt' in file:
-            usernames = UsernameScrubber.extract_usernames_from_messages(file) 
-            all_usernames.extend(usernames)           
+            usernames = UsernameScrubber.extract_usernames_from_messages(file)
+            all_usernames.extend(usernames)
 
-        all_usernames.extend(additional_usernames)
-        # Update the username dictionary with the extracted usernames
-        for username in all_usernames:
-            if username not in username_dict:
-                obfuscated_username= f"user_{username_counter}"
-                username_dict[username] = obfuscated_username
-                username_counter += 1
+    all_usernames.extend(additional_usernames)
+
+    for username in all_usernames:
+        if username not in username_dict:
+            obfuscated_username = f"user_{username_counter}"
+            username_dict[username] = obfuscated_username
+            username_counter += 1
+
     return username_dict
-
 
 def main():
     parser = argparse.ArgumentParser(description='Process and scrub supportconfig files.')
@@ -119,18 +110,13 @@ def main():
     parser.add_argument('--username', type=str, help='Additional usernames to obfuscate (comma, semicolon, or space-separated)')
     parser.add_argument('--domain', type=str, help='Additional domains to obfuscate (comma, semicolon, or space-separated)')
     parser.add_argument('--hostname', type=str, help='List of hostnames separated by space, comma, or semicolon')
-
+    parser.add_argument('--keyword-file', type=str, help='File containing keywords to obfuscate, one per line.')
+    parser.add_argument('--keywords', type=str, help='Comma, semicolon, or space-separated list of keywords to obfuscate.')
 
     args = parser.parse_args()
     supportconfig_path = args.supportconfig_path
     config_path = args.config
     verbose_flag = args.verbose
-    mappings_path = args.mappings 
-
-
-    if mappings_path:
-        print(f"Using mappings from: {mappings_path}")
-
 
     # Initialize the logger
     logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
@@ -139,37 +125,46 @@ def main():
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(config_path)
 
+    # Load mappings from JSON file if provided
     mappings = {}
+    mapping_keywords = []
     if args.mappings:
-        with open(args.mappings, 'r') as f:
-            mappings = json.load(f)
-   
-    try: 
+        try:
+            with open(args.mappings, 'r') as f:
+                mappings = json.load(f)
+                logger.info(f"Loaded mappings from: {args.mappings}")
+                # Extract keywords from mappings if available
+                mapping_keywords = list(mappings.get('keyword', {}).keys())
+        except Exception as e:
+            logger.error(f"Failed to load mappings from {args.mappings}: {e}")
+            sys.exit(1)
+
+    # Parse command-line keywords
+    cmd_keywords = []
+    if args.keywords:
+        cmd_keywords = [kw.strip() for kw in re.split(r'[,\s;]+', args.keywords.strip()) if kw.strip()]
+
+
+    # Combine keywords from command line, file, and mappings
+    combined_keywords = set(cmd_keywords).union(mapping_keywords)
+
+    # Initialize KeywordScrubber with file and combined keywords
+    try:
+        keyword_scrubber = KeywordScrubber(keyword_file=args.keyword_file, cmd_keywords=list(combined_keywords))
+        if not keyword_scrubber.is_loaded():
+            logger.error("No keywords loaded. Please check the keyword file, command-line input, and mappings.")
+            sys.exit(1)
+    except Exception as e:
+        logger.error(f"Failed to initialize KeywordScrubber: {e}")
+        sys.exit(1)
+
+    try:
         ip_scrubber = IPScrubber(config, mappings=mappings)
         mac_scrubber = MACScrubber(config, mappings=mappings)
         ipv6_scrubber = IPv6Scrubber(config, mappings=mappings)
-    except Exception as e:  
+    except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
-        sys.exit(1)    
-
-    if config.get('use_key_words_file', False):
-        keyword_file_path = config['key_words_file']
-        
-        # Check if the keyword file exists and is not empty
-        if os.path.exists(keyword_file_path) and os.path.getsize(keyword_file_path) > 0:
-            keyword_scrubber = KeywordScrubber(keyword_file_path)
-            keyword_scrubber.load_keywords()
-
-            if not keyword_scrubber.is_loaded():
-                logger.error("No keywords loaded. Check keyword file.")
-                return
-        else:
-            logger.info("Keyword file is missing or empty. Skipping keyword scrubbing.")
-            keyword_scrubber = None
-    else:
-        keyword_scrubber = None
-        logger.info("Keyword scrubbing not enabled.")
-
+        sys.exit(1)
 
     try:
         report_files, clean_folder_path = extract_supportconfig(supportconfig_path, logger)
@@ -178,7 +173,7 @@ def main():
         logger.error(f"Error during extraction: {e}")
         raise
 
-    # Populate the domains dictuonary
+    # Populate the domains dictionary
     additional_domains = []
     if args.domain:
         additional_domains = re.split(r'[,\s;]+', args.domain)
@@ -203,23 +198,20 @@ def main():
     try:
         file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber, hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
     except Exception as e:
-            logger.error(f"Error initializing FileProcessor: {e}")
-            sys.exit(1)
+        logger.error(f"Error initializing FileProcessor: {e}")
+        sys.exit(1)
 
     # List of filenames to exclude from scrubbing
     exclude_files = []
 
-    # Extract Supportconfig and get the list of report files
-
     # Dictionaries to store obfuscation mappings
     total_ip_dict = {}
     total_domain_dict = {}
-    total_user_dict = {}  
+    total_user_dict = {}
     total_hostname_dict = {}
     total_keyword_dict = {}
-    total_mac_dict = {} 
-    total_ipv6_dict = {}    
-
+    total_mac_dict = {}
+    total_ipv6_dict = {}
 
     # Process supportconfig files
     logger.info("Scrubbing:")
@@ -228,7 +220,7 @@ def main():
             print(f"        {os.path.basename(report_file)} (Excluded)")
             continue
         print(f"        {os.path.basename(report_file)}")
-    
+
         # Use FileProcessor to process the file
         ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = file_processor.process_file(report_file, logger, verbose_flag)
 
@@ -240,7 +232,6 @@ def main():
         total_keyword_dict.update(keyword_dict)
         total_mac_dict.update(mac_dict)
         total_ipv6_dict.update(ipv6_dict)
-
 
     dataset_dict = {
         'ip': total_ip_dict,
@@ -269,4 +260,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
