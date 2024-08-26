@@ -13,7 +13,7 @@ All obfuscations are performed consistently, ensuring that sensitive information
 .SH OPTIONS
 .TP
 \fB\-\-config\fR \fIPATH\fR
-Specify the path to the configuration file. If not provided, the default configuration file located at \fI/etc/supportutils-scrub.conf\fR will be used.
+Specify the path to the configuration file. If not provided, the default configuration file located at \fI/etc/supportutils-scrub/supportutils-scrub.conf\fR will be used.
 .TP
 \fB\-\-domains\fR \fIDOMAINS\fR
 Provide a comma, semicolon, or space-separated list of domain names to obfuscate, along with those already detected in the supportconfig.
@@ -51,7 +51,7 @@ Processes the specified tarball using a custom configuration file located at \fI
 Processes the specified tarball using a predefined mappings file, providing detailed logging information during the obfuscation process.
 
 .SH FILES
-.I /etc/supportutils-scrub.conf
+.I /etc/supportutils-scrub/supportutils-scrub.conf
 .RS
 The default configuration file for \fBsupportutils-scrub\fR. See 
 .BR supportutils-scrub.conf (5)

@@ -1,11 +1,24 @@
-#!/bin/bash
+#!/usr/bin/python3
 
-# Path to the Python interpreter
-PYTHON_BIN=$(which python3)
+import sys
+import os
 
-# Path to the main Python script
-SCRIPT_DIR=$(dirname $(realpath $0))/../src
-MAIN_SCRIPT="$SCRIPT_DIR/main.py"
+try:
+    # Ensure the src directory is in the sys.path
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), '../src'))
+    from main import main
+except KeyboardInterrupt:
+    raise SystemExit()
+except ImportError as e:
+    print(f"Error importing the main module: {e}")
+    sys.exit(1)
 
-# Run the main Python script with the provided arguments
-$PYTHON_BIN $MAIN_SCRIPT "$@"
+if __name__ == '__main__':
+    try:
+        # Call the main function with the command-line arguments
+        main()
+    except Exception as e:
+        print(f"An error occurred during execution: {e}")
+        sys.exit(1)
+    finally:
+        os._exit(0)
