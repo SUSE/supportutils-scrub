@@ -1,3 +1,5 @@
+#domain_scruber.py
+
 import re
 
 class DomainScrubber:
