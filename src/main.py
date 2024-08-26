@@ -103,7 +103,7 @@ def extract_usernames(report_files, additional_usernames, mappings):
 def main():
     parser = argparse.ArgumentParser(description='Process and scrub supportconfig files.')
     parser.add_argument('supportconfig_path', type=str, help='Path to the supportconfig file or directory.')
-    parser.add_argument('--config', type=str, default='/etc/supportutils-scrub.conf',
+    parser.add_argument('--config', type=str, default='/etc/supportutils-scrub/supportutils-scrub.conf',
                         help='Path to the configuration file. Default: /etc/supportutils-scrub.conf')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output.')
     parser.add_argument('--mappings', type=str, help='Path to a JSON file containing data mappings.')

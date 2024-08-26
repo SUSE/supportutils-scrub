@@ -2,11 +2,11 @@
 .SH NAME
 supportutils-scrub.conf \- Configuration file for supportutils-scrub
 .SH SYNOPSIS
-.B /etc/supportutils-scrub.conf
+.B /etc/supportutils-scrub/supportutils-scrub.conf
 .SH DESCRIPTION
 \fBsupportutils-scrub.conf\fR is the configuration file for \fBsupportutils-scrub\fR, a tool designed to sanitize and remove sensitive data from SUSE supportconfig tarballs. This configuration file controls various aspects of the obfuscation process, including which types of data are obfuscated and the verbosity of the output.
 
-The configuration file is typically located at \fB/etc/supportutils-scrub.conf\fR, but an alternative path can be specified when running the \fBsupportutils-scrub\fR command.
+The configuration file is typically located at \fB/etc/supportutils-scrub/supportutils-scrub.conf\fR, but an alternative path can be specified when running the \fBsupportutils-scrub\fR command.
 
 .SH CONFIGURATION OPTIONS
 Each configuration option is specified as a key-value pair in the format \fBkey = value\fR. Lines beginning with \fB#\fR are treated as comments and ignored.
@@ -86,15 +86,15 @@ Determines whether a file containing specific keywords should be used for obfusc
 Specifies the path to the file containing keywords to be obfuscated. Each keyword should be listed on a separate line.
 .PD 0
 .IP * 2
-\fBDefault\fR: \fI/etc/supportutils-scrub-keywords.txt\fR
+\fBDefault\fR: \fI/etc/supportutils-scrub/supportutils-scrub-keywords.txt\fR
 .PD
 
 .SH FILES
 .TP
-.B /etc/supportutils-scrub.conf
+.B /etc/supportutils-scrub/supportutils-scrub.conf
 Default configuration file for \fBsupportutils-scrub\fR.
 .TP
-.B /etc/supportutils-scrub-keywords.txt
+.B /etc/supportutils-scrub/supportutils-scrub-keywords.txt
 Default file containing keywords to be obfuscated, if \fBuse_key_words_file\fR is set to \fIyes\fR.
 
 .SH AUTHOR
