@@ -123,15 +123,6 @@ def main():
     # Initialize the logger
     logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
 
-    # Ensure the /etc/supportutils-scrub/ directory exists
-    dataset_dir = '/etc/supportutils-scrub/'
-    if not os.path.exists(dataset_dir):
-        try:
-            os.makedirs(dataset_dir, exist_ok=True)
-        except PermissionError as e:
-            print(f"Error: Could not create directory {dataset_dir}. Please run with appropriate permissions.")
-            sys.exit(1)
-
     # Use the ConfigReader class to read the configuration
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(config_path)

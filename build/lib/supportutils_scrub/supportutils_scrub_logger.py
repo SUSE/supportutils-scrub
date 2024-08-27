@@ -1,3 +1,4 @@
+# supportutils_scrub_logger.py
 import logging
 
 class SupportutilsScrubLogger:
@@ -31,12 +32,6 @@ class SupportutilsScrubLogger:
         for handler in self.logger.handlers:
             handler.setLevel(self._get_log_level(log_level))
 
-    def critical(self, message):
-        self.logger.critical(message)
-
-    def warning(self, message):
-        self.logger.warning(message)
-
     def info(self, message):
         self.logger.info(message)
 
@@ -45,3 +40,4 @@ class SupportutilsScrubLogger:
 
     def debug(self, message):
         self.logger.debug(message)
+
