@@ -262,7 +262,6 @@ def main():
         'keyword': total_keyword_dict
     }
 
-    dataset_path = '/etc/supportutils-scrub/obfuscation_dataset_mappings.json'
     Translator.save_datasets(dataset_path, dataset_dict)
 
     base_name = os.path.splitext(args.supportconfig_path)[0]
