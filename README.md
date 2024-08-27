@@ -10,19 +10,36 @@
 
 ## Installation
 
-Clone the repository and navigate to the `bin` directory to get started:
+To install and set up the `supportutils-scrub` tool for testing and development, follow these steps:
 
-```bash
-git clone https://github.com/pinaronald/supportutils-scrub.git
-cd supportutils-scrub/bin
-```
+1. **Clone the Repository**:
+
+   ```bash
+   git clone https://github.com/pinaronald/supportutils-scrub.git
+   cd supportutils-scrub
+    ```
+
+2. **Install the Tool Locally**:
+
+Use pip to install the tool locally on your system:
+
+   ```bash
+   pip install .
+   ```
+
+This will install the supportutils-scrub command and its dependencies, and set up the necessary files in their appropriate locations.
+
 
 ## Usage
 
 The supportutils-scrub tool processes a specified supportconfig tarball or directory, creating an obfuscated version. The original data remains untouched unless otherwise specified.
 
 ```bash
-./supportutils-scrub /var/log/scc_supportconfig_240419_0503.txz --verbose --username ron,alex --hostname zitrone,terminus --domain suse.de,example.com
+supportutils-scrub /var/log/scc_supportconfig_240419_0503.txz --verbose \
+                                                              --username ron,alex \
+                                                              --hostname zitrone,terminus
+                                                              --domain suse.de,example.com 
+                                                              --keywords applicationx,google
 
 INFO: Keyword file is missing or empty. Skipping keyword scrubbing.
 INFO: Extracted .txz to: /var/log/scc_supportconfig_240419_0503_scrubbed
