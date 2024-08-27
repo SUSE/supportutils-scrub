@@ -10,24 +10,32 @@
 
 ## Installation
 
-To install and set up the `supportutils-scrub` tool for testing and development, follow these steps:
+You can install the `supportutils-scrub` tool using either RPM or pip.
 
-1. **Clone the Repository**:
+### 1. RPM Installation
+To install and set up the `supportutils-scrub` tool for testing and development, you can find the rpms here:
 
-   ```bash
-   git clone https://github.com/pinaronald/supportutils-scrub.git
-   cd supportutils-scrub
+ [https://build.opensuse.org/package/show/home:ronald_pina/supportutils-scrub]
+
+### 2. Install with pip
+
+
+    a. **Clone the Repository**:
+
+    ```bash
+    git clone https://github.com/pinaronald/supportutils-scrub.git
+    cd supportutils-scrub
     ```
 
-2. **Install the Tool Locally**:
+    b. **Install the Tool Locally**:
 
-Use pip to install the tool locally on your system:
+    Use pip to install the tool locally on your system:
 
-   ```bash
-   pip install .
-   ```
+    ```bash
+    pip install .
+    ```
 
-This will install the supportutils-scrub command and its dependencies, and set up the necessary files in their appropriate locations.
+    This will install the supportutils-scrub command and its dependencies, and set up the necessary files in their appropriate locations.
 
 
 ## Usage
@@ -120,6 +128,9 @@ INFO: Obfuscation datasets mappings saved at: /usr/lib/supportconfig/obfuscation
         "2001:4860:4860:0000:0000:0000:0000:8844": "2001:0db8:85a3::46:47:48",
         "2a00:1450:4001:082b:0000:0000:0000:200a": "2001:0db8:85a3::47:48:49"
     },
- "keyword": {},
+    "keyword": {
+        "applicationx": "xxxxxxx",
+        "google": "xxxxxxxx"
+    },
 }
 ```

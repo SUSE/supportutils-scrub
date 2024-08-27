@@ -23,7 +23,6 @@ Source:         %{name}-%{version}.tar.gz
 BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 BuildArch:      noarch
 Requires:       python3
-Requires:       supportconfig
 
 %description
 Supportutils-scrub is a utility designed to sanitize and remove sensitive or unwanted data from
@@ -40,11 +39,13 @@ pwd; ls -la
 rm -rf $RPM_BUILD_ROOT
 
 # Create necessary directories
+install -d $RPM_BUILD_ROOT/usr/lib/supportutils-scrub/supportutils_scrub
 install -d $RPM_BUILD_ROOT/usr/lib/supportutils-scrub
 install -d $RPM_BUILD_ROOT/etc/supportutils-scrub
 install -d $RPM_BUILD_ROOT/sbin
 install -d $RPM_BUILD_ROOT/usr/share/man/man8
 install -d $RPM_BUILD_ROOT/usr/share/man/man5
+
 
 # Install the executable script
 install -m 0755 bin/supportutils-scrub $RPM_BUILD_ROOT/sbin/supportutils-scrub
@@ -59,19 +60,29 @@ install -m 0644 man/supportutils-scrub.conf.5  $RPM_BUILD_ROOT/usr/share/man/man
 gzip  $RPM_BUILD_ROOT/usr/share/man/man5/supportutils-scrub.conf.5
 
 # Install the Python modules
-cp -r src/supportutils_scrub/* $RPM_BUILD_ROOT/usr/lib/supportutils-scrub/
+cp -r src/supportutils_scrub/* $RPM_BUILD_ROOT/usr/lib/supportutils-scrub/supportutils_scrub/
 
 %files
 %defattr(-,root,root)
 /sbin/supportutils-scrub
+/etc/supportutils-scrub
 /etc/supportutils-scrub/supportutils-scrub.conf
 /usr/lib/supportutils-scrub/
 /usr/share/man/man8/supportutils-scrub.8.gz
 /usr/share/man/man5/supportutils-scrub.conf.5.gz
 
+
 %clean
 rm -rf $RPM_BUILD_ROOT
 
+%postun
+# Remove the directories if they are empty
+if [ "$1" -eq 0 ]; then
+    rm -rf /usr/lib/supportutils-scrub
+    rm -rf /etc/supportutils-scrub
+    rm -rf /usr/share/man/man8.gz
+    rm -rf /usr/share/man/man5.gz
+fi
 %changelog
 * Mon Aug 28 2024 Ronald Pina <ronald.pina@suse.com> - 1.0-0
 - Initial package creation

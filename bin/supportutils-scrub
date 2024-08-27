@@ -6,7 +6,7 @@ import os
 try:
     # Ensure the /usr/lib/supportutils-scrub/ directory is in the sys.path
     sys.path.insert(0, '/usr/lib/supportutils-scrub/')
-    from main import main
+    from supportutils_scrub.main import main
 except KeyboardInterrupt:
     raise SystemExit()
 except ImportError as e:

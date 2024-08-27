@@ -102,6 +102,7 @@ def extract_usernames(report_files, additional_usernames, mappings):
 
     return username_dict
 
+
 def main():
     parser = argparse.ArgumentParser(description='Process and scrub supportconfig files.')
     parser.add_argument('supportconfig_path', type=str, help='Path to the supportconfig file or directory.')
@@ -125,12 +126,19 @@ def main():
 
     # Ensure the /etc/supportutils-scrub/ directory exists
     dataset_dir = '/etc/supportutils-scrub/'
-    if not os.path.exists(dataset_dir):
-        try:
-            os.makedirs(dataset_dir, exist_ok=True)
-        except PermissionError as e:
-            print(f"Error: Could not create directory {dataset_dir}. Please run with appropriate permissions.")
-            sys.exit(1)
+
+
+# Check if the directory exists and is writable
+    if not os.path.exists(dataset_dir) or not os.access(dataset_dir, os.W_OK):
+        # If not writable, fall back to the user's home directory
+        dataset_dir = os.path.expanduser('~/.supportutils-scrub/')
+        logger.warning(f"Insufficient permissions to write to {dataset_dir}. Falling back to {dataset_dir}")
+        
+        # Ensure the fallback directory exists
+        os.makedirs(dataset_dir, exist_ok=True)
+    
+    dataset_path = os.path.join(dataset_dir, 'obfuscation_dataset_mappings.json')
+
 
     # Use the ConfigReader class to read the configuration
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
