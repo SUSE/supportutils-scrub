@@ -4,8 +4,8 @@ import sys
 import os
 
 try:
-    # Ensure the src directory is in the sys.path
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), '../src'))
+    # Ensure the /usr/lib/supportutils-scrub/ directory is in the sys.path
+    sys.path.insert(0, '/usr/lib/supportutils-scrub/')
     from main import main
 except KeyboardInterrupt:
     raise SystemExit()
