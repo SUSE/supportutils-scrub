@@ -36,21 +36,30 @@ policies, privacy requirements, and GDPR compliance standards.
 %build
 
 %install
-pwd;ls -la
+pwd; ls -la
 rm -rf $RPM_BUILD_ROOT
+
+# Create necessary directories
 install -d $RPM_BUILD_ROOT/usr/lib/supportutils-scrub
 install -d $RPM_BUILD_ROOT/etc/supportutils-scrub
 install -d $RPM_BUILD_ROOT/sbin
 install -d $RPM_BUILD_ROOT/usr/share/man/man8
 install -d $RPM_BUILD_ROOT/usr/share/man/man5
+
+# Install the executable script
 install -m 0755 bin/supportutils-scrub $RPM_BUILD_ROOT/sbin/supportutils-scrub
+
+# Install the configuration file
 install -m 0644 config/supportutils-scrub.conf $RPM_BUILD_ROOT/etc/supportutils-scrub/supportutils-scrub.conf
+
+# Install the manpages
 install -m 0644 man/supportutils-scrub.8  $RPM_BUILD_ROOT/usr/share/man/man8/supportutils-scrub.8
 gzip  $RPM_BUILD_ROOT/usr/share/man/man8/supportutils-scrub.8
 install -m 0644 man/supportutils-scrub.conf.5  $RPM_BUILD_ROOT/usr/share/man/man5/supportutils-scrub.conf.5
 gzip  $RPM_BUILD_ROOT/usr/share/man/man5/supportutils-scrub.conf.5
 
-cp -r src/* $RPM_BUILD_ROOT/usr/lib/supportutils-scrub/
+# Install the Python modules
+cp -r src/supportutils_scrub/* $RPM_BUILD_ROOT/usr/lib/supportutils-scrub/
 
 %files
 %defattr(-,root,root)
@@ -59,9 +68,11 @@ cp -r src/* $RPM_BUILD_ROOT/usr/lib/supportutils-scrub/
 /usr/lib/supportutils-scrub/
 /usr/share/man/man8/supportutils-scrub.8.gz
 /usr/share/man/man5/supportutils-scrub.conf.5.gz
+
 %clean
 rm -rf $RPM_BUILD_ROOT
 
 %changelog
 * Mon Aug 28 2024 Ronald Pina <ronald.pina@suse.com> - 1.0-0
 - Initial package creation
+
