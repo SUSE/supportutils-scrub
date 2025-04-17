@@ -2,6 +2,7 @@
 
 import sys
 import os
+import lzma  
 from supportutils_scrub.config import DEFAULT_CONFIG_PATH
 from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.ip_scrubber import IPScrubber
@@ -47,12 +48,28 @@ class FileProcessor:
         ipv6_dict = {}
 
 
+        # A switch to print a header if file was modified
+        obfuscation_occurred = False
+
+        base_name = os.path.basename(file_path)
+        is_sa_file      = base_name.startswith("sa")  and not base_name.startswith("sar")
+        is_sar_xz_file  = base_name.startswith("sar") and base_name.endswith(".xz")
+
+        if is_sa_file:
+            if verbose_flag:
+                logger.info(f"Skipping binary sysstat file: {file_path}")
+            return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
+
         try:
-            with open(file_path, "r") as file:
+            if is_sar_xz_file:
+                file_handle = lzma.open(file_path, mode="rt", encoding="utf-8", errors="ignore")
+            else:
+                file_handle = open(file_path, mode="r", encoding="utf-8", errors="ignore")
+
+            with file_handle as file:
                 lines = file.readlines()
 
-           # A switch to print a header if file was modified
-            obfuscation_occurred = False
+
 
             for i, line in enumerate(lines):
                 
@@ -132,11 +149,19 @@ class FileProcessor:
 
             # Write the changes back to the file
             if obfuscation_occurred:
-                with open(file_path, "w") as file:
-                    file.write("#" + "-" * 93 + "\n")
-                    file.write("# INFO: Sensitive information in this file has been obfuscated by supportutils-scrub.\n")
-                    file.write("#" + "-" * 93 + "\n\n")
-                    file.writelines(lines)
+                header = [
+                    "#" + "-" * 93 + "\n",
+                    "# INFO: Sensitive information in this file has been obfuscated by supportutils-scrub.\n",
+                    "#" + "-" * 93 + "\n\n",
+                ]
+
+                if is_sar_xz_file:
+                    with lzma.open(file_path, mode="wt", encoding="utf-8") as out_f:
+                        out_f.writelines(header + lines)
+
+                else:
+                    with open(file_path, mode="w", encoding="utf-8") as out_f:
+                        out_f.writelines(header + lines)
 
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {str(e)}")
