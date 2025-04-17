@@ -73,6 +73,8 @@ class UsernameScrubber:
         patterns = [
             re.compile(r"session opened for user (\w+)"),
             re.compile(r"\buser\s*=\s*([A-Za-z0-9._-]+)", re.IGNORECASE),
+            re.compile(r'acct="([^"]+)"'),          
+
         ]
         usernames = []
 
@@ -81,6 +83,9 @@ class UsernameScrubber:
                 for pat in patterns:
                     match = pat.search(line)
                     if match:
-                        usernames.append(match.group(1))
+                        u = match.group(1)
+                        if u in {"?", "(unknown)", "nobody"}: 
+                            continue
+                        usernames.append(u)
         
         return usernames

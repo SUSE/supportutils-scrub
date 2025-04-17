@@ -91,6 +91,9 @@ def extract_usernames(report_files, additional_usernames, mappings):
         elif 'messages.txt' in file:
             usernames = UsernameScrubber.extract_usernames_from_messages(file)
             all_usernames.extend(usernames)
+        elif 'security-apparmor.txt' in file:             
+            usernames = UsernameScrubber.extract_usernames_from_messages(file)
+            all_usernames.extend(usernames)
 
     all_usernames.extend(additional_usernames)
 
@@ -199,7 +202,7 @@ def main():
     domain_dict = extract_domains(report_files, additional_domains, mappings)
     domain_scrubber = DomainScrubber(domain_dict)
 
-    # Extract and build the username dictionary from pam.txt
+    # Extract and build the username dictionary
     additional_usernames = []
     if args.username:
         additional_usernames = re.split(r'[,\s;]+', args.username)
