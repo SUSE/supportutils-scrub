@@ -1,53 +1,71 @@
 # supportutils-scrub
 
-**supportutils-scrub** is a Python-based application designed to sanitize and eliminate sensitive or unwanted data from SUSE supportconfig tarballs. This tool assists users and organizations in aligning with data protection policies, privacy requirements, and GDPR compliance standards.
+**supportutils-scrub** is a Python-based tool designed to mask sensitive or unwanted information from SUSE supportconfig tarballs. This tool assists users and organizations in aligning with data protection policies, privacy requirements, and GDPR compliance standards.
 
 ## Features
-
 - **Comprehensive Data Obfuscation**: Obfuscates sensitive information such as IP addresses (both IPv4 and IPv6), domain names, usernames, hostnames, MAC addresses, and keywords.
 - **Consistency Across Runs**: Utilizes obfuscation mappings to ensure consistent data obfuscation across multiple supportconfig files.
 - **Configurable**: Offers a variety of command-line options and supports a customizable configuration file for tailored scrubbing operations.
 
 ## Installation
 
-You can install the `supportutils-scrub` tool using either RPM or pip.
-
 ### 1. RPM Installation
 To install and set up the `supportutils-scrub` tool for testing and development, you can find the rpms here:
-
  [https://build.opensuse.org/package/show/home:ronald_pina/supportutils-scrub]
 
 ### 2. Install with pip
-
-
-    a. **Clone the Repository**:
-
-    ```bash
-    git clone https://github.com/pinaronald/supportutils-scrub.git
+    git clone  git clone https://github.com/SUSE/supportutils-scrub 
     cd supportutils-scrub
-    ```
-
-    b. **Install the Tool Locally**:
-
-    Use pip to install the tool locally on your system:
-
-    ```bash
     pip install .
-    ```
 
-    This will install the supportutils-scrub command and its dependencies, and set up the necessary files in their appropriate locations.
-
-
+### 3. Using the Git folder
+     git clone https://github.com/SUSE/supportutils-scrub
+     cd supportutils-scrub
+     export PYTHONPATH=$PWD/src:$PYTHONPATH
+     ./bin/supportutils-scrub /var/log/scc_zitrone_250416_1330.txz  --verbose
+     
 ## Usage
 
 The supportutils-scrub tool processes a specified supportconfig tarball or directory, creating an obfuscated version. The original data remains untouched unless otherwise specified.
 
 ```bash
-supportutils-scrub /var/log/scc_supportconfig_240419_0503.txz --verbose \
+# supportutils-scrub /var/log/scc_zitrone_250416_1330.txz     --verbose \
                                                               --username ron,alex \
                                                               --hostname zitrone,terminus
                                                               --domain suse.de,example.com 
-                                                              --keywords applicationx,google
+                                                              --keywords linux,ronald
+
+=============================================================================
+          Obfuscation Utility - supportutils-scrub
+               Script Version : 1.0.0       
+                 Release Date : 2024-08-01  
+
+ supportutils-scrub is a python based tool that masks sensitive
+ information from SUSE supportconfig tarballs. It replaces data such as
+ IPv4, IPv6, domain names, usernames, hostnames, MAC addresses, and
+ custom keywords in a consistent way throughout the archive.
+ The mappings are saved in /var/tmp/obfuscation_mappings.json and can be
+ reused to keep consistent results across multiple supportconfigs.
+=============================================================================
+
+[!] Configuration file not found: /etc/supportutils-scrub/supportutils-scrub.conf
+    → Using built-in default settings.
+[✓] Archive extracted to: /var/log/scc_zitrone_250416_1330_scrubbed
+INFO: Scrubbing:
+        basic-environment.txt
+        basic-health-check.txt
+        boot.txt
+        bpf.txt
+        cimom.txt
+        crash.txt
+        cron.txt
+        dhcp.txt
+        dns.txt
+        docker.txt
+        email.txt
+        env.txt
+        etc.txt
+
 
 INFO: Keyword file is missing or empty. Skipping keyword scrubbing.
 INFO: Extracted .txz to: /var/log/scc_supportconfig_240419_0503_scrubbed
@@ -59,10 +77,12 @@ INFO: Scrubbing:
     bpf.txt
     cimom.txt
     crash.txt
+    sa20250416 [binary] (skipped)
     ...
-    ...
-INFO: New scrubbed TXZ file created at: /var/log/scc_supportconfig_240419_0503_scrubbed.txz
-INFO: Obfuscation datasets mappings saved at: /usr/lib/supportconfig/obfuscation_dataset_mappings.json
+[✓] Scrubbed archive written to: /var/log/scc_zitrone_250416_1330_scrubbed.txz
+[✓] Mapping file saved to:       /var/tmp/obfuscation_mappings.json
+
+--- Obfuscated Mapping Preview ---
 {
     "ip": {
         "10.203.195.4": "42.42.1.2",
@@ -133,4 +153,29 @@ INFO: Obfuscation datasets mappings saved at: /usr/lib/supportconfig/obfuscation
         "google": "xxxxxxxx"
     },
 }
+
+------------------------------------------------------------
+ Obfuscation Summary
+------------------------------------------------------------
+| Files obfuscated          : 90
+| Usernames obfuscated      : 5
+| IP addresses obfuscated   : 161
+| MAC addresses obfuscated  : 20
+| Domains obfuscated        : 23
+| Hostnames obfuscated      : 27
+| IPv6 addresses obfuscated : 57
+| Keywords obfuscated       : 2
+| Total obfuscation entries : 295
+| Size                      : 3.93 MB
+| Owner                     : root
+| Output archive            : /var/log/scc_zitrone_250416_1330_scrubbed.txz
+| Mapping file              : /var/tmp/obfuscation_mappings.json
+------------------------------------------------------------
+
+ The obfuscated supportconfig has been successfully created. Please review
+ its contents to ensure that all sensitive information has been properly
+ obfuscated. If some values or keywords were not obfuscated automatically,
+ you can manually add them using the keyword obfuscation option.
+=============================================================================
+
 ```
