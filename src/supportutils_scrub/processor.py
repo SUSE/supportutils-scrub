@@ -57,7 +57,7 @@ class FileProcessor:
 
         if is_sa_file:
             if verbose_flag:
-                logger.info(f"Skipping binary sysstat file: {file_path}")
+                logger.info(f"Skipping binary file: {os.path.basename(file_path)}")
             return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
 
         try:
