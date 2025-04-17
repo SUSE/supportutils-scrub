@@ -5,6 +5,8 @@ import os
 import re
 import json
 import argparse
+import time
+import pwd
 from supportutils_scrub.config import DEFAULT_CONFIG_PATH
 from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.ip_scrubber import IPScrubber
@@ -110,6 +112,7 @@ def extract_usernames(report_files, additional_usernames, mappings):
 
 
 def main():
+    start_time = time.perf_counter()
     parser = argparse.ArgumentParser(description='Process and scrub supportconfig files.')
     parser.add_argument('supportconfig_path', type=str, help='Path to the supportconfig file or directory.')
     parser.add_argument('--config', type=str, default='/etc/supportutils-scrub/supportutils-scrub.conf',
@@ -123,6 +126,27 @@ def main():
     parser.add_argument('--keywords', type=str, help='Comma, semicolon, or space-separated list of keywords to obfuscate.')
 
     args = parser.parse_args()
+
+    def print_header():
+        version = "1.0.0"
+        release_date = "2024-08-01"
+
+        print("=" * 77)
+        print("          Obfuscation Utility - supportutils-scrub")
+        print("               Script Version : {:<12}".format(version))
+        print("                 Release Date : {:<12}".format(release_date))
+        print()
+        print(" supportutils-scrub is a python based tool that masks sensitive")
+        print(" information from SUSE supportconfig tarballs. It replaces data such as")
+        print(" IPv4, IPv6, domain names, usernames, hostnames, MAC addresses, and")
+        print(" custom keywords in a consistent way throughout the archive.")
+        print(" The mappings are saved in /var/tmp/obfuscation_mappings.json and can be")
+        print(" reused to keep consistent results across multiple supportconfigs.")
+        print("=" * 77)
+        print()
+
+    print_header()
+
     supportconfig_path = args.supportconfig_path
     config_path = args.config
     verbose_flag = args.verbose
@@ -132,7 +156,7 @@ def main():
 
     # Ensure the /etc/supportutils-scrub/ directory exists
     dataset_dir = '/etc/supportutils-scrub/'
-
+    mappings_dir = '/var/tmp'
 
 # Check if the directory exists and is writable
     if not os.path.exists(dataset_dir) or not os.access(dataset_dir, os.W_OK):
@@ -143,7 +167,7 @@ def main():
         # Ensure the fallback directory exists
         os.makedirs(dataset_dir, exist_ok=True)
     
-    dataset_path = os.path.join(dataset_dir, 'obfuscation_dataset_mappings.json')
+    dataset_path = os.path.join(mappings_dir, 'obfuscation_mappings.json')
 
 
     # Use the ConfigReader class to read the configuration
@@ -177,11 +201,11 @@ def main():
     try:
         keyword_scrubber = KeywordScrubber(keyword_file=args.keyword_file, cmd_keywords=list(combined_keywords))
         if not keyword_scrubber.is_loaded():
-            logger.warning("No keywords loaded. Continuing without keyword obfuscation.")
-            keyword_scrubber = None  # Set to None if no keywords are loaded
+            print("[!] Keyword obfuscation disabled (no keywords loaded)")
+            keyword_scrubber = None  
     except Exception as e:
         logger.error(f"Failed to initialize KeywordScrubber: {e}")
-        keyword_scrubber = None  # Continue without keyword obfuscation
+        keyword_scrubber = None  
 
     try:
         ip_scrubber = IPScrubber(config, mappings=mappings)
@@ -193,7 +217,7 @@ def main():
 
     try:
         report_files, clean_folder_path = extract_supportconfig(supportconfig_path, logger)
-        logger.info(f"Extraction completed. Clean folder path: {clean_folder_path}")
+        print(f"[✓] Archive extracted to: {clean_folder_path}")
     except Exception as e:
         logger.error(f"Error during extraction: {e}")
         raise
@@ -244,7 +268,11 @@ def main():
         if os.path.basename(report_file) in exclude_files:
             print(f"        {os.path.basename(report_file)} (Excluded)")
             continue
-        print(f"        {os.path.basename(report_file)}")
+        basename=os.path.basename(report_file)
+        if basename.startswith("sa") and (basename.endswith(".xz") or basename.isdigit()):
+            pass  # don't print it here
+        else:
+            print(f"        {basename}")
 
         # Use FileProcessor to process the file
         ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = file_processor.process_file(report_file, logger, verbose_flag)
@@ -273,14 +301,64 @@ def main():
     base_name = os.path.splitext(args.supportconfig_path)[0]
     new_txz_file_path = base_name + "_scrubbed.txz"
     create_txz(clean_folder_path, new_txz_file_path)
-    logger.info(f"\033[1mNew scrubbed TXZ file created at: {new_txz_file_path}\033[0m")
+    print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
+    print(f"[✓] Mapping file saved to:       {dataset_path}")
+
+# Get size and owner of the scrubbed tarball
+    try:
+        stat = os.stat(new_txz_file_path)
+        archive_size_mb = stat.st_size / (1024 * 1024)
+        archive_owner = pwd.getpwuid(stat.st_uid).pw_name
+    except Exception as e:
+        archive_size_mb = 0
+        archive_owner = "unknown"
 
     if verbose_flag:
-        logger.info(f"\033[1mObfuscation datasets mappings saved at: {dataset_path}\033[0m")
-        print("Obfuscated mapping content:")
+        print("\n--- Obfuscated Mapping Preview ---")
         print(json.dumps(dataset_dict, indent=4))
-    else:
-        logger.info(f"\033[1mObfuscation datasets mappings saved at: {dataset_path}\033[0m")
+
+    total_files_scrubbed = len([
+        f for f in report_files if os.path.basename(f) not in exclude_files
+    ])
+
+    total_obfuscations = (
+        len(total_user_dict)
+        + len(total_ip_dict)
+        + len(total_mac_dict)
+        + len(total_domain_dict)
+        + len(total_hostname_dict)
+        + len(total_ipv6_dict)
+        + len(total_keyword_dict)
+    )
+
+    print("\n------------------------------------------------------------")
+    print(" Obfuscation Summary")
+    print("------------------------------------------------------------")
+    print(f"| Files obfuscated          : {total_files_scrubbed}")
+    print(f"| Usernames obfuscated      : {len(total_user_dict)}")
+    print(f"| IP addresses obfuscated   : {len(total_ip_dict)}")
+    print(f"| MAC addresses obfuscated  : {len(total_mac_dict)}")
+    print(f"| Domains obfuscated        : {len(total_domain_dict)}")
+    print(f"| Hostnames obfuscated      : {len(total_hostname_dict)}")
+    print(f"| IPv6 addresses obfuscated : {len(total_ipv6_dict)}")
+    if keyword_scrubber:
+        print(f"| Keywords obfuscated       : {len(total_keyword_dict)}")
+    print(f"| Total obfuscation entries : {total_obfuscations}")
+    print(f"| Size                      : {archive_size_mb:.2f} MB")
+    print(f"| Owner                     : {archive_owner}")
+    print(f"| Output archive            : {new_txz_file_path}")
+    print(f"| Mapping file              : {dataset_path}")
+    print("------------------------------------------------------------\n")
+
+    def print_footer():
+        print(" The obfuscated supportconfig has been successfully created. Please review")
+        print(" its contents to ensure that all sensitive information has been properly")
+        print(" obfuscated. If some values or keywords were not obfuscated automatically,")
+        print(" you can manually add them using the keyword obfuscation option.")
+        print("=" * 77)
+        print()
+
+    print_footer()
 
 if __name__ == "__main__":
     main()
