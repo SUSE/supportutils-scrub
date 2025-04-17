@@ -52,25 +52,6 @@ The supportutils-scrub tool processes a specified supportconfig tarball or direc
     → Using built-in default settings.
 [✓] Archive extracted to: /var/log/scc_zitrone_250416_1330_scrubbed
 INFO: Scrubbing:
-        basic-environment.txt
-        basic-health-check.txt
-        boot.txt
-        bpf.txt
-        cimom.txt
-        crash.txt
-        cron.txt
-        dhcp.txt
-        dns.txt
-        docker.txt
-        email.txt
-        env.txt
-        etc.txt
-
-
-INFO: Keyword file is missing or empty. Skipping keyword scrubbing.
-INFO: Extracted .txz to: /var/log/scc_supportconfig_240419_0503_scrubbed
-INFO: Extraction completed. Clean folder path: /var/log/scc_supportconfig_240419_0503_scrubbed
-INFO: Scrubbing:
     basic-environment.txt
     basic-health-check.txt
     boot.txt
