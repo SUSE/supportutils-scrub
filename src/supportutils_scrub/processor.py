@@ -3,6 +3,7 @@
 import sys
 import os
 import lzma  
+import re
 from supportutils_scrub.config import DEFAULT_CONFIG_PATH
 from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.ip_scrubber import IPScrubber
@@ -51,18 +52,20 @@ class FileProcessor:
         # A switch to print a header if file was modified
         obfuscation_occurred = False
 
+        BINARY_SA_PATTERN = re.compile(r"^sa\d{8}(\.xz)?$")
         base_name = os.path.basename(file_path)
-        is_sa_file      = base_name.startswith("sa")  and not base_name.startswith("sar")
+
+        if BINARY_SA_PATTERN.match(base_name):
+            print(f"        {base_name} [binary] (skipped)")
+            return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
+
         is_sar_xz_file  = base_name.startswith("sar") and base_name.endswith(".xz")
 
-        if is_sa_file:
-            if verbose_flag:
-                logger.info(f"Skipping binary file: {os.path.basename(file_path)}")
-            return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
 
         try:
             if is_sar_xz_file:
                 file_handle = lzma.open(file_path, mode="rt", encoding="utf-8", errors="ignore")
+
             else:
                 file_handle = open(file_path, mode="r", encoding="utf-8", errors="ignore")
 
