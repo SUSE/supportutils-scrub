@@ -70,13 +70,17 @@ class UsernameScrubber:
         return usernames
 
     def extract_usernames_from_messages(file_name):
-        pattern = re.compile(r"session opened for user (\w+)")
+        patterns = [
+            re.compile(r"session opened for user (\w+)"),
+            re.compile(r"\buser\s*=\s*([A-Za-z0-9._-]+)", re.IGNORECASE),
+        ]
         usernames = []
 
         with open(file_name, 'r') as file:
             for line in file:
-                match = pattern.search(line)
-                if match:
-                    usernames.append(match.group(1))
+                for pat in patterns:
+                    match = pat.search(line)
+                    if match:
+                        usernames.append(match.group(1))
         
         return usernames
