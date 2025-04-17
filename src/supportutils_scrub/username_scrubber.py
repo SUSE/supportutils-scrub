@@ -73,8 +73,8 @@ class UsernameScrubber:
         patterns = [
             re.compile(r"session opened for user (\w+)"),
             re.compile(r"\buser\s*=\s*([A-Za-z0-9._-]+)", re.IGNORECASE),
-            re.compile(r'acct="([^"]+)"'),          
-
+            re.compile(r'acct="([^"]+)"'),
+            re.compile(r'NCE/USER/[^/]+/([A-Za-z0-9._-]+)', re.IGNORECASE),
         ]
         usernames = []
 
