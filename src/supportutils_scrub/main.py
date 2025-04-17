@@ -94,6 +94,9 @@ def extract_usernames(report_files, additional_usernames, mappings):
         elif 'security-apparmor.txt' in file:             
             usernames = UsernameScrubber.extract_usernames_from_messages(file)
             all_usernames.extend(usernames)
+        elif 'sssd.txt' in file:             
+            usernames = UsernameScrubber.extract_usernames_from_messages(file)
+            all_usernames.extend(usernames)
 
     all_usernames.extend(additional_usernames)
 
