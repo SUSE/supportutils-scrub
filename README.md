@@ -29,7 +29,7 @@ To install and set up the `supportutils-scrub` tool for testing and development,
 The supportutils-scrub tool processes a specified supportconfig tarball or directory, creating an obfuscated version. The original data remains untouched unless otherwise specified.
 
 ```bash
-# supportutils-scrub /var/log/scc_zitrone_250416_1330.txz     --verbose \
+ supportutils-scrub /var/log/scc_zitrone_250416_1330.txz     --verbose \
                                                               --username ron,alex \
                                                               --hostname zitrone,terminus
                                                               --domain suse.de,example.com 
@@ -38,7 +38,7 @@ The supportutils-scrub tool processes a specified supportconfig tarball or direc
 =============================================================================
           Obfuscation Utility - supportutils-scrub
                Script Version : 1.0.0       
-                 Release Date : 2024-08-01  
+                 Release Date : 2025-04-18  
 
  supportutils-scrub is a python based tool that masks sensitive
  information from SUSE supportconfig tarballs. It replaces data such as
