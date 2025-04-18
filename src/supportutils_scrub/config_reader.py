@@ -48,8 +48,10 @@ class ConfigReader:
                         config['key_words_file'] = value.strip()
 
         except FileNotFoundError:
-            print(f"\x1b[33mConfiguration file not found: {config_path}. Using default settings.\x1b[0m")
-        except Exception as e:
-            print(f"Error reading configuration file: {e}. Using defaults settings.")
 
+            print(f"[!] Configuration file not found: {config_path}.")
+            print(f"     → Using default settings")
+        except Exception as e:
+            print(f"[!] Error reading configuration file: {e}")
+            print(f"     → Using default settings")
         return config

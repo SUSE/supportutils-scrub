@@ -7,6 +7,7 @@ import json
 import argparse
 import time
 import pwd
+from datetime import datetime
 from supportutils_scrub.config import DEFAULT_CONFIG_PATH
 from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.ip_scrubber import IPScrubber
@@ -21,6 +22,47 @@ from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.processor import FileProcessor
+
+SCRIPT_VERSION = "1.0-0"
+SCRIPT_DATE = "2025-04-18"
+
+def print_header():
+    print("=" * 77)
+    print("          Obfuscation Utility - supportutils-scrub")
+    print("                      Version : {:<12}".format(SCRIPT_VERSION))
+    print("                 Release Date : {:<12}".format(SCRIPT_DATE))
+    print()
+    print(" supportutils-scrub is a python based tool that masks sensitive")
+    print(" information from SUSE supportconfig tarballs. It replaces data such as")
+    print(" IPv4, IPv6, domain names, usernames, hostnames, MAC addresses, and")
+    print(" custom keywords in a consistent way throughout the archive.")
+    print(" The mappings are saved in /var/tmp/obfuscation_mappings.json and can be")
+    print(" reused to keep consistent results across multiple supportconfigs.")
+    print("=" * 77 + "\n")
+
+def print_footer():
+    print(" The obfuscated supportconfig has been successfully created. Please review")
+    print(" its contents to ensure that all sensitive information has been properly")
+    print(" obfuscated. If some values or keywords were not obfuscated automatically,")
+    print(" you can manually add them using the keyword obfuscation option.")
+    print("=" * 77 + "\n")
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Obfuscate SUSE supportconfig archives by masking sensitive data."
+    )
+    parser.add_argument("supportconfig_path", help="Path to .txz archive or extracted folder")
+    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH,
+                        help="Path to config file (defaults provided)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Enable verbose logging")
+    parser.add_argument("--mappings", help="JSON file with prior obfuscation mappings")
+    parser.add_argument("--username", help="Additional usernames to obfuscate")
+    parser.add_argument("--domain", help="Additional domains to obfuscate")
+    parser.add_argument("--hostname", help="Additional hostnames to obfuscate")
+    parser.add_argument("--keyword-file", help="File containing keywords to obfuscate")
+    parser.add_argument("--keywords", help="Additional keywords to obfuscate")
+    return parser.parse_args()
 
 
 def extract_domains(report_files, additional_domains, mappings):
@@ -112,39 +154,7 @@ def extract_usernames(report_files, additional_usernames, mappings):
 
 
 def main():
-    start_time = time.perf_counter()
-    parser = argparse.ArgumentParser(description='Process and scrub supportconfig files.')
-    parser.add_argument('supportconfig_path', type=str, help='Path to the supportconfig file or directory.')
-    parser.add_argument('--config', type=str, default='/etc/supportutils-scrub/supportutils-scrub.conf',
-                        help='Path to the configuration file. Default: /etc/supportutils-scrub.conf')
-    parser.add_argument('--verbose', action='store_true', help='Enable verbose output.')
-    parser.add_argument('--mappings', type=str, help='Path to a JSON file containing data mappings.')
-    parser.add_argument('--username', type=str, help='Additional usernames to obfuscate (comma, semicolon, or space-separated)')
-    parser.add_argument('--domain', type=str, help='Additional domains to obfuscate (comma, semicolon, or space-separated)')
-    parser.add_argument('--hostname', type=str, help='List of hostnames separated by space, comma, or semicolon')
-    parser.add_argument('--keyword-file', type=str, help='File containing keywords to obfuscate, one per line.')
-    parser.add_argument('--keywords', type=str, help='Comma, semicolon, or space-separated list of keywords to obfuscate.')
-
-    args = parser.parse_args()
-
-    def print_header():
-        version = "1.0.0"
-        release_date = "2024-08-01"
-
-        print("=" * 77)
-        print("          Obfuscation Utility - supportutils-scrub")
-        print("               Script Version : {:<12}".format(version))
-        print("                 Release Date : {:<12}".format(release_date))
-        print()
-        print(" supportutils-scrub is a python based tool that masks sensitive")
-        print(" information from SUSE supportconfig tarballs. It replaces data such as")
-        print(" IPv4, IPv6, domain names, usernames, hostnames, MAC addresses, and")
-        print(" custom keywords in a consistent way throughout the archive.")
-        print(" The mappings are saved in /var/tmp/obfuscation_mappings.json and can be")
-        print(" reused to keep consistent results across multiple supportconfigs.")
-        print("=" * 77)
-        print()
-
+    args = parse_args()
     print_header()
 
     supportconfig_path = args.supportconfig_path
@@ -154,21 +164,10 @@ def main():
     # Initialize the logger
     logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
 
-    # Ensure the /etc/supportutils-scrub/ directory exists
-    dataset_dir = '/etc/supportutils-scrub/'
-    mappings_dir = '/var/tmp'
-
-# Check if the directory exists and is writable
-    if not os.path.exists(dataset_dir) or not os.access(dataset_dir, os.W_OK):
-        # If not writable, fall back to the user's home directory
-        dataset_dir = os.path.expanduser('~/.supportutils-scrub/')
-        logger.warning(f"Insufficient permissions to write to {dataset_dir}. Falling back to {dataset_dir}")
-        
-        # Ensure the fallback directory exists
-        os.makedirs(dataset_dir, exist_ok=True)
-    
-    dataset_path = os.path.join(mappings_dir, 'obfuscation_mappings.json')
-
+    dataset_dir = '/var/tmp'
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_name = f"obfuscation_mappings_{timestamp}.json"
+    dataset_path = os.path.join(dataset_dir, unique_name)
 
     # Use the ConfigReader class to read the configuration
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
@@ -181,11 +180,11 @@ def main():
         try:
             with open(args.mappings, 'r') as f:
                 mappings = json.load(f)
-                logger.info(f"Loaded mappings from: {args.mappings}")
+                print(f"[✓] Dataset mapping loaded from: {args.mappings} ")
                 # Extract keywords from mappings if available
                 mapping_keywords = list(mappings.get('keyword', {}).keys())
         except Exception as e:
-            logger.error(f"Failed to load mappings from {args.mappings}: {e}")
+            print(f"[!] Failed to load mapping from {args.mappings}")
             sys.exit(1)
 
     # Parse command-line keywords
@@ -217,9 +216,8 @@ def main():
 
     try:
         report_files, clean_folder_path = extract_supportconfig(supportconfig_path, logger)
-        print(f"[✓] Archive extracted to: {clean_folder_path}")
     except Exception as e:
-        logger.error(f"Error during extraction: {e}")
+        print(f"[!] Error during extraction: {e}")
         raise
 
     # Populate the domains dictionary
@@ -349,14 +347,6 @@ def main():
     print(f"| Output archive            : {new_txz_file_path}")
     print(f"| Mapping file              : {dataset_path}")
     print("------------------------------------------------------------\n")
-
-    def print_footer():
-        print(" The obfuscated supportconfig has been successfully created. Please review")
-        print(" its contents to ensure that all sensitive information has been properly")
-        print(" obfuscated. If some values or keywords were not obfuscated automatically,")
-        print(" you can manually add them using the keyword obfuscation option.")
-        print("=" * 77)
-        print()
 
     print_footer()
 
