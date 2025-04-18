@@ -7,6 +7,7 @@ import json
 import argparse
 import time
 import pwd
+import shutil
 from datetime import datetime
 from supportutils_scrub.config import DEFAULT_CONFIG_PATH
 from supportutils_scrub.config_reader import ConfigReader
@@ -302,7 +303,13 @@ def main():
     print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
     print(f"[✓] Mapping file saved to:       {dataset_path}")
 
-# Get size and owner of the scrubbed tarball
+    # Clean up: remove the extracted folder 
+    try:
+        shutil.rmtree(clean_folder_path)
+    except Exception as e:
+        print(f"[!] Could not remove temp folder {clean_folder_path}: {e}")
+
+    # Get size and owner of the scrubbed tarball
     try:
         stat = os.stat(new_txz_file_path)
         archive_size_mb = stat.st_size / (1024 * 1024)
