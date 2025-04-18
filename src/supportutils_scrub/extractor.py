@@ -19,10 +19,8 @@ def extract_supportconfig(supportconfig_path, logger):
     elif supportconfig_path.endswith(".tgz"):
         report_files = extract_tgz_archive(supportconfig_path, logger)
     else:
-        logging.error(f"Unsupported file type: {supportconfig_path}")
+        print(f"[!] Unsupported file type: {supportconfig_path}")
         raise Exception(f"Unsupported file type: {supportconfig_path}")
-
-    logging.info(f"Extraction successful. Return path: {supportconfig_path}")
     return report_files
 
 def walk_supportconfig(folder_path):
@@ -63,11 +61,11 @@ def extract_xz_archive(archive_path, logger):
                     # Extract files normally
                     tar.extract(member, path=clean_folder_path)
             except IsADirectoryError:
-                print(f"Error: {member.name} is a directory, skipping")
+                print(f"[!] Error: {member.name} is a directory, skipping")
             continue
 
     report_files = walk_supportconfig(clean_folder_path)
-    logger.info(f"Extracted .txz to: {clean_folder_path}")
+    print(f"[✓] Archive extracted to: {clean_folder_path}")
 
     return report_files, clean_folder_path
 
@@ -89,7 +87,7 @@ def extract_tgz_archive(archive_path, logger):
             tar.extract(member, path=extract_base_folder)
 
     report_files = walk_supportconfig(clean_folder_path)
-    logger.info(f"Extracted .tgz to: {clean_folder_path}")
+    print(f"[✓] Archive extracted to: {clean_folder_path}")
     return report_files, clean_folder_path
 
 def create_txz(source_dir, output_filename):
