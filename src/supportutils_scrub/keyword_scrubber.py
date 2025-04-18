@@ -1,6 +1,7 @@
 import random
 import logging
 import re
+import os
 
 class KeywordScrubber:
     def __init__(self, keyword_file=None, cmd_keywords=None):
@@ -12,34 +13,28 @@ class KeywordScrubber:
     def load_keywords(self):
         # Load from file
         if self.keyword_file:
-            logging.info(f"Attempting to load keywords from file: {self.keyword_file}")
-            try:
-                if not os.path.exists(self.keyword_file):
-                    logging.error(f"Keyword file does not exist: {self.keyword_file}")
-                    raise FileNotFoundError(f"Keyword file not found: {self.keyword_file}")
+            if not os.path.isfile(self.keyword_file):
+                print(f"[!] Keyword file not found: {self.keyword_file}")
+            else:
+                try:
+                    with open(self.keyword_file, 'r', encoding='utf-8') as f:
+                        print(f"[✓] Loading keywords from file: {self.keyword_file}")
+                        for line in f:
+                            # Strip comments and whitespace
+                            kw = line.split('#', 1)[0].strip().lower()
+                            if not kw:
+                                continue
+                            if kw not in self.keyword_dict:
+                                self.keyword_dict[kw] = self._generate_obfuscated_keyword()
 
-                with open(self.keyword_file, 'r') as file:
-                    for line in file:
-                        keyword = line.strip()
-                        if keyword:
-                            logging.info(f"Loading keyword from file: {keyword}")
-                            self.keyword_dict[keyword.lower()] = self._generate_obfuscated_keyword()
-                logging.info(f"Successfully loaded {len(self.keyword_dict)} keywords from file.")
-            except Exception as e:
-                logging.error(f"Error loading keyword file: {e}")
-                raise
-
+                except Exception as e:
+                    print(f"[!] Error reading keyword file: {e}")
         # Load from command line arguments
         if self.cmd_keywords:
-            logging.info("Loading keywords from command line arguments.")
             for keyword in self.cmd_keywords:
                 if keyword.lower() not in self.keyword_dict:
-                    logging.info(f"Loading keyword from command line: {keyword}")
+                    logging.info("[✓] Loading keywords from command line arguments")
                     self.keyword_dict[keyword.lower()] = self._generate_obfuscated_keyword()
-            logging.info(f"Total keywords loaded from command line: {len(self.cmd_keywords)}")
-
-        # Final keyword count
-        logging.info(f"Total unique keywords loaded: {len(self.keyword_dict)}")
 
     def _generate_obfuscated_keyword(self):
         random_length = random.randint(7, 10)
