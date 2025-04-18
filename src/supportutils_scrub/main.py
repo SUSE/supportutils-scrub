@@ -27,7 +27,7 @@ SCRIPT_VERSION = "1.0-0"
 SCRIPT_DATE = "2025-04-18"
 
 def print_header():
-    print("=" * 77)
+    print("\n"+"=" * 77)
     print("          Obfuscation Utility - supportutils-scrub")
     print("                      Version : {:<12}".format(SCRIPT_VERSION))
     print("                 Release Date : {:<12}".format(SCRIPT_DATE))
@@ -346,6 +346,8 @@ def main():
     print(f"| Owner                     : {archive_owner}")
     print(f"| Output archive            : {new_txz_file_path}")
     print(f"| Mapping file              : {dataset_path}")
+    if args.keyword_file and keyword_scrubber:
+        print(f"| Keyword file              : {args.keyword_file}")
     print("------------------------------------------------------------\n")
 
     print_footer()
