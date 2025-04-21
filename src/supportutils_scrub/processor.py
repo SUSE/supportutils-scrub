@@ -56,7 +56,11 @@ class FileProcessor:
         base_name = os.path.basename(file_path)
 
         if BINARY_SA_PATTERN.match(base_name):
-            print(f"        {base_name} [binary] (skipped)")
+            print(f"        {base_name} [binary] (removed)")
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"[!] Failed to remove binary file {file_path}: {e} " )
             return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
 
         is_sar_xz_file  = base_name.startswith("sar") and base_name.endswith(".xz")
