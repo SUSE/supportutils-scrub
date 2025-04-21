@@ -268,11 +268,9 @@ def main():
             print(f"        {os.path.basename(report_file)} (Excluded)")
             continue
         basename=os.path.basename(report_file)
-        if basename.startswith("sa") and (basename.endswith(".xz") or basename.isdigit()):
-            pass  # don't print it here
-        else:
+        if not re.match(r"^sa\d{8}(\.xz)?$", basename):
             print(f"        {basename}")
-
+            
         # Use FileProcessor to process the file
         ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = file_processor.process_file(report_file, logger, verbose_flag)
 
