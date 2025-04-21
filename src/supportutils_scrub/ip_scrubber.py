@@ -55,6 +55,12 @@ class IPScrubber:
         """
         Extract IP addresses from a given text.
         """
-        ip_pattern = r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b"
-        return re.findall(ip_pattern, text)
+        ip_pattern = r"(?<![\w\-])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?![\w\-])"
+        candidates = re.findall(ip_pattern, text)    
 
+        valid_ips = []
+        for ip in candidates:
+            parts = ip.split('.')
+            if all(part.isdigit() and 0 <= int(part) <= 255 for part in parts):
+                valid_ips.append(ip)
+        return valid_ips
