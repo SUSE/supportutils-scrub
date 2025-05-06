@@ -25,7 +25,7 @@ from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.processor import FileProcessor
 
 SCRIPT_VERSION = "1.0-0"
-SCRIPT_DATE = "2025-04-18"
+SCRIPT_DATE = "2025-04-22"
 
 def print_header():
     print("\n"+"=" * 77)
