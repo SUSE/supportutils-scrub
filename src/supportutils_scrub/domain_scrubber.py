@@ -7,15 +7,20 @@ class DomainScrubber:
         self.domain_dict = domain_dict
 
     def scrub(self, text):
-        for domain, obfuscated in self.domain_dict.items():
-            text = text.replace(domain, obfuscated)
-        return text
-    
+        sorted_domains = sorted(self.domain_dict.keys(), key=len, reverse=True)
+
+        for domain in sorted_domains:
+            escaped = re.escape(domain)
+            # Replace full matches or boundaries (e.g., end of hostname)
+            text = re.sub(rf'\b{escaped}\b', self.domain_dict[domain], text)
+        return text    
+
     @staticmethod
     def extract_domains_from_section(file_obj, section_start):
         pattern = r'\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b'
         excluded_domains = {"suse.com", "www.suse.com", "ntp.drift", "ntp.keys"}
-        domains = []
+        domains = set()
+
         section_found = False
         for line in file_obj:
             if section_start in line:
@@ -25,8 +30,17 @@ class DomainScrubber:
                 break
             if section_found:
                 found_domains = re.findall(pattern, line)
-                found_domains = [domain for domain in found_domains if domain not in excluded_domains]
-                domains.extend(found_domains)
+                for domain in found_domains:
+                    if domain in excluded_domains:
+                        continue
+                    labels = domain.split(".")
+                    if len(labels) >= 2:
+                        # Drop the first label (hostname), keep remaining as domains
+                        for i in range(1, len(labels) - 1):
+                            domain_segment = ".".join(labels[i:])
+                            domains.add(domain_segment)
+                        domains.add(".".join(labels[1:]))  # Always keep full domain minus host
+
         return domains
 
     @staticmethod
@@ -47,10 +61,14 @@ class DomainScrubber:
                         if '.' in part:
                             found_domains = re.findall(pattern, part)
                             for domain in found_domains:
-                                segments = domain.split('.')
-                                for i in range(len(segments) - 1):
-                                    domain_segment = '.'.join(segments[i:])
-                                    domains.add(domain_segment)
+                                # Split into labels and discard the first segment (hostname)
+                                labels = domain.split('.')
+                                if len(labels) >= 2:
+                                    stripped_domain = '.'.join(labels[1:])  # drop the hostname part
+                                    # Build all subdomains 
+                                    for i in range(len(labels) - 1):
+                                        subdomain = '.'.join(labels[i+1:])
+                                        domains.add(subdomain)
         return list(domains)
 
     @staticmethod

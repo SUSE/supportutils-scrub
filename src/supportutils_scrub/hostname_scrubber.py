@@ -7,10 +7,13 @@ class HostnameScrubber:
         self.hostname_dict = hostname_dict
 
     def scrub(self, text):
-        for hostname, obfuscated in self.hostname_dict.items():
-            text = text.replace(hostname, obfuscated)
+        for hostname in sorted(self.hostname_dict, key=len, reverse=True):
+            obfuscated = self.hostname_dict[hostname]
+            text = text.replace(hostname, obfuscated)            
         return text
     
+
+
     @staticmethod
     def extract_hostnames_from_hosts(file_path):
         hostnames = []
@@ -31,14 +34,12 @@ class HostnameScrubber:
                     if line.strip() == "" or line.startswith('#'):
                         continue
                     fields = re.split(r'\s+', line.strip())
-                    if len(fields) >= 2:
-                        second_field = fields[1] if '-' in fields[1] else fields[1].split('.')[0]
-                        if second_field not in excluded_hostnames:
-                            hostnames.append(second_field)
-                    if len(fields) >= 3:
-                        third_field = fields[2] if '-' in fields[2] else fields[2].split('.')[0]
-                        if third_field not in excluded_hostnames:
-                            hostnames.append(third_field)
+                    for field in fields[1:]:
+                        # Only extract the first component
+                        short_name = field.split('.')[0]
+                        if short_name not in excluded_hostnames:
+                            hostnames.append(short_name)
+
         return hostnames
 
     @staticmethod
@@ -58,15 +59,22 @@ class HostnameScrubber:
                 if in_hostname_section:
                     if line.strip() == "" or line.startswith('#'):
                         continue
+
                     hostname = line.strip()
-                    if hostname not in excluded_hostnames:
-                        hostnames.append(hostname)
+                    short_name = hostname.split('.')[0]
+                    if short_name not in excluded_hostnames:
+                        hostnames.append(short_name)
+                    
                     break  # Only need to process the first line of the hostname section
         return hostnames
 
     @staticmethod
     def build_hostname_dict(hostnames):
         hostname_dict = {}
-        for index, hostname in enumerate(hostnames, start=1):
-            hostname_dict[hostname] = f'hostname{index}'
+        seen = set()
+        for hostname in hostnames:
+            short = hostname.split('.')[0]
+            if short not in seen:
+                seen.add(short)
+                hostname_dict[short] = f'hostname{len(seen)-1}'
         return hostname_dict
