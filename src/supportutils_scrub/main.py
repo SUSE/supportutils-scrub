@@ -82,8 +82,8 @@ def extract_domains(report_files, additional_domains, mappings):
                     domains = DomainScrubber.extract_domains_from_section(f, '# /bin/egrep')
                 elif 'ntp.txt' in file:
                     domains = DomainScrubber.extract_domains_from_section(f, '# /etc/ntp.conf')
-                elif 'y2log.txt' in file:
-                    domains = DomainScrubber.extract_domains_from_section(f, '# /var/adm/autoinstall/cache/installedSystem.xml')
+#                elif 'y2log.txt' in file:
+#                    domains = DomainScrubber.extract_domains_from_section(f, '# /var/adm/autoinstall/cache/installedSystem.xml')
                 else:
                     continue
 
