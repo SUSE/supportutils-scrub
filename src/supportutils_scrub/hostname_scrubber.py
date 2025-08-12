@@ -33,6 +33,9 @@ class HostnameScrubber:
                 if in_hosts_section:
                     if line.strip() == "" or line.startswith('#'):
                         continue
+                    if '#' in line:
+                        line = line.split('#')[0]
+                        
                     fields = re.split(r'\s+', line.strip())
                     for field in fields[1:]:
                         # Only extract the first component
