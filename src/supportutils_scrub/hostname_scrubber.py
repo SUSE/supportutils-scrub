@@ -9,7 +9,8 @@ class HostnameScrubber:
     def scrub(self, text):
         for hostname in sorted(self.hostname_dict, key=len, reverse=True):
             obfuscated = self.hostname_dict[hostname]
-            text = text.replace(hostname, obfuscated)            
+            pattern = r'\b' + re.escape(hostname) + r'(?=\s|$|\.|\:|\/|\,|\;)'
+            text = re.sub(pattern, obfuscated, text)         
         return text
     
 
@@ -35,11 +36,12 @@ class HostnameScrubber:
                         continue
                     if '#' in line:
                         line = line.split('#')[0]
-                        
+
                     fields = re.split(r'\s+', line.strip())
                     for field in fields[1:]:
-                        # Only extract the first component
                         short_name = field.split('.')[0]
+                        if len(short_name) < 4:
+                            continue
                         if short_name not in excluded_hostnames:
                             hostnames.append(short_name)
 
@@ -68,7 +70,7 @@ class HostnameScrubber:
                     if short_name not in excluded_hostnames:
                         hostnames.append(short_name)
                     
-                    break  # Only need to process the first line of the hostname section
+                    break  
         return hostnames
 
     @staticmethod
