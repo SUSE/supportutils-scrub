@@ -27,11 +27,49 @@ class FileProcessor:
         self.username_scrubber = username_scrubber
         self.mac_scrubber = mac_scrubber
         self.ipv6_scrubber = ipv6_scrubber
-
+        self.current_section = None
+        self.current_interface = None
+        self.in_network_config = False
+        self.in_routing_table = False
+        self._ipv4_subnet_map = {}
+        self._ipv4_state = {}
+        self.network_files = ['network.txt', 'network-*.txt', 'ip.txt', 'route.txt']
+        self.special_sections = {
+            '# /sbin/ip addr show': 'ip_config',
+            '# /sbin/ip route show': 'routing',
+            '# /usr/sbin/iptables': 'firewall',
+            '# /etc/hosts': 'hosts',
+            '# /proc/net/dev': 'network_stats',
+            '# /usr/sbin/ethtool': 'ethtool'
+        }
         # Initialize keyword scrubber if not already done
         if self.keyword_scrubber and not self.keyword_scrubber.is_loaded():
             self.keyword_scrubber.load_keywords()
 
+    def pre_analyze_files(self, report_files):
+        """
+        Pre-analyze all network-related files to build topology
+        """
+        print("[✓] Pre-analyzing network topology...")
+        
+        for file_path in report_files:
+            basename = os.path.basename(file_path)
+            
+            # Check if this is a network-related file
+            if any(pattern.replace('*', '') in basename for pattern in self.network_files):
+                try:
+                    self.network_scrubber.analyze_network_file(file_path)
+                except Exception as e:
+                    print(f"[!] Error analyzing {basename}: {e}")
+        
+        # Generate network topology summary
+        topology = self.network_scrubber.network_topology
+        print(f"    Found {len(topology['subnets'])} subnets")
+        print(f"    Found {len(topology['interfaces'])} interfaces")
+        
+        return topology
+        
+    
     def process_file(self, file_path, logger: SupportutilsScrubLogger, verbose_flag):
         """
         Process a supportconfig file, obfuscating sensitive information.
@@ -62,7 +100,8 @@ class FileProcessor:
             except Exception as e:
                 print(f"[!] Failed to remove binary file {file_path}: {e} " )
             return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
-
+        
+        is_network_file = any(pattern.replace('*', '') in base_name for pattern in self.network_files)
         is_sar_xz_file  = base_name.startswith("sar") and base_name.endswith(".xz")
 
 
@@ -77,19 +116,21 @@ class FileProcessor:
                 lines = file.readlines()
 
 
+            #Scrub IPv6 addresses
+            if self.config.get("obfuscate_public_ip"):
+                original_text = ''.join(lines)
+                new_text, new_ip_map, new_subnet_map, state = self.ip_scrubber.scrub_text(original_text)
+                
+                if new_text != original_text:
+                    obfuscation_occurred = True
+                    lines = new_text.splitlines(keepends=True)
+                
+                # Store mappings
+                ip_dict.update(new_ip_map)
+                self._ipv4_subnet_map.update(new_subnet_map)
+                self._ipv4_state = state
 
             for i, line in enumerate(lines):
-                
-                # Scrub IPv4 addresses
-                if self.config["obfuscate_public_ip"]:
-                    original_line = line
-                    ip_list = IPScrubber.extract_ips(line)
-                    for ip in ip_list:
-                        obfuscated_ip = self.ip_scrubber.scrub_ip(ip)  
-                        ip_dict[ip] = obfuscated_ip
-                        line = line.replace(ip, obfuscated_ip)
-                        if line != original_line:
-                            obfuscation_occurred = True
 
                 #Scrub IPv6 addresses
                 if self.config["obfuscate_ipv6"]:
