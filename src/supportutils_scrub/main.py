@@ -24,8 +24,8 @@ from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.processor import FileProcessor
 
-SCRIPT_VERSION = "1.0-0"
-SCRIPT_DATE = "2025-04-22"
+SCRIPT_VERSION = "1.1"
+SCRIPT_DATE = "2025-08-14"
 
 def print_header():
     print("\n"+"=" * 77)
@@ -260,6 +260,8 @@ def main():
     total_keyword_dict = {}
     total_mac_dict = {}
     total_ipv6_dict = {}
+    total_subnet_dict = {}
+    total_state = {}
 
     # Process supportconfig files
     logger.info("Scrubbing:")
@@ -282,6 +284,11 @@ def main():
         total_keyword_dict.update(keyword_dict)
         total_mac_dict.update(mac_dict)
         total_ipv6_dict.update(ipv6_dict)
+        if hasattr(file_processor, '_ipv4_subnet_map'):
+            total_subnet_dict = file_processor._ipv4_subnet_map
+        if hasattr(file_processor, '_ipv4_state'):
+            total_state = file_processor._ipv4_state
+
 
     dataset_dict = {
         'ip': total_ip_dict,
@@ -290,7 +297,9 @@ def main():
         'hostname': total_hostname_dict,
         'mac': total_mac_dict,
         'ipv6': total_ipv6_dict,
-        'keyword': total_keyword_dict
+        'keyword': total_keyword_dict,
+        'subnet': total_subnet_dict,    
+        'state': total_state            
     }
 
     Translator.save_datasets(dataset_path, dataset_dict)
