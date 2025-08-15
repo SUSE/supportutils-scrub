@@ -42,33 +42,8 @@ class FileProcessor:
             '# /proc/net/dev': 'network_stats',
             '# /usr/sbin/ethtool': 'ethtool'
         }
-        # Initialize keyword scrubber if not already done
         if self.keyword_scrubber and not self.keyword_scrubber.is_loaded():
             self.keyword_scrubber.load_keywords()
-
-    def pre_analyze_files(self, report_files):
-        """
-        Pre-analyze all network-related files to build topology
-        """
-        print("[✓] Pre-analyzing network topology...")
-        
-        for file_path in report_files:
-            basename = os.path.basename(file_path)
-            
-            # Check if this is a network-related file
-            if any(pattern.replace('*', '') in basename for pattern in self.network_files):
-                try:
-                    self.network_scrubber.analyze_network_file(file_path)
-                except Exception as e:
-                    print(f"[!] Error analyzing {basename}: {e}")
-        
-        # Generate network topology summary
-        topology = self.network_scrubber.network_topology
-        print(f"    Found {len(topology['subnets'])} subnets")
-        print(f"    Found {len(topology['interfaces'])} interfaces")
-        
-        return topology
-        
     
     def process_file(self, file_path, logger: SupportutilsScrubLogger, verbose_flag):
         """
@@ -77,7 +52,6 @@ class FileProcessor:
         Returns:
         - Tuple of dictionaries (ip_dict, domain_dict, user_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict).
         """
-
         ip_dict = {}
         domain_dict = {}
         username_dict = {}
@@ -86,8 +60,6 @@ class FileProcessor:
         mac_dict = {}
         ipv6_dict = {}
 
-
-        # A switch to print a header if file was modified
         obfuscation_occurred = False
 
         BINARY_SA_PATTERN = re.compile(r"^sa\d{8}(\.xz)?$")
@@ -101,115 +73,78 @@ class FileProcessor:
                 print(f"[!] Failed to remove binary file {file_path}: {e} " )
             return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
         
-        is_network_file = any(pattern.replace('*', '') in base_name for pattern in self.network_files)
         is_sar_xz_file  = base_name.startswith("sar") and base_name.endswith(".xz")
-
 
         try:
             if is_sar_xz_file:
                 file_handle = lzma.open(file_path, mode="rt", encoding="utf-8", errors="ignore")
-
             else:
                 file_handle = open(file_path, mode="r", encoding="utf-8", errors="ignore")
 
             with file_handle as file:
-                lines = file.readlines()
+                original_text = file.read()
+            
+            scrubbed_text = original_text
 
-
-            #Scrub IPv6 addresses
-            if self.config.get("obfuscate_public_ip"):
-                original_text = ''.join(lines)
-                new_text, new_ip_map, new_subnet_map, state = self.ip_scrubber.scrub_text(original_text)
-                
-                if new_text != original_text:
-                    obfuscation_occurred = True
-                    lines = new_text.splitlines(keepends=True)
-                
-                # Store mappings
+            # Scrub IPv4 addresses and subnets
+            if self.config.get("obfuscate_public_ip") == 'yes' or self.config.get("obfuscate_private_ip") == 'yes':
+                new_text, new_ip_map, new_subnet_map, state = self.ip_scrubber.scrub_text(scrubbed_text)
                 ip_dict.update(new_ip_map)
                 self._ipv4_subnet_map.update(new_subnet_map)
                 self._ipv4_state = state
+                scrubbed_text = new_text
 
-            for i, line in enumerate(lines):
+            # Scrub IPv6 addresses
+            if self.config.get("obfuscate_ipv6") == 'yes':
+                ipv6_list = IPv6Scrubber.extract_ipv6(scrubbed_text)
+                for ipv6 in ipv6_list:
+                    obfuscated_ipv6 = self.ipv6_scrubber.scrub_ipv6(ipv6)  
+                    ipv6_dict[ipv6] = obfuscated_ipv6
+                    scrubbed_text = scrubbed_text.replace(ipv6, obfuscated_ipv6)
 
-                #Scrub IPv6 addresses
-                if self.config["obfuscate_ipv6"]:
-                    original_line = line
-                    ipv6_list = IPv6Scrubber.extract_ipv6(line)
-                    for ipv6 in ipv6_list:
-                        obfuscated_ipv6 = self.ipv6_scrubber.scrub_ipv6(ipv6)  
-                        ipv6_dict[ipv6] = obfuscated_ipv6
-                        line = line.replace(ipv6, obfuscated_ipv6)
-                        if line != original_line:
-                            obfuscation_occurred = True
+            # Scrub MAC addresses 
+            files_to_skip_mac_scrub = ['modules.txt', 'security-apparmor.txt', 'drbd.txt', 'security-audit.txt']
+            if base_name not in files_to_skip_mac_scrub and self.config.get("obfuscate_mac") == 'yes':
+                scrubbed_text = self.mac_scrubber.scrub(scrubbed_text)
+                mac_dict.update(self.mac_scrubber.mac_dict)
 
-                # Scrub MAC addresses
-                if self.config["obfuscate_mac"]:
-                    original_line = line
-                    mac_list = MACScrubber.extract_mac(line)
-                    for mac in mac_list:
-                        obfuscated_mac = self.mac_scrubber.scrub_mac(mac)  
-                        mac_dict[mac] = obfuscated_mac
-                        line = line.replace(mac, obfuscated_mac)
-                        if line != original_line:
-                            obfuscation_occurred = True                                            
+            # Scrub keywords
+            if self.keyword_scrubber:
+                scrubbed_text, line_keyword_dict = self.keyword_scrubber.scrub(scrubbed_text)
+                keyword_dict.update(line_keyword_dict)
 
-                # Scrub keywords
-                if self.keyword_scrubber:
-                    original_line = line
-                    line, line_keyword_dict = self.keyword_scrubber.scrub(line)
-                    keyword_dict.update(line_keyword_dict)
-                    if line != original_line:
-                        obfuscation_occurred = True
+            # Scrub hostnames
+            if self.config.get("obfuscate_hostname") == 'yes':
+                scrubbed_text = self.hostname_scrubber.scrub(scrubbed_text)
+                hostname_dict.update(self.hostname_scrubber.hostname_dict)
 
+            # Scrub domain names
+            if self.config.get("obfuscate_domain") == 'yes':
+                scrubbed_text = self.domain_scrubber.scrub(scrubbed_text)
+                domain_dict.update(self.domain_scrubber.domain_dict)
 
-                # Scrub hostnames names
-                if self.config["obfuscate_hostname"]:
-                    original_line = line
-    
-                    scrubbed_line = self.hostname_scrubber.scrub(line)
-                    line = scrubbed_line
-                    hostname_dict.update(self.hostname_scrubber.hostname_dict)
-                    if line != original_line:
-                        obfuscation_occurred = True
+            # Scrub usernames
+            if self.config.get("obfuscate_username") == 'yes':
+                scrubbed_text = self.username_scrubber.scrub(scrubbed_text)
+                username_dict.update(self.username_scrubber.username_dict)
 
-                # Scrub domain names
-                if self.config["obfuscate_domain"]:
-                    original_line = line
-                    scrubbed_line = self.domain_scrubber.scrub(line)
-                    line = scrubbed_line
-                    domain_dict.update(self.domain_scrubber.domain_dict)
-                    if line != original_line:
-                        obfuscation_occurred = True
-
-                # Scrub usernames
-                if self.config["obfuscate_username"]:
-                    original_line = line
-                    scrubbed_line = self.username_scrubber.scrub(line)
-                    line = scrubbed_line
-                    username_dict.update(self.username_scrubber.username_dict)
-                    if line != original_line:
-                        obfuscation_occurred = True
-
-
-                # Replace the line in the file with obfuscated content
-                lines[i] = line
-
-            # Write the changes back to the file
-            if obfuscation_occurred:
+            # Write the changes back to the file if any were made
+            if scrubbed_text != original_text:
+                obfuscation_occurred = True
                 header = [
                     "#" + "-" * 93 + "\n",
                     "# INFO: Sensitive information in this file has been obfuscated by supportutils-scrub.\n",
                     "#" + "-" * 93 + "\n\n",
                 ]
+                
+                final_content = "".join(header) + scrubbed_text
 
                 if is_sar_xz_file:
                     with lzma.open(file_path, mode="wt", encoding="utf-8") as out_f:
-                        out_f.writelines(header + lines)
-
+                        out_f.write(final_content)
                 else:
                     with open(file_path, mode="w", encoding="utf-8") as out_f:
-                        out_f.writelines(header + lines)
+                        out_f.write(final_content)
 
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {str(e)}")
