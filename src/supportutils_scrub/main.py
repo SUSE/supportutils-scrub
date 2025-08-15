@@ -287,8 +287,10 @@ def main():
     total_keyword_dict = {}
     total_mac_dict = {}
     total_ipv6_dict = {}
-    total_subnet_dict = {}
+    total_ipv4_subnet_dict = {}
+    total_ipv6_subnet_dict = {}
     total_state = {}
+    total_state6 = {}
 
     # Process supportconfig files
     logger.info("Scrubbing:")
@@ -311,11 +313,15 @@ def main():
         total_keyword_dict.update(keyword_dict)
         total_mac_dict.update(mac_dict)
         total_ipv6_dict.update(ipv6_dict)
+        total_subnet_dict_v6 = {} 
         if hasattr(file_processor, '_ipv4_subnet_map'):
             total_subnet_dict = file_processor._ipv4_subnet_map
         if hasattr(file_processor, '_ipv4_state'):
             total_state = file_processor._ipv4_state
-
+        if hasattr(file_processor, "_ipv6_subnet_map"):
+            total_subnet_dict_v6.update(file_processor._ipv6_subnet_map)
+        if hasattr(file_processor, "_ipv6_state"):
+            total_state6 = file_processor._ipv6_state
 
     dataset_dict = {
         'ip': total_ip_dict,
@@ -326,7 +332,9 @@ def main():
         'ipv6': total_ipv6_dict,
         'keyword': total_keyword_dict,
         'subnet': total_subnet_dict,    
-        'state': total_state            
+        'state': total_state,
+        'subnet6': total_subnet_dict_v6,
+        'state6': total_state6
     }
 
     Translator.save_datasets(dataset_path, dataset_dict)
@@ -368,6 +376,8 @@ def main():
         + len(total_hostname_dict)
         + len(total_ipv6_dict)
         + len(total_keyword_dict)
+        + len(total_subnet_dict)
+        + len(total_subnet_dict_v6)
     )
 
     print("\n------------------------------------------------------------")
@@ -376,10 +386,13 @@ def main():
     print(f"| Files obfuscated          : {total_files_scrubbed}")
     print(f"| Usernames obfuscated      : {len(total_user_dict)}")
     print(f"| IP addresses obfuscated   : {len(total_ip_dict)}")
+    print(f"| IPv4 subnets obfuscated   : {len(total_subnet_dict)}")
     print(f"| MAC addresses obfuscated  : {len(total_mac_dict)}")
     print(f"| Domains obfuscated        : {len(total_domain_dict)}")
     print(f"| Hostnames obfuscated      : {len(total_hostname_dict)}")
     print(f"| IPv6 addresses obfuscated : {len(total_ipv6_dict)}")
+    print(f"| IPv6 subnets obfuscated   : {len(total_subnet_dict_v6)}")
+
     if keyword_scrubber:
         print(f"| Keywords obfuscated       : {len(total_keyword_dict)}")
     print(f"| Total obfuscation entries : {total_obfuscations}")

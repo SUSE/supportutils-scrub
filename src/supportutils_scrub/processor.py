@@ -33,6 +33,8 @@ class FileProcessor:
         self.in_routing_table = False
         self._ipv4_subnet_map = {}
         self._ipv4_state = {}
+        self._ipv6_subnet_map = {}
+        self._ipv6_state = {}
         self.network_files = ['network.txt', 'network-*.txt', 'ip.txt', 'route.txt']
         self.special_sections = {
             '# /sbin/ip addr show': 'ip_config',
@@ -94,16 +96,22 @@ class FileProcessor:
                 self._ipv4_state = state
                 scrubbed_text = new_text
 
-            # Scrub IPv6 addresses
+            #   # Scrub IPv6 addresses 
             if self.config.get("obfuscate_ipv6") == 'yes':
-                ipv6_list = IPv6Scrubber.extract_ipv6(scrubbed_text)
-                for ipv6 in ipv6_list:
-                    obfuscated_ipv6 = self.ipv6_scrubber.scrub_ipv6(ipv6)  
-                    ipv6_dict[ipv6] = obfuscated_ipv6
-                    scrubbed_text = scrubbed_text.replace(ipv6, obfuscated_ipv6)
+                try:
+                    before = scrubbed_text
+                    scrubbed_text, new_ipv6_map, ipv6_subnet_map, state6 = self.ipv6_scrubber.scrub_text(scrubbed_text)
+                    if scrubbed_text != before:
+                        obfuscation_occurred = True
+                    ipv6_dict.update(new_ipv6_map)
+                    self._ipv6_subnet_map.update(ipv6_subnet_map)
+                    self._ipv6_state = state6
+                except Exception as e:
+                    logger.error(f"IPv6 scrub failed for {file_path}: {e}")
+
 
             # Scrub MAC addresses 
-            files_to_skip_mac_scrub = ['modules.txt', 'security-apparmor.txt', 'drbd.txt', 'security-audit.txt']
+            files_to_skip_mac_scrub = ['modules.txt', 'security-apparmor.txt', 'drbd.txt', 'security-audit.txt', 'fs-btrfs.txt']
             if base_name not in files_to_skip_mac_scrub and self.config.get("obfuscate_mac") == 'yes':
                 scrubbed_text = self.mac_scrubber.scrub(scrubbed_text)
                 mac_dict.update(self.mac_scrubber.mac_dict)

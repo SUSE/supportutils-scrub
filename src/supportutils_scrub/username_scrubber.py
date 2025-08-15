@@ -16,7 +16,7 @@ class UsernameScrubber:
         "systemd-network", "tftp", "srvGeoClue", "flatpak", "mysql", "usbmux",
         "avahi", "dnsmasq", "nm-openconnect", "nm-openvpn", "sddm", "ronald",
         "svn", "citrixlog", "salt", "dockremap", "chrony", "laptop", "qemu", "tss",
-        "wsdd", "?", "(unknown)"
+        "wsdd", "gdm", "?", "(unknown)"
     }
 
     def __init__(self, username_dict):
