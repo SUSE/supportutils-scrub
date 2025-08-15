@@ -66,40 +66,67 @@ def parse_args():
     return parser.parse_args()
 
 
-def extract_domains(report_files, additional_domains, mappings):
-    domain_dict = mappings.get('domain', {})
-    domain_counter = len(domain_dict)
-    all_domains = []
 
-    for file in report_files:
-        try:
-            with open(file, 'r', encoding='utf-8', errors='ignore') as f:
-                if 'etc.txt' in file:
-                    domains = DomainScrubber.extract_domains_from_resolv_conf(f, '# /etc/resolv.conf')
-                elif 'network.txt' in file:
-                    domains = DomainScrubber.extract_domains_from_hosts(f, '# /etc/hosts')
-                elif 'nfs.txt' in file:
-                    domains = DomainScrubber.extract_domains_from_section(f, '# /bin/egrep')
-                elif 'ntp.txt' in file:
-                    domains = DomainScrubber.extract_domains_from_section(f, '# /etc/ntp.conf')
-#                elif 'y2log.txt' in file:
-#                    domains = DomainScrubber.extract_domains_from_section(f, '# /var/adm/autoinstall/cache/installedSystem.xml')
-                else:
-                    continue
 
-                all_domains.extend(domains)
-        except Exception as e:
-            logging.error(f"Error reading file {file}: {e}")
+def build_hierarchical_domain_map(all_domains, existing_mappings):
+    """
+    Builds a domain mapping dictionary that preserves parent-child relationships.
+    """
+    valid_domains = {d for d in all_domains if '.' in d}
 
-    all_domains.extend(additional_domains)
+    sorted_domains = sorted(list(valid_domains), key=lambda d: len(d.split('.')))
 
-    for domain in all_domains:
-        if domain not in domain_dict:
-            obfuscated_domain = f"domain_{domain_counter}"
-            domain_dict[domain] = obfuscated_domain
-            domain_counter += 1
+    domain_dict = existing_mappings.get('domain', {})
+    base_domain_counter = len(domain_dict)
+    sub_domain_counter = 0
 
-    return domain_dict
+    for domain in sorted_domains:
+        if domain in domain_dict:
+            continue 
+
+        parts = domain.split('.')
+        parent_domain = '.'.join(parts[1:])
+
+        if parent_domain in domain_dict:
+            obfuscated_sub_part = f"sub_{sub_domain_counter}"
+            sub_domain_counter += 1
+            domain_dict[domain] = f"{obfuscated_sub_part}.{domain_dict[parent_domain]}"
+        else:
+            domain_dict[domain] = f"domain_{base_domain_counter}"
+            base_domain_counter += 1
+
+    return domain_dict 
+
+
+def extract_and_map_domains(report_files, additional_domains, mappings):
+    """
+    Extracts all unique domains from report files and builds the hierarchical map.
+    """
+    all_domains = set()
+
+    for domain in additional_domains:
+        DomainScrubber._add_domain_and_parents(domain, all_domains)
+
+    files_to_scan = {
+        'network.txt': ['# /etc/hosts', '# /etc/resolv.conf'],
+        'nfs.txt': ['# /bin/egrep'],
+        'ntp.txt': ['# /etc/ntp.conf', '# /etc/chrony.conf']
+    }
+
+    for file_path in report_files:
+        basename = os.path.basename(file_path)
+        if basename in files_to_scan:
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    for section in files_to_scan[basename]:
+                        domains_from_section = DomainScrubber.extract_domains_from_file_section(f, section)
+                        all_domains.update(domains_from_section)
+            except Exception as e:
+                logging.error(f"Error reading file {file_path}: {e}")
+
+    domain_map = build_hierarchical_domain_map(all_domains, mappings)
+    return domain_map
+
 
 def extract_hostnames(report_files, additional_hostnames, mappings):
     hostname_dict = mappings.get('hostname', {})
@@ -225,7 +252,7 @@ def main():
     additional_domains = []
     if args.domain:
         additional_domains = re.split(r'[,\s;]+', args.domain)
-    domain_dict = extract_domains(report_files, additional_domains, mappings)
+    domain_dict = extract_and_map_domains(report_files, additional_domains, mappings)
     domain_scrubber = DomainScrubber(domain_dict)
 
     # Extract and build the username dictionary

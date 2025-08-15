@@ -1,100 +1,132 @@
-#domain_scruber.py
+# domain_scrubber.py
 
 import re
+from typing import List, Dict, Iterable, Match
+
+LABEL = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
+DOMAIN_RE = re.compile(rf"(?<![\w-])({LABEL}(?:\.{LABEL})+)(?![\w-])", re.IGNORECASE)
+
+_SINGLE_LABEL_BAN = {
+    "local", "localhost", "internal", "intranet", "corp", "lan", "home",
+    "net", "org", "com", "edu", "gov", "mil", "int", "arpa"
+}
+
+def _norm(d: str) -> str:
+    """Normalizes a domain by stripping whitespace, trailing dots, and converting to lowercase."""
+    return d.strip().rstrip(".").lower()
+
+def _labels_count(d: str) -> int:
+    """Counts the number of labels in a domain."""
+    return _norm(d).count(".") + 1
+
+def _is_valid_domain(d: str) -> bool:
+    """Performs basic validation on a domain string."""
+    d = _norm(d)
+    if "." not in d:                   
+        return False
+    if d in _SINGLE_LABEL_BAN:         
+        return False
+    if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", d):
+        return False
+    parts = d.split(".")
+    if any(len(p) == 0 for p in parts): 
+        return False
+    for p in parts:
+        if len(p) > 63:
+            return False
+        if p.startswith("-") or p.endswith("-"):
+            return False
+        if not re.fullmatch(r"[a-zA-Z0-9-]+", p):
+            return False
+    return True
+
+def _sort_specific_first(domains: Iterable[str]) -> List[str]:
+    """Sorts domains by the number of labels, then by length, to ensure most-specific comes first."""
+    uniq = {_norm(d) for d in domains if _is_valid_domain(d)}
+    return sorted(uniq, key=lambda s: (_labels_count(s), len(s)), reverse=True)
 
 class DomainScrubber:
-    def __init__(self, domain_dict):
-        self.domain_dict = domain_dict
 
-    def scrub(self, text):
-        sorted_domains = sorted(self.domain_dict.keys(), key=len, reverse=True)
 
-        for domain in sorted_domains:
-            escaped = re.escape(domain)
-            # Replace full matches or boundaries (e.g., end of hostname)
-            text = re.sub(rf'\b{escaped}\b', self.domain_dict[domain], text)
-        return text    
+    def __init__(self, domain_dict: Dict[str, str]):
+        # Normalize keys and filter out any invalid domain entries
+        self.domain_dict: Dict[str, str] = {
+            _norm(real): fake
+            for real, fake in (domain_dict or {}).items()
+            if _is_valid_domain(real)
+        }
 
-    @staticmethod
-    def extract_domains_from_section(file_obj, section_start):
-        pattern = r'\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b'
-        excluded_domains = {"suse.com", "www.suse.com", "ntp.drift", "ntp.keys"}
-        domains = set()
+        # Build one compiled regex alternation for all domains, ordered by specificity
+        self._ordered_domains = _sort_specific_first(self.domain_dict.keys())
+        if self._ordered_domains:
+            alternates = "|".join(re.escape(d) for d in self._ordered_domains)
+            # Use a negative lookbehind/ahead for safer boundaries; ignore case
+            self._re = re.compile(rf"(?<![\w-])(?:{alternates})(?![\w-])", re.IGNORECASE)
+        else:
+            self._re = None
 
-        section_found = False
-        for line in file_obj:
-            if section_start in line:
-                section_found = True
-                continue 
-            if section_found and "#==[" in line:
-                break
-            if section_found:
-                found_domains = re.findall(pattern, line)
-                for domain in found_domains:
-                    if domain in excluded_domains:
-                        continue
-                    labels = domain.split(".")
-                    if len(labels) >= 2:
-                        # Drop the first label (hostname), keep remaining as domains
-                        for i in range(1, len(labels) - 1):
-                            domain_segment = ".".join(labels[i:])
-                            domains.add(domain_segment)
-                        domains.add(".".join(labels[1:]))  # Always keep full domain minus host
+    def scrub(self, text: str) -> str:
+        """Replaces all known domains in a block of text using a single regex pass."""
+        if not self._re:
+            return text
 
-        return domains
+        def _replacer(match: Match) -> str:
+            """Callback function for re.sub to find the correct replacement."""
+            found_domain = _norm(match.group(0))
+            return self.domain_dict.get(found_domain, match.group(0))
+
+        return self._re.sub(_replacer, text)
+
 
     @staticmethod
-    def extract_domains_from_hosts(file_obj, section_start):
-        pattern = r'\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b'
-        domains = set()
-        section_found = False
-        for line in file_obj:
-            if section_start in line:
-                section_found = True
+    def extract_domains_from_text(text: str) -> List[str]:
+        """
+        Finds FQDNs in text and extracts only the valid, multi-label domain parts.
+        For example, from 'metadata.google.internal', it extracts 'google.internal'.
+        It also extracts parent domains (e.g., from 'a.b.c.com', it adds 'b.c.com' and 'c.com').
+        """
+        if not text:
+            return []
+
+        all_domain_parts = set()
+        matches = DOMAIN_RE.finditer(text)
+        for m in matches:
+            fqdn = _norm(m.group(1))
+            if not _is_valid_domain(fqdn):
                 continue
-            if section_found and "#==[" in line:
-                break
-            if section_found:
-                parts = line.split()
-                if len(parts) > 2:  # Ensure there are at least two fields after the IP address
-                    for part in parts[1:]:
-                        if '.' in part:
-                            found_domains = re.findall(pattern, part)
-                            for domain in found_domains:
-                                # Split into labels and discard the first segment (hostname)
-                                labels = domain.split('.')
-                                if len(labels) >= 2:
-                                    stripped_domain = '.'.join(labels[1:])  # drop the hostname part
-                                    # Build all subdomains 
-                                    for i in range(len(labels) - 1):
-                                        subdomain = '.'.join(labels[i+1:])
-                                        domains.add(subdomain)
-        return list(domains)
+
+            parts = fqdn.split('.')
+           
+            for i in range(1, len(parts) - 1):
+                parent_domain = '.'.join(parts[i:])
+                if _is_valid_domain(parent_domain):
+                    all_domain_parts.add(parent_domain)
+
+        return _sort_specific_first(all_domain_parts)
 
     @staticmethod
-    def extract_domains_from_resolv_conf(file_obj, section_start):
-        domains = set()
-        section_found = False
-        for line in file_obj:
-            if section_start in line:
-                section_found = True
-                continue
-            if section_found and "#==[" in line:
-                break
-            if section_found:
-                line = line.strip()
-                if line.startswith("search"):
-                    parts = line.split()[1:]  # Skip the 'search' keyword
-                    for part in parts:
-                        segments = part.split('.')
-                        for i in range(len(segments) - 1):
-                            domain_segment = '.'.join(segments[i:])
-                            domains.add(domain_segment)
-                else:
-                    found_domains = re.findall(r'\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b', line)
-                    for domain in found_domains:
-                        segments = domain.split('.')
-                        for i in range(len(segments) - 1):
-                            domain_segment = '.'.join(segments[i:])
-                            domains.add(domain_segment)
-        return list(domains)
+    def extract_domains_from_file_section(file_handle, section_start: str) -> List[str]:
+        """
+        Extracts domains from a specific section of a file, stopping at the next header.
+        """
+        all_domains = set()
+        in_section = False
+        try:
+            file_handle.seek(0)
+            for line in file_handle:
+                stripped_line = line.strip()
+                if stripped_line == section_start:
+                    in_section = True
+                    continue
+                
+                if in_section and stripped_line.startswith("#"):
+                    break # Reached the next section header
+                
+                if in_section:
+                    # Ignore comments on the same line
+                    content = line.split("#", 1)[0]
+                    all_domains.update(DomainScrubber.extract_domains_from_text(content))
+        except Exception:
+            # Silently ignore errors like file not seekable, etc.
+            pass
+        return _sort_specific_first(all_domains)
