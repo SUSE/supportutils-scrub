@@ -8,6 +8,7 @@ import argparse
 import time
 import pwd
 import shutil
+import subprocess
 from datetime import datetime
 from supportutils_scrub.config import DEFAULT_CONFIG_PATH
 from supportutils_scrub.config_reader import ConfigReader
@@ -23,6 +24,7 @@ from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.processor import FileProcessor
+from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
 
 SCRIPT_VERSION = "1.1"
 SCRIPT_DATE = "2025-08-14"
@@ -52,7 +54,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Obfuscate SUSE supportconfig archives by masking sensitive data."
     )
-    parser.add_argument("supportconfig_path", help="Path to .txz archive or extracted folder")
+    
+    parser.add_argument("supportconfig_path", nargs="?", help="Path to .txz archive or extracted folder")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH,
                         help="Path to config file (defaults provided)")
     parser.add_argument("--verbose", action="store_true",
@@ -63,6 +66,18 @@ def parse_args():
     parser.add_argument("--hostname", help="Additional hostnames to obfuscate")
     parser.add_argument("--keyword-file", help="File containing keywords to obfuscate")
     parser.add_argument("--keywords", help="Additional keywords to obfuscate")
+    parser.add_argument("--rewrite-pcap", action="store_true",
+               help="Rewrite one or more pcap files using mappings (IPv4/IPv6 subnet-aware).")
+    parser.add_argument("--pcap-in", nargs="+", metavar="PCAP",
+               help="Input pcap(s) to rewrite (requires --rewrite-pcap).")
+    parser.add_argument("--pcap-out-dir", default=".", metavar="DIR",
+               help="Directory for rewritten pcaps (default: current dir).")
+    parser.add_argument("--print-tcprewrite", action="store_true",
+               help="Print the exact tcprewrite commands executed.")
+    parser.add_argument("--tcprewrite-path", default="tcprewrite",
+               help="Path to tcprewrite binary (default: 'tcprewrite').")
+
+
     return parser.parse_args()
 
 
@@ -192,15 +207,49 @@ def main():
     # Initialize the logger
     logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
 
+
+    if args.rewrite_pcap and not args.supportconfig_path:
+        if not args.mappings or not args.pcap_in:
+            print("[!] For --rewrite-pcap without a supportconfig, provide --mappings and --pcap-in")
+            sys.exit(2)
+        mappings = json.load(open(args.mappings))
+        rewrite_pcaps_with_tcprewrite(
+            mappings, args.pcap_in, args.pcap_out_dir,
+            tcprewrite=args.tcprewrite_path,
+            print_cmd=args.print_tcprewrite,
+            logger=logger,
+        )
+        return
+
     dataset_dir = '/var/tmp'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     unique_name = f"obfuscation_mappings_{timestamp}.json"
     dataset_path = os.path.join(dataset_dir, unique_name)
 
+
+
     # Use the ConfigReader class to read the configuration
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(config_path)
 
+    if args.rewrite_pcap:
+        if not args.pcap_in:
+            print("[!] --rewrite-pcap needs --pcap-in PCAP(s)")
+            sys.exit(2)
+        mapping_src_path = args.mappings or dataset_path
+        try:
+            mappings_for_pcap = json.load(open(mapping_src_path))
+        except Exception as e:
+            print(f"[!] Failed to read mappings for pcap rewrite from {mapping_src_path}: {e}")
+            sys.exit(2)
+
+        rewrite_pcaps_with_tcprewrite(
+            mappings_for_pcap, args.pcap_in, args.pcap_out_dir,
+            tcprewrite=args.tcprewrite_path,
+            print_cmd=args.print_tcprewrite,
+            logger=logger,
+        )
+        
     # Load mappings from JSON file if provided
     mappings = {}
     mapping_keywords = []
@@ -313,15 +362,16 @@ def main():
         total_keyword_dict.update(keyword_dict)
         total_mac_dict.update(mac_dict)
         total_ipv6_dict.update(ipv6_dict)
-        total_subnet_dict_v6 = {} 
+        total_ipv4_subnet_dict = {}
+        total_ipv6_subnet_dict = {}
+
         if hasattr(file_processor, '_ipv4_subnet_map'):
-            total_subnet_dict = file_processor._ipv4_subnet_map
+            total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
         if hasattr(file_processor, '_ipv4_state'):
             total_state = file_processor._ipv4_state
         if hasattr(file_processor, "_ipv6_subnet_map"):
-            total_subnet_dict_v6.update(file_processor._ipv6_subnet_map)
-        if hasattr(file_processor, "_ipv6_state"):
-            total_state6 = file_processor._ipv6_state
+           total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
+
 
     dataset_dict = {
         'ip': total_ip_dict,
@@ -331,10 +381,9 @@ def main():
         'mac': total_mac_dict,
         'ipv6': total_ipv6_dict,
         'keyword': total_keyword_dict,
-        'subnet': total_subnet_dict,    
+        'subnet': total_ipv4_subnet_dict,    
         'state': total_state,
-        'subnet6': total_subnet_dict_v6,
-        'state6': total_state6
+        'ipv6_subnet': total_ipv6_subnet_dict
     }
 
     Translator.save_datasets(dataset_path, dataset_dict)
@@ -376,8 +425,8 @@ def main():
         + len(total_hostname_dict)
         + len(total_ipv6_dict)
         + len(total_keyword_dict)
-        + len(total_subnet_dict)
-        + len(total_subnet_dict_v6)
+        + len(total_ipv4_subnet_dict)
+        + len(total_ipv6_subnet_dict)
     )
 
     print("\n------------------------------------------------------------")
@@ -386,12 +435,12 @@ def main():
     print(f"| Files obfuscated          : {total_files_scrubbed}")
     print(f"| Usernames obfuscated      : {len(total_user_dict)}")
     print(f"| IP addresses obfuscated   : {len(total_ip_dict)}")
-    print(f"| IPv4 subnets obfuscated   : {len(total_subnet_dict)}")
+    print(f"| IPv4 subnets obfuscated   : {len(total_ipv4_subnet_dict)}")
     print(f"| MAC addresses obfuscated  : {len(total_mac_dict)}")
     print(f"| Domains obfuscated        : {len(total_domain_dict)}")
     print(f"| Hostnames obfuscated      : {len(total_hostname_dict)}")
     print(f"| IPv6 addresses obfuscated : {len(total_ipv6_dict)}")
-    print(f"| IPv6 subnets obfuscated   : {len(total_subnet_dict_v6)}")
+    print(f"| IPv6 subnets obfuscated   : {len(total_ipv6_subnet_dict)}")
 
     if keyword_scrubber:
         print(f"| Keywords obfuscated       : {len(total_keyword_dict)}")
