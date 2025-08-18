@@ -13,7 +13,10 @@ MULTICAST   = ipaddress.IPv6Network("ff00::/8")
 LINK_LOCAL  = ipaddress.IPv6Network("fe80::/10")
 ULA         = ipaddress.IPv6Network("fc00::/7")
 
-FAKE_POOL   = ipaddress.IPv6Network("2001:db8::/32")  
+FAKE_POOL_DB8   = ipaddress.IPv6Network("2001:db8::/32")  
+FAKE_POOL_ULA = ipaddress.IPv6Network("fd00::/8") 
+GLOBAL_UNICAST = ipaddress.IPv6Network("2000::/3")
+
 
 class IPv6Scrubber:
     """
@@ -48,20 +51,35 @@ class IPv6Scrubber:
     def _skip_scope(self, ip: ipaddress.IPv6Address) -> bool:
         if ip in UNSPECIFIED or ip in LOOPBACK or ip in MULTICAST:
             return True
+
         if (ip in LINK_LOCAL) and not self._flag('obfuscate_ipv6_linklocal', 'no'):
             return True
         if (ip in ULA) and not self._flag('obfuscate_ipv6_ula', 'no'):
             return True
-        return False
+
+        if (ip in GLOBAL_UNICAST):
+            return False
+        if (ip in ULA) and self._flag('obfuscate_ipv6_ula', 'no'):
+            return False
+        if (ip in LINK_LOCAL) and self._flag('obfuscate_ipv6_linklocal', 'no'):
+            return False
+
+        return True
+
+    
+    def _pick_pool(self, prefixlen: int) -> ipaddress.IPv6Network:
+
+        return FAKE_POOL_ULA if prefixlen <= 48 else FAKE_POOL_DB8
 
     def _alloc_fake_subnet(self, prefixlen: int) -> ipaddress.IPv6Network:
-        """Allocate a non-overlapping fake subnet inside 2001:db8::/32."""
-        if prefixlen < FAKE_POOL.prefixlen:
-            prefixlen = FAKE_POOL.prefixlen
+        pool = self._pick_pool(prefixlen)
 
-        step = 1 << (128 - prefixlen)
-        start = int(FAKE_POOL.network_address)
-        end   = int(FAKE_POOL.broadcast_address) + 1
+        if prefixlen < pool.prefixlen:
+            prefixlen = pool.prefixlen
+
+        step  = 1 << (128 - prefixlen)
+        start = int(pool.network_address)
+        end   = int(pool.broadcast_address) + 1
 
         cur = self._pool_cursor
         tried = 0
@@ -76,7 +94,9 @@ class IPv6Scrubber:
                 return cand
             cur += step
             tried += 1
-        raise RuntimeError(f"IPv6 fake pool {FAKE_POOL} exhausted for /{prefixlen}")
+
+        raise RuntimeError(f"IPv6 fake pool {pool} exhausted for /{prefixlen}")
+
 
     def _get_or_create_fake_subnet(self, real_net: ipaddress.IPv6Network) -> ipaddress.IPv6Network:
         if real_net in self._subnet_map:
@@ -87,11 +107,11 @@ class IPv6Scrubber:
 
     def _choose_mapping_prefix(self, ip: ipaddress.IPv6Address, explicit_pfx: Optional[int]) -> int:
         """
-        Choose the prefixlen to anchor the mapping. Prefer explicit prefix from
-        the text; otherwise default to /64, which is standard for host subnets.
+        Prefer explicit prefix from the text, but never anchor broader than /48.
+        Otherwise default to /64 (typical host subnets).
         """
         if explicit_pfx is not None and 0 <= explicit_pfx <= 128:
-            return explicit_pfx
+            return max(48, explicit_pfx) 
         return 64
 
     def _map_in_known_subnets(self, ip: ipaddress.IPv6Address) -> Optional[str]:
