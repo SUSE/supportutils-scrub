@@ -1,44 +1,62 @@
 # supportutils-scrub
 
-**supportutils-scrub** is a Python-based tool designed to mask sensitive or unwanted information from SUSE supportconfig tarballs. This tool assists users and organizations in aligning with data protection policies, privacy requirements, and GDPR compliance standards.
+**supportutils-scrub** is a Python-based tool designed to mask sensitive or unwanted information from SUSE supportconfig tarballs and network packet captures. This tool assists users and organizations in aligning with data protection policies, privacy requirements, and GDPR compliance standards.
 
 ## Features
+
 - **Comprehensive Data Obfuscation**: Obfuscates sensitive information such as IP addresses (both IPv4 and IPv6), domain names, usernames, hostnames, MAC addresses, and keywords.
-- **Consistency Across Runs**: Utilizes obfuscation mappings to ensure consistent data obfuscation across multiple supportconfig files.
+- **Subnet-Aware IP Mapping** (v1.1+): Maps whole subnets to fake subnets while preserving host offsets (e.g., gateway .1 remains .1), maintaining meaningful routing and topology for troubleshooting.
+- **TcpDump PCAP Obfuscation** (v1.1+): Rewrites packet captures using the same subnet-aware mappings as logs, ensuring consistency across different data types.
+- **Consistency Across Runs**: Utilizes obfuscation mappings to ensure consistent data obfuscation across multiple supportconfig files and pcap files.
 - **Configurable**: Offers a variety of command-line options and supports a customizable configuration file for tailored scrubbing operations.
+- **tcprewrite Integration**: Exports mappings compatible with tcprewrite tool for consistent pcap file obfuscation.
 
 ## Installation
 
 ### 1. RPM Installation
+
 To install and set up the `supportutils-scrub` tool for testing and development, you can find the rpms here:
- [https://build.opensuse.org/package/show/home:ronald_pina/supportutils-scrub]
+[https://build.opensuse.org/package/show/home:ronald_pina/supportutils-scrub](https://build.opensuse.org/package/show/home:ronald_pina/supportutils-scrub)
 
 ### 2. Install with pip
-    git clone  git clone https://github.com/SUSE/supportutils-scrub 
-    cd supportutils-scrub
-    pip install .
+
+```bash
+git clone https://github.com/SUSE/supportutils-scrub 
+cd supportutils-scrub
+pip install .
+```
 
 ### 3. Using the Git folder
-     git clone https://github.com/SUSE/supportutils-scrub
-     cd supportutils-scrub
-     export PYTHONPATH=$PWD/src:$PYTHONPATH
-     ./bin/supportutils-scrub /var/log/scc_zitrone_250416_1330.txz  --verbose
-     
+
+```bash
+git clone https://github.com/SUSE/supportutils-scrub
+cd supportutils-scrub
+export PYTHONPATH=$PWD/src:$PYTHONPATH
+./bin/supportutils-scrub /var/log/scc_terminus_250814_1549.txz  --verbose
+```
+
 ## Usage
 
 The supportutils-scrub tool processes a specified supportconfig tarball or directory, creating an obfuscated version. The original data remains untouched unless otherwise specified.
 
-```bash
- supportutils-scrub /var/log/scc_zitrone_250416_1330.txz     --verbose \
-                                                              --username ron,alex \
-                                                              --hostname zitrone,terminus
-                                                              --domain suse.de,example.com 
-                                                              --keywords linux,ronald
+### Basic Supportconfig Obfuscation
 
+```bash
+'#' supportutils-scrub /var/log/scc_terminus_250814_1549.txz  \
+     --verbose  \
+     --domain "corp.local,suse.com"  \
+     --hostname "db-prod-01,app-server"  \
+     --username "ron,admin"   \
+     --keywords "ProjectX,CustomerBeta,SecretDevice"
+    
+```
+
+**Output:**
+```
 =============================================================================
           Obfuscation Utility - supportutils-scrub
-               Script Version : 1.0.0       
-                 Release Date : 2025-04-18  
+                      Version : 1.1         
+                 Release Date : 2025-08-14  
 
  supportutils-scrub is a python based tool that masks sensitive
  information from SUSE supportconfig tarballs. It replaces data such as
@@ -48,115 +66,253 @@ The supportutils-scrub tool processes a specified supportconfig tarball or direc
  reused to keep consistent results across multiple supportconfigs.
 =============================================================================
 
-[!] Configuration file not found: /etc/supportutils-scrub/supportutils-scrub.conf
-    → Using built-in default settings.
-[✓] Archive extracted to: /var/log/scc_zitrone_250416_1330_scrubbed
+[✓] Loading keywords from file: /tmp/keywords.txt
+[✓] Archive extracted to: /var/log/scc_terminus_250814_1549_scrubbed
 INFO: Scrubbing:
-    basic-environment.txt
-    basic-health-check.txt
-    boot.txt
-    bpf.txt
-    cimom.txt
-    crash.txt
-    sa20250416 [binary] (skipped)
-    ...
-[✓] Scrubbed archive written to: /var/log/scc_zitrone_250416_1330_scrubbed.txz
-[✓] Mapping file saved to:       /var/tmp/obfuscation_mappings.json
-
---- Obfuscated Mapping Preview ---
-{
-    "ip": {
-        "10.203.195.4": "42.42.1.2",
-        "10.203.192.91": "42.42.2.3",
-        "10.203.192.94": "42.42.3.4",
-        "0.0.0.0": "42.42.4.5",
-        "169.254.169.254": "42.42.5.6",
-        "127.0.0.1": "42.42.6.7",
-  },
-    "domain": {
-        "sap.local": "domain_0",
-        "google.local": "domain_1",
-        "customer.com": "domain_2",
-        "abc-org-sap.local": "domain_3",
-        "tec-prj-sap.local": "domain_4",
-        "suse.de": "domain_5",
-        "example.com": "domain_6",
-    },
-    "user": {
-        "ron": "user_0",
-        "alex": "user_1",
-        "nobody": "user_2",
-        "root": "user_3",
-        "a3padm": "user_4",
-        "i3padm": "user_5",
-        "admin_tec": "user_6",
-    },
-    "hostname": {
-        "metadata": "hostname_0",
-        "tec1128": "hostname_1",
-        "albew7": "hostname_2",
-        "ARPD3": "hostname_3",
-        "TNSV3": "hostname_4",
-        "smt-gce": "hostname_15",
-        "zitrone": "hostname_16",
-        "terminus": "hostname_17",
-    ...
-    },
-    "mac": {
-        "04:7b:cb:68:bc:e5": "00:1A:2B:01:02:03",
-        "88:a4:c2:d6:1a:9c": "00:1A:2B:02:03:04",
-        "02:42:e3:e7:9b:8e": "00:1A:2B:03:04:05",
-        "00:00:00:00:00:00": "00:00:00:00:00:00",
-        "38:d5:7a:44:42:bf": "00:1A:2B:04:05:06",
-        "02:42:08:c6:18:c3": "00:1A:2B:05:06:07",
-        "cc:d3:c1:f6:5e:bf": "00:1A:2B:06:07:08",
-        "00:09:0f:09:00:1e": "00:1A:2B:07:08:09",
-        "33:33:00:00:00:01": "00:1A:2B:08:09:0A",
-        "52:54:00:1a:97:48": "00:1A:2B:12:13:14"
-    },
-    "ipv6": {
-        "2a01:4f8:1c0c:44b8::2": "2001:0db8:85a3::0:1:2",
-        "2a05:d014:fc5:9a00:38e:25ed:3c41:88ec": "2001:0db8:85a3::1:2:3",
-        "fe80::19fa:6a99:15db:bc09": "2001:0db8:85a3::2:3:4",
-        "2001:9e8:3d3f:9b00:847c:ba7c:cc93:39c": "2001:0db8:85a3::3:4:5",
-        "fd00::7642:7fff:fe91:5a8": "2001:0db8:85a3::4:5:6",
-        "2001:9e8:3d3f:9b00:7642:7fff:fe91:5a8": "2001:0db8:85a3::5:6:7",
-        "2001:9e8:3d3f:9b00:8c9:68a1:9949:c6cc": "2001:0db8:85a3::6:7:8",
-        "fd00::2dfa:bef0:de32:689b": "2001:0db8:85a3::7:8:9",
-        "fd00::f6ad:1c64:4a39:2a6b": "2001:0db8:85a3::8:9:a",
-        "2001:9e8:3d08:1d00:5d0c:7ec3:2a98:d6f4": "2001:0db8:85a3::9:a:b",
-        "2a00:1450:4001:0829:0000:0000:0000:200e": "2001:0db8:85a3::45:46:47",
-        "2001:4860:4860:0000:0000:0000:0000:8844": "2001:0db8:85a3::46:47:48",
-        "2a00:1450:4001:082b:0000:0000:0000:200a": "2001:0db8:85a3::47:48:49"
-    },
-    "keyword": {
-        "applicationx": "xxxxxxx",
-        "google": "xxxxxxxx"
-    },
-}
+        basic-environment.txt
+        basic-health-check.txt
+        boot.txt
+        network.txt
+        [... additional files ...]
 
 ------------------------------------------------------------
  Obfuscation Summary
 ------------------------------------------------------------
-| Files obfuscated          : 90
-| Usernames obfuscated      : 5
-| IP addresses obfuscated   : 161
-| MAC addresses obfuscated  : 20
-| Domains obfuscated        : 23
-| Hostnames obfuscated      : 27
-| IPv6 addresses obfuscated : 57
+| Files obfuscated          : 72
+| Usernames obfuscated      : 1
+| IP addresses obfuscated   : 20
+| MAC addresses obfuscated  : 86
+| Domains obfuscated        : 7
+| Hostnames obfuscated      : 2
+| IPv6 addresses obfuscated : 44
 | Keywords obfuscated       : 2
-| Total obfuscation entries : 295
-| Size                      : 3.93 MB
+| Total obfuscation entries : 162
+| Size                      : 1.97 MB
 | Owner                     : root
-| Output archive            : /var/log/scc_zitrone_250416_1330_scrubbed.txz
-| Mapping file              : /var/tmp/obfuscation_mappings.json
+| Output archive            : /var/log/scc_terminus_250814_1549_scrubbed.txz
+| Mapping file              : /var/tmp/obfuscation_mappings_20250815_125900.json
+| Keyword file              : /tmp/keywords.txt
 ------------------------------------------------------------
 
  The obfuscated supportconfig has been successfully created. Please review
  its contents to ensure that all sensitive information has been properly
  obfuscated. If some values or keywords were not obfuscated automatically,
  you can manually add them using the keyword obfuscation option.
-=============================================================================
 
 ```
+
+### PCAP Obfuscation with tcprewrite (v1.1+)
+
+From version 1.1, `supportutils-scrub` can also rewrite packet captures using the same **subnet-aware** mappings it used for your logs:
+
+#### Features
+
+* **Subnet aware:** Whole IPv4 subnets are mapped to fake subnets (host offsets preserved: e.g., `.1` stays `.1`)
+* **Consistent topology:** Routing/masks remain meaningful for troubleshooting
+* **Most-specific wins:** Overlapping rules are applied longest-prefix-first
+* **Safe by default:** The original pcap is never modified; a new `*_scrubbed.pcap` is written
+
+**Note:** `tcprewrite` does *not* support per-host one-to-one lists; it uses subnet/range rules. The tool exports and uses the `subnet` section from your mapping JSON.
+
+#### Requirements
+
+* Install `tcprewrite` (package: `tcpreplay`)
+* Prefer pcaps captured on a **specific interface** (e.g., `-i eth0`), not `-i any`. The `any` device can produce an unsupported link type (DLT) for `tcprewrite`
+
+#### Quick Usage
+
+```bash
+# Rewrite one or more pcaps using an existing mapping file
+supportutils-scrub \
+  --rewrite-pcap \
+  --mappings /var/tmp/obfuscation_mappings_20250815_125900.json \
+  --pcap-in /var/log/trace.pcap /var/log/trace2.pcap \
+  --pcap-out-dir /var/log/ \
+  --print-tcprewrite
+```
+
+The tool prints a **structured summary** so you can verify translations before/after:
+
+```
+[INFO] Using --rewrite-pcap: original pcaps will remain untouched;
+       rewritten copies are saved with suffix _scrubbed.pcap in the chosen output directory.
+
+=== PCAP rewrite mode (IPv4 only) ===
+- Input files      : trace.pcap trace2.pcap
+- Output directory : /var/log/
+- IPv4 rules found : 22
+
+IPv4 subnet rewrite rules (most-specific first):
+  192.168.100.0/31  ->  100.112.2.0/31
+  88.99.86.0/24     ->  198.18.4.0/24
+  3.121.254.0/24    ->  198.18.2.0/24
+  192.168.122.0/24  ->  100.112.1.0/24
+  192.168.100.0/24  ->  100.112.0.0/24
+  188.174.253.0/24  ->  198.18.5.0/24
+  16.2.13.0/24      ->  198.18.6.0/24
+  148.251.5.0/24    ->  198.18.0.0/24
+  144.76.76.0/24    ->  198.18.1.0/24
+  129.70.132.0/24   ->  198.18.3.0/24
+  10.168.6.0/24     ->  100.80.4.0/24
+  ...
+[✓] Rewrote pcap file:: /var/log/trace_scrubbed.pcap
+```
+
+With `--print-tcprewrite`, you'll also see the **exact command** the wrapper runs (single, consolidated `--srcipmap/--dstipmap` with all rules ordered most-specific first).
+
+### Maintaining Consistency Across Multiple Supportconfigs and HA Clusters
+
+When working with clusters or collecting multiple supportconfigs over time, use the `--mappings` flag to ensure data is replaced consistently:
+
+```bash
+# First run on node1, creates a mapping file
+supportutils-scrub /var/log/scc_erphana01a_250411_1640.txz
+
+# Second run on node2, or subsequent runs, reuse the same mappings (from node1) for consistency 
+supportutils-scrub /var/log/scc_erphana02a_250813_1211.txz \
+    --mappings /var/tmp/obfuscation_mappings_20250815_125900.json
+
+# Rewrite associated pcap files using the same mappings
+supportutils-scrub \
+    --rewrite-pcap \
+    --mappings /var/tmp/obfuscation_mappings_20250815_125900.json \
+    --pcap-in /var/log/node1.pcap /var/log/node2.pcap \
+    --pcap-out-dir /var/log/
+```
+
+## Command-Line Options
+
+### Supportconfig Processing Options
+
+- `supportconfig_path`: Path to .txz archive or extracted folder
+- `--config PATH`: Path to configuration file (defaults to `/etc/supportutils-scrub/supportutils-scrub.conf`)
+- `--verbose`: Enable verbose output
+- `--mappings FILE`: JSON file with prior obfuscation mappings for consistency
+- `--username USERNAMES`: Additional usernames to obfuscate (comma/semicolon/space-separated)
+- `--hostname HOSTNAMES`: Additional hostnames to obfuscate (comma/semicolon/space-separated)
+- `--domain DOMAINS`: Additional domains to obfuscate (comma/semicolon/space-separated)
+- `--keywords KEYWORDS`: Additional keywords to obfuscate (comma/semicolon/space-separated)
+- `--keyword-file FILE`: File containing keywords to obfuscate (one per line)
+
+###  TCPdumps PCAP Processing Options (v1.1+)
+
+- `--rewrite-pcap`: Enable PCAP rewriting mode
+- `--pcap-in FILES`: Input PCAP file(s) to obfuscate
+- `--pcap-out-dir DIR`: Output directory for obfuscated PCAPs (defaults to current directory)
+- `--print-tcprewrite`: Print the exact tcprewrite command being executed
+
+## Configuration File
+
+Default configuration: `/etc/supportutils-scrub/supportutils-scrub.conf`
+
+```ini
+obfuscate_private_ip = no     # Set 'yes' to obfuscate private IPs
+obfuscate_public_ip = yes
+obfuscate_domain = yes
+obfuscate_username = yes
+obfuscate_hostname = yes
+obfuscate_mac = yes
+obfuscate_ipv6 = yes
+```
+
+**Note:** By default, private IP addresses are NOT obfuscated. To enable private IP obfuscation, set `obfuscate_private_ip = yes`.
+
+## Mapping File Structure
+
+The mapping file (`/var/tmp/obfuscation_mappings_*.json`) contains all translation mappings:
+
+```json
+
+{
+    "ip": {
+        "10.168.196.180": "100.80.0.180",
+        "148.251.5.46": "198.18.0.46",
+        "10.149.243.198": "100.80.1.198",
+        "192.168.100.128": "100.112.0.128",
+        "144.76.76.107": "198.18.1.107",
+        "10.100.219.70": "100.80.2.70",
+        "10.168.199.254": "100.80.3.254"
+    },
+    "domain": {
+        "corp.local": "domain_0",
+        "suse.com": "domain_1",
+        "suse.org": "domain_2",
+        "new.suse.org": "sub_0.domain_2",
+        "lab.new.suse.org": "sub_1.sub_0.domain_2"
+    },
+    "user": {
+        "ron": "user_0",
+        "admin": "user_1"
+    },
+    "hostname": {
+        "hammer": "hostname_0",
+        "terminus": "hostname_1",
+        "db-prod-01": "hostname_2",
+        "app-server": "hostname_3"
+    },
+    "mac": {
+        "52:54:00:9a:c4:ad": "00:1A:2B:00:00:00",
+        "52:54:00:95:95:72": "00:1A:2B:00:00:01",
+        "52:54:00:36:aa:7a": "00:1A:2B:00:00:02",
+        "52:54:00:30:29:6e": "00:1A:2B:00:00:03",
+        "52:54:00:c5:6a:11": "00:1A:2B:00:00:04",
+        "52:54:00:1d:dd:ae": "00:1A:2B:00:00:05",
+    },
+    "ipv6": {
+        "2a07:de40:a102:6::": "2001:db8::",
+        "2a07:de40:a102:6:1618:77ff:fe43:a6bb": "2001:db8::1618:77ff:fe43:a6bb",
+        "2a07:de40:a102:6:c7b7:c8c9:244:f284": "2001:db8::c7b7:c8c9:244:f284",
+        "2a07:de40:a102:6:efc7:b3be:6a28:4ec2": "2001:db8::efc7:b3be:6a28:4ec2",
+        "2a07:de40:a102:6:83aa:ccb4:dc8f:1322": "2001:db8::83aa:ccb4:dc8f:1322",
+        "2a07:de40:a102:6:1444:4a70:7714:eba0": "2001:db8::1444:4a70:7714:eba0",
+    },
+    "keyword": {},
+    "subnet": {
+        "10.168.196.0/24": "100.80.0.0/24",
+        "148.251.5.0/24": "198.18.0.0/24",
+        "10.149.243.0/24": "100.80.1.0/24",
+        "192.168.100.0/24": "100.112.0.0/24",
+        "144.76.76.0/24": "198.18.1.0/24",
+        "10.100.219.0/24": "100.80.2.0/24",
+        "10.168.199.0/24": "100.80.3.0/24",
+        "10.149.212.0/24": "100.80.5.0/24",
+        "10.100.210.0/24": "100.80.6.0/24",
+        "129.70.132.0/24": "198.18.3.0/24",
+        "10.145.56.0/24": "100.80.16.0/24",
+        "88.99.86.0/24": "198.18.4.0/24",
+        "188.174.253.0/24": "198.18.5.0/24",
+    },
+    "state": {
+        "pool_cursor_public": 1792,
+        "pool_cursor_priv10": 4352,
+        "pool_cursor_priv172": 0,
+        "pool_cursor_priv192_168": 514,
+        "pool_cursor_linklocal": 0
+    },
+    "ipv6_subnet": {
+        "2a07:de40:a102:6::/64": "2001:db8::/64",
+        "2a07:de40:b204:2::/64": "2001:db8:0:1::/64"
+    }
+}
+
+
+**IMPORTANT:** NEVER share the mapping file with SUSE Support or any third party. This file contains the translation between obfuscated and real data and must remain private.
+
+## Data Sovereignty and Security
+
+- **Customer responsibility:** The obfuscation process is the customer's responsibility. Always review the obfuscated output to ensure all sensitive data is properly masked before sharing.
+- **Data sovereignty compliance:** This tool supports SUSE's commitment to digital sovereignty by enabling customers to maintain control over their sensitive data while still receiving technical support.
+- **Keyword obfuscation:** Use `--keywords` or `--keyword-file` to remove additional sensitive strings. Keywords are replaced even within words (substring matching).
+
+## License
+
+This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; version 2 of the License.
+
+## Author
+
+Ronald Pina <ronald.pina@suse.com>
+
+## See Also
+
+- [supportconfig](https://github.com/openSUSE/supportutils)
+- [tcpreplay/tcprewrite](https://tcpreplay.appneta.com/)
