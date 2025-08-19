@@ -42,7 +42,7 @@ The supportutils-scrub tool processes a specified supportconfig tarball or direc
 ### Basic Supportconfig Obfuscation
 
 ```bash
-\# supportutils-scrub /var/log/scc_terminus_250814_1549.txz  \
+'#' supportutils-scrub /var/log/scc_terminus_250814_1549.txz  \
      --verbose  \
      --domain "corp.local,suse.com"  \
      --hostname "db-prod-01,app-server"  \
@@ -231,7 +231,7 @@ The mapping file (`/var/tmp/obfuscation_mappings_*.json`) contains all translati
         "192.168.100.128": "100.112.0.128",
         "144.76.76.107": "198.18.1.107",
         "10.100.219.70": "100.80.2.70",
-        "10.168.199.254": "100.80.3.254",
+        "10.168.199.254": "100.80.3.254"
     },
     "domain": {
         "corp.local": "domain_0",
