@@ -13,10 +13,31 @@
 
 ## Installation
 
+
+
 ### 1. RPM Installation
 
-To install and set up the `supportutils-scrub` tool for testing and development, you can find the rpms here:
-[https://build.opensuse.org/package/show/home:ronald_pina/supportutils-scrub](https://build.opensuse.org/package/show/home:ronald_pina/supportutils-scrub)
+The `supportutils-scrub` package is available from the Open Build Service. Choose the appropriate repository for your distribution:
+
+#### openSUSE Leap 15.6 / SLE 15 SP6
+```bash
+zypper addrepo https://download.opensuse.org/repositories/home:ronald_pina/15.6/home:ronald_pina.repo
+zypper refresh
+zypper install supportutils-scrub
+```
+
+#### openSUSE Leap 15.X / SLE 15 SPX (Generic for any 15.x version)
+Replace `15.X` with your specific version (e.g., 15.5, 15.4, 15.3):
+```bash
+zypper addrepo https://download.opensuse.org/repositories/home:ronald_pina/15.X/home:ronald_pina.repo
+zypper refresh
+zypper install supportutils-scrub
+```
+
+#### Direct Downloads and Other Distributions
+For direct RPM downloads or other distributions, visit the Open Build Service page:
+[https://build.opensuse.org/package/show/home:ronald_pina/supportutils-scrub]
+
 
 ### 2. Install with pip
 
@@ -98,8 +119,6 @@ INFO: Scrubbing:
  its contents to ensure that all sensitive information has been properly
  obfuscated. If some values or keywords were not obfuscated automatically,
  you can manually add them using the keyword obfuscation option.
- =============================================================================
-
 
 ```
 
@@ -136,8 +155,6 @@ supportutils-scrub \
 The tool prints a **structured summary** so you can verify translations before/after:
 
 ```
-=============================================================================
-
 [INFO] Using --rewrite-pcap: original pcaps will remain untouched;
        rewritten copies are saved with suffix _scrubbed.pcap in the chosen output directory.
 
@@ -299,7 +316,6 @@ The mapping file (`/var/tmp/obfuscation_mappings_*.json`) contains all translati
     }
 }
 
-```
 
 **IMPORTANT:** NEVER share the mapping file with SUSE Support or any third party. This file contains the translation between obfuscated and real data and must remain private.
 
