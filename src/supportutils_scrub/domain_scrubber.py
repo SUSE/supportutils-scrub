@@ -1,7 +1,7 @@
 # domain_scrubber.py
 
 import re
-from typing import List, Dict, Iterable, Match
+from typing import Set, Dict, List, Optional, Tuple, Iterable, Match
 
 LABEL = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
 DOMAIN_RE = re.compile(rf"(?<![\w-])({LABEL}(?:\.{LABEL})+)(?![\w-])", re.IGNORECASE)
@@ -120,13 +120,29 @@ class DomainScrubber:
                     continue
                 
                 if in_section and stripped_line.startswith("#"):
-                    break # Reached the next section header
+                    break 
                 
                 if in_section:
-                    # Ignore comments on the same line
                     content = line.split("#", 1)[0]
                     all_domains.update(DomainScrubber.extract_domains_from_text(content))
         except Exception:
-            # Silently ignore errors like file not seekable, etc.
+           
             pass
         return _sort_specific_first(all_domains)
+
+    @staticmethod
+    def _add_domain_and_parents(domain: str, out: Set[str]) -> None:       
+        """
+        Add the domain and all parent domains to 'out'.
+        e.g. 'lab.new.suse.org' -> {'lab.new.suse.org','new.suse.org','suse.org'}
+        """
+        if not domain:
+            return
+        d = domain.strip().lower().strip(".")
+        if not d or "." not in d:
+            return
+        labels = d.split(".")
+        for i in range(len(labels) - 1):
+            out.add(".".join(labels[i:]))
+
+
