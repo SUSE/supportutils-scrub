@@ -98,6 +98,8 @@ INFO: Scrubbing:
  its contents to ensure that all sensitive information has been properly
  obfuscated. If some values or keywords were not obfuscated automatically,
  you can manually add them using the keyword obfuscation option.
+ =============================================================================
+
 
 ```
 
@@ -134,6 +136,8 @@ supportutils-scrub \
 The tool prints a **structured summary** so you can verify translations before/after:
 
 ```
+=============================================================================
+
 [INFO] Using --rewrite-pcap: original pcaps will remain untouched;
        rewritten copies are saved with suffix _scrubbed.pcap in the chosen output directory.
 
@@ -295,6 +299,7 @@ The mapping file (`/var/tmp/obfuscation_mappings_*.json`) contains all translati
     }
 }
 
+```
 
 **IMPORTANT:** NEVER share the mapping file with SUSE Support or any third party. This file contains the translation between obfuscated and real data and must remain private.
 
