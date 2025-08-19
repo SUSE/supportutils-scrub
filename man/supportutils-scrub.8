@@ -1,19 +1,46 @@
-.TH SUPPORTUTILS-SCRUB 8 "23 Aug 2024" "supportutils" "Support Utilities Manual"
+.TH SUPPORTUTILS-SCRUB 8 "14 Aug 2025" "supportutils" "Support Utilities Manual"
 .SH NAME
-supportutils-scrub \- Obfuscate sensitive data from SUSE supportconfig tarballs
+supportutils-scrub \- Obfuscate sensitive data from SUSE supportconfig tarballs and network packet captures
 .SH SYNOPSIS
 \fBsupportutils-scrub\fR \fITARGET\fR [\fIOPTIONS\fR]
+.br
+\fBsupportutils-scrub\fR \fB\-\-rewrite\-pcap\fR \fB\-\-mappings\fR \fIFILE\fR \fB\-\-pcap\-in\fR \fIFILES\fR [\fIOPTIONS\fR]
 .SH DESCRIPTION
-\fBsupportutils-scrub\fR is a utility designed to sanitize and remove sensitive or unwanted data from SUSE supportconfig tarballs. This tool assists users and organizations in aligning with data protection policies, privacy requirements, and GDPR compliance standards.
+\fBsupportutils-scrub\fR is a utility designed to sanitize and remove sensitive or unwanted data from SUSE supportconfig tarballs and network packet captures. This tool assists users and organizations in aligning with data protection policies, privacy requirements, and GDPR compliance standards.
 
-The tool will process the specified \fITARGET\fR, which can be either a supportconfig tarball or a directory. After processing, an obfuscated version of the tarball is created. The original unprocessed tarball or directory remains untouched unless specified otherwise.
+The tool operates in two modes:
 
-All obfuscations are performed consistently, ensuring that sensitive information, such as IP addresses, domain names, usernames, hostnames, IPv6 addresses, and MAC addresses, are replaced uniformly throughout the supportconfig. The obfuscation mappings are saved in /usr/lib/supportconfig/obfuscation_dataset_mappings.json and can be reused to maintain consistency across multiple supportconfig files.
+.B Supportconfig Mode:
+Processes the specified \fITARGET\fR, which can be either a supportconfig tarball or a directory. After processing, an obfuscated version of the tarball is created. The original unprocessed tarball or directory remains untouched unless specified otherwise.
+
+.B PCAP Mode (v1.1+):
+Rewrites packet capture files using the same subnet-aware mappings from supportconfig obfuscation. This ensures consistency between log files and network traces.
+
+All obfuscations are performed consistently, ensuring that sensitive information, such as IP addresses, domain names, usernames, hostnames, IPv6 addresses, and MAC addresses, are replaced uniformly throughout the supportconfig and pcap files. The obfuscation mappings are saved in /var/tmp/obfuscation_mappings_*.json and can be reused to maintain consistency across multiple files.
+
+.SH FEATURES
+.IP \(bu 2
+\fBSubnet-Aware IP Mapping (v1.1+):\fR Maps whole IPv4 subnets to fake subnets while preserving host offsets (e.g., gateway .1 remains .1 in the mapped subnet), maintaining meaningful routing and topology for troubleshooting.
+.IP \(bu 2
+\fBConsistent Obfuscation:\fR Uses the same mappings across supportconfigs and pcap files.
+.IP \(bu 2
+\fBtcprewrite Integration:\fR Exports mappings compatible with tcprewrite tool for pcap file obfuscation.
+.IP \(bu 2
+\fBSafe by Default:\fR Original files are never modified; obfuscated versions are created separately.
 
 .SH OPTIONS
+.SS General Options
 .TP
 \fB\-\-config\fR \fIPATH\fR
 Specify the path to the configuration file. If not provided, the default configuration file located at \fI/etc/supportutils-scrub/supportutils-scrub.conf\fR will be used.
+.TP
+\fB\-\-verbose\fR
+Enable verbose output to provide more detailed logging information during the obfuscation process.
+.TP
+\fB\-\-mappings\fR \fIFILE\fR
+Specify the path to a mapping file that contains existing obfuscation pairs. If this file is provided, it will be loaded prior to the start of the obfuscation process, ensuring consistent results across multiple executions.
+
+.SS Supportconfig-Specific Options
 .TP
 \fB\-\-domains\fR \fIDOMAINS\fR
 Provide a comma, semicolon, or space-separated list of domain names to obfuscate, along with those already detected in the supportconfig.
@@ -28,15 +55,24 @@ Provide a comma, semicolon, or space-separated list of additional hostnames to o
 Provide a comma, semicolon, or space-separated list of keywords to obfuscate in addition to the default parsers. Keywords are obfuscated consistently throughout the report and are replaced in both standalone and substring matches.
 .TP
 \fB\-\-keyword-file\fR \fIFILE\fR
-Provide a file with a list of keywords to be obfuscated, ensuring each keyword is placed on its own line."
+Provide a file with a list of keywords to be obfuscated, ensuring each keyword is placed on its own line.
+
+.SS PCAP-Specific Options (v1.1+)
 .TP
-\fB\-\-mappings\fR \fIFILE\fR
-Specify the path to a mapping file that contains existing obfuscation pairs. If this file is provided, it will be loaded prior to the start of the obfuscation process, ensuring consistent results across multiple executions. 
+\fB\-\-rewrite\-pcap\fR
+Enable PCAP rewriting mode. This mode uses the subnet mappings from the JSON file to rewrite packet captures with tcprewrite.
 .TP
-\fB\-\-verbose\fR
-Enable verbose output to provide more detailed logging information during the obfuscation process.
+\fB\-\-pcap\-in\fR \fIFILES\fR
+Specify one or more input PCAP files to obfuscate. Multiple files can be provided.
+.TP
+\fB\-\-pcap\-out\-dir\fR \fIDIR\fR
+Specify the output directory for obfuscated PCAP files. Defaults to the current directory if not specified.
+.TP
+\fB\-\-print\-tcprewrite\fR
+Print the exact tcprewrite command being executed. Useful for debugging and understanding the rewrite process.
 
 .SH EXAMPLES
+.SS Supportconfig Obfuscation
 .TP
 \fBsupportutils-scrub\fR /var/log/scc_supportconfig.txz
 Processes the specified tarball and creates an obfuscated version in the same directory.
@@ -47,8 +83,70 @@ Obfuscates the specified tarball and additionally obfuscates all occurrences of 
 \fBsupportutils-scrub\fR /var/log/scc_supportconfig.txz \-\-config /path/to/custom-config.conf
 Processes the specified tarball using a custom configuration file located at \fI/path/to/custom-config.conf\fR.
 .TP
-\fBsupportutils-scrub\fR /var/log/scc_supportconfig.txz \-\-verbose \-\-mappings /usr/lib/supportconfig/obfuscation_dataset_mappings.json
+\fBsupportutils-scrub\fR /var/log/scc_supportconfig.txz \-\-verbose \-\-mappings /var/tmp/obfuscation_mappings.json
 Processes the specified tarball using a predefined mappings file, providing detailed logging information during the obfuscation process.
+
+.SS PCAP Obfuscation
+.TP
+\fBsupportutils-scrub\fR \-\-rewrite\-pcap \-\-mappings /var/tmp/obfuscation_mappings_20250815_125900.json \-\-pcap\-in trace.pcap
+Rewrites a single pcap file using existing mappings from a supportconfig obfuscation.
+.TP
+\fBsupportutils-scrub\fR \-\-rewrite\-pcap \-\-mappings mappings.json \-\-pcap\-in trace1.pcap trace2.pcap \-\-pcap\-out\-dir /var/log/
+Rewrites multiple pcap files and saves them to /var/log/ directory.
+.TP
+\fBsupportutils-scrub\fR \-\-rewrite\-pcap \-\-mappings mappings.json \-\-pcap\-in trace.pcap \-\-print\-tcprewrite
+Rewrites a pcap file and displays the exact tcprewrite command being executed.
+
+.SS Cluster Consistency
+.TP
+\fB# First node:\fR
+.br
+supportutils-scrub /var/log/scc_node1.txz
+.TP
+\fB# Second node (using same mappings):\fR
+.br
+supportutils-scrub /var/log/scc_node2.txz \-\-mappings /var/tmp/obfuscation_mappings_*.json
+.TP
+\fB# Rewrite associated pcaps:\fR
+.br
+supportutils-scrub \-\-rewrite\-pcap \-\-mappings /var/tmp/obfuscation_mappings_*.json \-\-pcap\-in node1.pcap node2.pcap
+
+.SH PCAP REWRITING DETAILS
+.SS Subnet-Aware Mapping
+The PCAP rewriting feature uses subnet-aware mapping to maintain network topology:
+.IP \(bu 2
+Whole IPv4 subnets are mapped to fake subnets
+.IP \(bu 2
+Host offsets are preserved (e.g., .1 remains .1, .254 remains .254)
+.IP \(bu 2
+Most-specific subnet rules are applied first
+.IP \(bu 2
+Original pcap files are never modified
+
+.SS Requirements
+.IP \(bu 2
+tcprewrite tool must be installed (package: tcpreplay)
+.IP \(bu 2
+PCAPs should be captured on specific interfaces (e.g., -i eth0), not -i any
+.IP \(bu 2
+Only IPv4 addresses are rewritten (IPv6 support pending)
+
+.SS Troubleshooting PCAP Rewriting
+.TP
+.B "No DLT plugin available" error
+The PCAP was likely captured with tcpdump -i any. Re-capture on a specific interface or normalize the link type:
+.br
+\fBtcprewrite\fR --dlt=enet -i in.pcap -o in-enet.pcap
+
+.TP
+.B "Unable to parse as a valid CIDR" error
+Ensure the mapping file's subnet entries are valid IPv4 CIDRs.
+
+.TP
+.B Empty or unchanged output
+If packets don't match any mapped subnets, addresses remain unchanged. Verify with:
+.br
+\fBtshark\fR -r trace_scrubbed.pcap -c 5 -T fields -e ip.src -e ip.dst | column -t
 
 .SH FILES
 .I /etc/supportutils-scrub/supportutils-scrub.conf
@@ -58,6 +156,18 @@ The default configuration file for \fBsupportutils-scrub\fR. See
 for further details.
 .RE
 
+.I /var/tmp/obfuscation_mappings_*.json
+.RS
+JSON files containing obfuscation mappings. These files map real data to obfuscated data and must be kept secure. The subnet section is used for tcprewrite operations.
+.RE
+
+.SH SECURITY CONSIDERATIONS
+.IP \(bu 2
+\fBNEVER\fR share the mapping file with SUSE Support or any third party. This file contains the translation between obfuscated and real data.
+.IP \(bu 2
+The obfuscation process is the customer's responsibility. Always review the obfuscated output before sharing.
+.IP \(bu 2
+Keywords are replaced even within words (substring matching) for thorough obfuscation.
 
 .SH AUTHOR
 Ronald Pina <ronald.pina@suse.com>
@@ -76,4 +186,6 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 .SH SEE ALSO
 .BR supportutils-scrub.conf (5),
-.BR supportconfig (8)
+.BR supportconfig (8),
+.BR tcprewrite (1),
+.BR tcpreplay (1)
