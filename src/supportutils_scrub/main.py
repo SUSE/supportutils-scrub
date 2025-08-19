@@ -8,6 +8,7 @@ import argparse
 import time
 import pwd
 import shutil
+import subprocess
 from datetime import datetime
 from supportutils_scrub.config import DEFAULT_CONFIG_PATH
 from supportutils_scrub.config_reader import ConfigReader
@@ -23,6 +24,7 @@ from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.processor import FileProcessor
+from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
 
 SCRIPT_VERSION = "1.1"
 SCRIPT_DATE = "2025-08-14"
@@ -52,7 +54,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Obfuscate SUSE supportconfig archives by masking sensitive data."
     )
-    parser.add_argument("supportconfig_path", help="Path to .txz archive or extracted folder")
+    
+    parser.add_argument("supportconfig_path", nargs="?", help="Path to .txz archive or extracted folder")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH,
                         help="Path to config file (defaults provided)")
     parser.add_argument("--verbose", action="store_true",
@@ -63,43 +66,82 @@ def parse_args():
     parser.add_argument("--hostname", help="Additional hostnames to obfuscate")
     parser.add_argument("--keyword-file", help="File containing keywords to obfuscate")
     parser.add_argument("--keywords", help="Additional keywords to obfuscate")
+    parser.add_argument("--rewrite-pcap", action="store_true",
+               help="Rewrite one or more pcap files using mappings (IPv4/IPv6 subnet-aware).")
+    parser.add_argument("--pcap-in", nargs="+", metavar="PCAP",
+               help="Input pcap(s) to rewrite (requires --rewrite-pcap).")
+    parser.add_argument("--pcap-out-dir", default=".", metavar="DIR",
+               help="Directory for rewritten pcaps (default: current dir).")
+    parser.add_argument("--print-tcprewrite", action="store_true",
+               help="Print the exact tcprewrite commands executed.")
+    parser.add_argument("--tcprewrite-path", default="tcprewrite",
+               help="Path to tcprewrite binary (default: 'tcprewrite').")
+
+
     return parser.parse_args()
 
 
-def extract_domains(report_files, additional_domains, mappings):
-    domain_dict = mappings.get('domain', {})
-    domain_counter = len(domain_dict)
-    all_domains = []
 
-    for file in report_files:
-        try:
-            with open(file, 'r', encoding='utf-8', errors='ignore') as f:
-                if 'etc.txt' in file:
-                    domains = DomainScrubber.extract_domains_from_resolv_conf(f, '# /etc/resolv.conf')
-                elif 'network.txt' in file:
-                    domains = DomainScrubber.extract_domains_from_hosts(f, '# /etc/hosts')
-                elif 'nfs.txt' in file:
-                    domains = DomainScrubber.extract_domains_from_section(f, '# /bin/egrep')
-                elif 'ntp.txt' in file:
-                    domains = DomainScrubber.extract_domains_from_section(f, '# /etc/ntp.conf')
-#                elif 'y2log.txt' in file:
-#                    domains = DomainScrubber.extract_domains_from_section(f, '# /var/adm/autoinstall/cache/installedSystem.xml')
-                else:
-                    continue
 
-                all_domains.extend(domains)
-        except Exception as e:
-            logging.error(f"Error reading file {file}: {e}")
+def build_hierarchical_domain_map(all_domains, existing_mappings):
+    """
+    Builds a domain mapping dictionary that preserves parent-child relationships.
+    """
+    valid_domains = {d for d in all_domains if '.' in d}
 
-    all_domains.extend(additional_domains)
+    sorted_domains = sorted(list(valid_domains), key=lambda d: len(d.split('.')))
 
-    for domain in all_domains:
-        if domain not in domain_dict:
-            obfuscated_domain = f"domain_{domain_counter}"
-            domain_dict[domain] = obfuscated_domain
-            domain_counter += 1
+    domain_dict = existing_mappings.get('domain', {})
+    base_domain_counter = len(domain_dict)
+    sub_domain_counter = 0
 
-    return domain_dict
+    for domain in sorted_domains:
+        if domain in domain_dict:
+            continue 
+
+        parts = domain.split('.')
+        parent_domain = '.'.join(parts[1:])
+
+        if parent_domain in domain_dict:
+            obfuscated_sub_part = f"sub_{sub_domain_counter}"
+            sub_domain_counter += 1
+            domain_dict[domain] = f"{obfuscated_sub_part}.{domain_dict[parent_domain]}"
+        else:
+            domain_dict[domain] = f"domain_{base_domain_counter}"
+            base_domain_counter += 1
+
+    return domain_dict 
+
+
+def extract_and_map_domains(report_files, additional_domains, mappings):
+    """
+    Extracts all unique domains from report files and builds the hierarchical map.
+    """
+    all_domains = set()
+
+    for domain in additional_domains:
+        DomainScrubber._add_domain_and_parents(domain, all_domains)
+
+    files_to_scan = {
+        'network.txt': ['# /etc/hosts', '# /etc/resolv.conf'],
+        'nfs.txt': ['# /bin/egrep'],
+        'ntp.txt': ['# /etc/ntp.conf', '# /etc/chrony.conf']
+    }
+
+    for file_path in report_files:
+        basename = os.path.basename(file_path)
+        if basename in files_to_scan:
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    for section in files_to_scan[basename]:
+                        domains_from_section = DomainScrubber.extract_domains_from_file_section(f, section)
+                        all_domains.update(domains_from_section)
+            except Exception as e:
+                logging.error(f"Error reading file {file_path}: {e}")
+
+    domain_map = build_hierarchical_domain_map(all_domains, mappings)
+    return domain_map
+
 
 def extract_hostnames(report_files, additional_hostnames, mappings):
     hostname_dict = mappings.get('hostname', {})
@@ -165,15 +207,49 @@ def main():
     # Initialize the logger
     logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
 
+
+    if args.rewrite_pcap and not args.supportconfig_path:
+        if not args.mappings or not args.pcap_in:
+            print("[!] For --rewrite-pcap without a supportconfig, provide --mappings and --pcap-in")
+            sys.exit(2)
+        mappings = json.load(open(args.mappings))
+        rewrite_pcaps_with_tcprewrite(
+            mappings, args.pcap_in, args.pcap_out_dir,
+            tcprewrite=args.tcprewrite_path,
+            print_cmd=args.print_tcprewrite,
+            logger=logger,
+        )
+        return
+
     dataset_dir = '/var/tmp'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     unique_name = f"obfuscation_mappings_{timestamp}.json"
     dataset_path = os.path.join(dataset_dir, unique_name)
 
+
+
     # Use the ConfigReader class to read the configuration
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(config_path)
 
+    if args.rewrite_pcap:
+        if not args.pcap_in:
+            print("[!] --rewrite-pcap needs --pcap-in PCAP(s)")
+            sys.exit(2)
+        mapping_src_path = args.mappings or dataset_path
+        try:
+            mappings_for_pcap = json.load(open(mapping_src_path))
+        except Exception as e:
+            print(f"[!] Failed to read mappings for pcap rewrite from {mapping_src_path}: {e}")
+            sys.exit(2)
+
+        rewrite_pcaps_with_tcprewrite(
+            mappings_for_pcap, args.pcap_in, args.pcap_out_dir,
+            tcprewrite=args.tcprewrite_path,
+            print_cmd=args.print_tcprewrite,
+            logger=logger,
+        )
+        
     # Load mappings from JSON file if provided
     mappings = {}
     mapping_keywords = []
@@ -225,7 +301,7 @@ def main():
     additional_domains = []
     if args.domain:
         additional_domains = re.split(r'[,\s;]+', args.domain)
-    domain_dict = extract_domains(report_files, additional_domains, mappings)
+    domain_dict = extract_and_map_domains(report_files, additional_domains, mappings)
     domain_scrubber = DomainScrubber(domain_dict)
 
     # Extract and build the username dictionary
@@ -260,8 +336,10 @@ def main():
     total_keyword_dict = {}
     total_mac_dict = {}
     total_ipv6_dict = {}
-    total_subnet_dict = {}
+    total_ipv4_subnet_dict = {}
+    total_ipv6_subnet_dict = {}
     total_state = {}
+    total_state6 = {}
 
     # Process supportconfig files
     logger.info("Scrubbing:")
@@ -284,10 +362,15 @@ def main():
         total_keyword_dict.update(keyword_dict)
         total_mac_dict.update(mac_dict)
         total_ipv6_dict.update(ipv6_dict)
+        total_ipv4_subnet_dict = {}
+        total_ipv6_subnet_dict = {}
+
         if hasattr(file_processor, '_ipv4_subnet_map'):
-            total_subnet_dict = file_processor._ipv4_subnet_map
+            total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
         if hasattr(file_processor, '_ipv4_state'):
             total_state = file_processor._ipv4_state
+        if hasattr(file_processor, "_ipv6_subnet_map"):
+           total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
 
 
     dataset_dict = {
@@ -298,8 +381,9 @@ def main():
         'mac': total_mac_dict,
         'ipv6': total_ipv6_dict,
         'keyword': total_keyword_dict,
-        'subnet': total_subnet_dict,    
-        'state': total_state            
+        'subnet': total_ipv4_subnet_dict,    
+        'state': total_state,
+        'ipv6_subnet': total_ipv6_subnet_dict
     }
 
     Translator.save_datasets(dataset_path, dataset_dict)
@@ -341,6 +425,8 @@ def main():
         + len(total_hostname_dict)
         + len(total_ipv6_dict)
         + len(total_keyword_dict)
+        + len(total_ipv4_subnet_dict)
+        + len(total_ipv6_subnet_dict)
     )
 
     print("\n------------------------------------------------------------")
@@ -349,10 +435,13 @@ def main():
     print(f"| Files obfuscated          : {total_files_scrubbed}")
     print(f"| Usernames obfuscated      : {len(total_user_dict)}")
     print(f"| IP addresses obfuscated   : {len(total_ip_dict)}")
+    print(f"| IPv4 subnets obfuscated   : {len(total_ipv4_subnet_dict)}")
     print(f"| MAC addresses obfuscated  : {len(total_mac_dict)}")
     print(f"| Domains obfuscated        : {len(total_domain_dict)}")
     print(f"| Hostnames obfuscated      : {len(total_hostname_dict)}")
     print(f"| IPv6 addresses obfuscated : {len(total_ipv6_dict)}")
+    print(f"| IPv6 subnets obfuscated   : {len(total_ipv6_subnet_dict)}")
+
     if keyword_scrubber:
         print(f"| Keywords obfuscated       : {len(total_keyword_dict)}")
     print(f"| Total obfuscation entries : {total_obfuscations}")

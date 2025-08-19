@@ -1,57 +1,60 @@
 # mac_scrubber.py
 
 import re
-import logging
+from typing import Match
 
 class MACScrubber:
+    """
+    Handles the detection and replacement of MAC addresses efficiently.
+    It uses a single, more precise compiled regex and a replacer function for a one-pass scrub.
+    """
+
+    MAC_PATTERN = re.compile(
+        r'(?<![0-9A-Fa-f:])'  
+        r'((?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2})' 
+        r'(?![0-9A-Fa-f:])',  
+        re.IGNORECASE
+    )
+    
+    EXCLUDED_MACS = {"ff:ff:ff:ff:ff:ff", "00:00:00:00:00:00"}
+
     def __init__(self, config, mappings=None):
-        self.mac_dict = mappings.get('mac', {}) if mappings else {}
+        self.mac_dict = {k.lower(): v for k, v in (mappings.get('mac', {}) if mappings else {}).items()}
         self.config = config
 
-    def scrub_mac(self, mac):
-        """
-        Obfuscate a MAC address. If configuration is set to obfuscate MAC addresses, replace with fake MAC addresses.
-        """
-        if self.config.get('obfuscate_mac', 'no') == 'yes':
-            # Skip scrubbing for specific MAC addresses
-            if mac.lower() in ["ff:ff:ff:ff:ff:ff", "00:00:00:00:00:00"]:
-                return mac
-            obfuscated_mac = self.map_original_mac_to_fake_mac(mac)
-            logging.info(f"Obfuscated MAC: {obfuscated_mac}")
-            return obfuscated_mac
-        else:
-            return mac
+    def _generate_fake_mac(self):
+        """Generates a new, unique fake MAC address."""
+        count = len(self.mac_dict)
 
-    def map_original_mac_to_fake_mac(self, original_mac):
+        b1 = (count >> 16) & 0xFF
+        b2 = (count >> 8) & 0xFF
+        b3 = count & 0xFF
+        return f"00:1A:2B:{b1:02X}:{b2:02X}:{b3:02X}"
+
+    def scrub(self, text: str) -> str:
         """
-        Map the original MAC address to its corresponding fake MAC address. If not present, generate a unique fake MAC address.
+        Finds and replaces all non-excluded MAC addresses in a block of text
+        using a single pass with re.sub and a callback function.
+        The internal mac_dict is updated with any new mappings.
         """
-        if original_mac not in self.mac_dict:
-            fake_mac = self.generate_fake_mac()
+        if self.config.get('obfuscate_mac', 'no') != 'yes':
+            return text
+
+        def replacer(match: Match) -> str:
+            """
+            This function is called for every MAC address found.
+            It decides whether to replace it and what to replace it with.
+            """
+            original_mac = match.group(1).lower()
+
+            if original_mac in self.EXCLUDED_MACS:
+                return match.group(0) # Return the original string (preserving case).
+
+            if original_mac in self.mac_dict:
+                return self.mac_dict[original_mac]
+            
+            fake_mac = self._generate_fake_mac()
             self.mac_dict[original_mac] = fake_mac
-        return self.mac_dict[original_mac]
+            return fake_mac
 
-    def generate_fake_mac(self):
-        """
-        Generate a fake MAC address.
-        """
-        fake_mac = "00:1A:2B:{:02X}:{:02X}:{:02X}".format(
-            (len(self.mac_dict) + 1) % 256,
-            (len(self.mac_dict) + 2) % 256,
-            (len(self.mac_dict) + 3) % 256
-        )
-        return fake_mac
-
-    @staticmethod
-    def extract_mac(text):
-        """
-        Extract MAC addresses from a given text.
-        """
-        mac_pattern = r'\b(?:[0-9A-Fa-f]{2}[:-]){5}(?:[0-9A-Fa-f]{2})\b'
-        lines = text.split('\n')
-        macs = []
-        for line in lines:
-            # Avoid lines that are too long or have too many colons which likely aren't MAC addresses
-            if len(line) <= 23 or line.count(':') == 5:
-                macs.extend(re.findall(mac_pattern, line))
-        return macs
+        return self.MAC_PATTERN.sub(replacer, text)
