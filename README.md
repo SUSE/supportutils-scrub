@@ -14,10 +14,16 @@
 ## Installation
 
 
+<<<<<<< HEAD
 
 ### 1. RPM Installation
 
 The `supportutils-scrub` package is available from the Open Build Service. Choose the appropriate repository for your distribution:
+=======
+### 1. RPM Installation
+
+The supportutils-scrub package is available from the Open Build Service. Choose the appropriate repository for your distribution:
+>>>>>>> release/1.1
 
 #### openSUSE Leap 15.6 / SLE 15 SP6
 ```bash
@@ -27,7 +33,11 @@ zypper install supportutils-scrub
 ```
 
 #### openSUSE Leap 15.X / SLE 15 SPX (Generic for any 15.x version)
+<<<<<<< HEAD
 Replace `15.X` with your specific version (e.g., 15.5, 15.4, 15.3):
+=======
+Replace 15.X with your specific version (e.g., 15.5, 15.4, 15.3):
+>>>>>>> release/1.1
 ```bash
 zypper addrepo https://download.opensuse.org/repositories/home:ronald_pina/15.X/home:ronald_pina.repo
 zypper refresh
@@ -36,7 +46,11 @@ zypper install supportutils-scrub
 
 #### Direct Downloads and Other Distributions
 For direct RPM downloads or other distributions, visit the Open Build Service page:
+<<<<<<< HEAD
 [https://build.opensuse.org/package/show/home:ronald_pina/supportutils-scrub]
+=======
+[https://build.opensuse.org/~ortutils-scrub]
+>>>>>>> release/1.1
 
 
 ### 2. Install with pip
