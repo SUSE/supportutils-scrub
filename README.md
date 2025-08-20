@@ -35,7 +35,7 @@ zypper install supportutils-scrub
 
 #### Direct Downloads and Other Distributions
 For direct RPM downloads or other distributions, visit the Open Build Service page:
-[https://build.opensuse.org/~ortutils-scrub]
+[https://software.opensuse.org//download.html?project=home%3Aronald_pina&package=supportutils-scrub]
 
 
 ### 2. Install with pip
