@@ -81,36 +81,82 @@ def parse_args():
     return parser.parse_args()
 
 
+def _norm(d):
+    return d.strip().rstrip(".").lower()
 
+def _is_valid_domain(d):
+    if "." not in d:
+        return False
+    # very light sanity
+    parts = d.split(".")
+    if any(not p or len(p) > 63 or p[0] == "-" or p[-1] == "-" for p in parts):
+        return False
+    if not all(re.fullmatch(r"[a-z0-9-]+", p) for p in parts):
+        return False
+    return True
+
+def _split_base(d):
+    """
+    Naïve base domain splitter:
+    - Uses last two labels as base (example: suse.org, corp.local)
+    - If you need perfect handling for .co.uk, consider publicsuffix2.
+    """
+    parts = d.split(".")
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])   # base (registrable-ish)
+    return d
 
 def build_hierarchical_domain_map(all_domains, existing_mappings):
     """
-    Builds a domain mapping dictionary that preserves parent-child relationships.
+    Emit mappings like:
+      suse.org                 -> dom0.org
+      nue2.suse.org            -> sub0.dom0.org
+      hwlab.nue2.suse.org      -> sub1.sub0.dom0.org
     """
-    valid_domains = {d for d in all_domains if '.' in d}
+    canon = {_norm(d) for d in (all_domains or []) if _is_valid_domain(_norm(d))}
+    ordered = sorted(canon, key=lambda s: (s.count("."), len(s)), reverse=True)
 
-    sorted_domains = sorted(list(valid_domains), key=lambda d: len(d.split('.')))
+    out = dict(existing_mappings.get("domain", {}))  # preserve prior numbering
+    base_ids = {}     # base_domain -> domN string (e.g., "dom0.org")
+    base_seq = len({v for k, v in out.items() if re.match(r"^dom\d+\.", v)})
 
-    domain_dict = existing_mappings.get('domain', {})
-    base_domain_counter = len(domain_dict)
-    sub_domain_counter = 0
+    sub_seq = {}      # base_domain -> next sub index
+    sub_cache = {}    # (left_label_chain, base_domain) -> "subK.subJ..."
 
-    for domain in sorted_domains:
-        if domain in domain_dict:
-            continue 
+    for fqdn in ordered:
+        if fqdn in out:
+            continue
 
-        parts = domain.split('.')
-        parent_domain = '.'.join(parts[1:])
+        base = _split_base(fqdn)
+        tld = base.split(".")[-1] if "." in base else "local"
 
-        if parent_domain in domain_dict:
-            obfuscated_sub_part = f"sub_{sub_domain_counter}"
-            sub_domain_counter += 1
-            domain_dict[domain] = f"{obfuscated_sub_part}.{domain_dict[parent_domain]}"
-        else:
-            domain_dict[domain] = f"domain_{base_domain_counter}"
-            base_domain_counter += 1
+        if base not in base_ids:
+            base_ids[base] = f"dom{base_seq}.{tld}"
+            base_seq += 1
+            sub_seq[base] = 0
 
-    return domain_dict 
+        if fqdn == base:
+            # base itself
+            out[fqdn] = base_ids[base]
+            continue
+
+        left = fqdn[:-(len(base) + 1)]  # strip ".<base>"
+        labels = left.split(".") if left else []
+
+        chain = []
+        for i in range(len(labels)-1, -1, -1):
+            key = (".".join(labels[i:]), base)
+            if key not in sub_cache:
+                tag = f"sub{sub_seq[base]}"
+                sub_seq[base] += 1
+                sub_cache[key] = tag
+            chain.append(sub_cache[key])
+
+        # chain currently like ["sub0", "sub1"] for ["nue2","hwlab"]; reverse to get "sub1.sub0"
+        fake_left = ".".join(reversed(chain)) if chain else ""
+        out[fqdn] = f"{fake_left}.{base_ids[base]}" if fake_left else base_ids[base]
+
+    return out
 
 
 def extract_and_map_domains(report_files, additional_domains, mappings):
@@ -362,11 +408,10 @@ def main():
         total_keyword_dict.update(keyword_dict)
         total_mac_dict.update(mac_dict)
         total_ipv6_dict.update(ipv6_dict)
-        total_ipv4_subnet_dict = {}
-        total_ipv6_subnet_dict = {}
+
 
         if hasattr(file_processor, '_ipv4_subnet_map'):
-            total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
+            total_ipv4_subnet_dict.update(file_processor._ipv4_subnet_map)
         if hasattr(file_processor, '_ipv4_state'):
             total_state = file_processor._ipv4_state
         if hasattr(file_processor, "_ipv6_subnet_map"):
