@@ -12,11 +12,10 @@ def extract_supportconfig(supportconfig_path, logger):
     report_files = []
     
     if os.path.isdir(supportconfig_path):
-        # Supportconfig is a folder
         report_files = walk_supportconfig(supportconfig_path)
     elif supportconfig_path.endswith(".txz"):
         report_files = extract_xz_archive(supportconfig_path, logger)
-    elif supportconfig_path.endswith(".tgz"):
+    elif supportconfig_path.endswith(".tgz") or supportconfig_path.endswith(".tar.gz"):
         report_files = extract_tgz_archive(supportconfig_path, logger)
     else:
         print(f"[!] Unsupported file type: {supportconfig_path}")
@@ -70,10 +69,13 @@ def extract_xz_archive(archive_path, logger):
     return report_files, clean_folder_path
 
 def extract_tgz_archive(archive_path, logger):
-    """Extract a .tgz (tar gzipped) archive and return a list of report files."""
+    """Extract a .tgz or .tar.gz archive and return a list of report files."""
     extract_base_folder = os.path.dirname(archive_path)
     base_name = os.path.basename(archive_path)
-    base_name_no_ext = os.path.splitext(base_name)[0]
+    if base_name.endswith(".tar.gz"):
+        base_name_no_ext = base_name[:-7]
+    else:
+        base_name_no_ext = os.path.splitext(base_name)[0]
     clean_folder_name = base_name_no_ext + "_scrubbed"
     clean_folder_path = os.path.join(extract_base_folder, clean_folder_name)
 

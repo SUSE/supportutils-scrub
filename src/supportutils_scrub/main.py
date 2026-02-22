@@ -688,7 +688,10 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         if hasattr(file_processor, '_ipv6_subnet_map'):
             total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
 
-    base_name = os.path.splitext(archive_path)[0]
+    if archive_path.endswith(".tar.gz"):
+        base_name = archive_path[:-7]
+    else:
+        base_name = os.path.splitext(archive_path)[0]
     new_txz_file_path = base_name + "_scrubbed.txz"
     create_txz(clean_folder_path, new_txz_file_path)
     print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
@@ -742,7 +745,7 @@ def main():
     is_folder = len(paths) == 1 and os.path.isdir(paths[0])
     is_file = (len(paths) == 1
                and os.path.isfile(paths[0])
-               and not paths[0].endswith(('.txz', '.tgz')))
+               and not paths[0].endswith(('.txz', '.tgz', '.tar.gz')))
 
     if is_stdin:
         run_stdin_mode(args, logger)
