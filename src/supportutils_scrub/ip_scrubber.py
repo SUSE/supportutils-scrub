@@ -89,36 +89,39 @@ class IPScrubber:
         mode = str(self.config.get('obfuscate_private_ip', 'no')).lower()
         return mode == 'yes'  
 
-    def _alloc_fake_subnet_from_pool(self, cat_key: str, prefixlen: int) -> IPv4Network:       
-            """
-            Allocate a fake subnet from the specified pool.
-            Maintains the same prefix length as the original subnet.
-            """
-            pool = self.category_pools[cat_key]
+    def _alloc_fake_subnet_from_pool(self, cat_key: str, prefixlen: int) -> IPv4Network:
+        """
+        Allocate a fake subnet from the specified pool.
+        Maintains the same prefix length as the original subnet.
+        Only checks conflicts against same-size fake subnets so that a large
+        allocated fake (e.g. /16) does not block all /24 slots inside it.
+        """
+        pool = self.category_pools[cat_key]
 
-            if prefixlen < pool.prefixlen:
-                prefixlen = pool.prefixlen
-            
-            step = 2 ** (32 - prefixlen)
-            if prefixlen < pool.prefixlen:
-                prefixlen = pool.prefixlen
-            step   = 2 ** (32 - prefixlen)
-            start  = int(pool.network_address)
-            end    = int(pool.broadcast_address) + 1   
+        if prefixlen < pool.prefixlen:
+            prefixlen = pool.prefixlen
 
-            cursor = self._pool_cursor.get(cat_key, 0)
-            for _ in range((end - start) // step):
-                base = start + ((cursor // step) * step)
-                if base >= end:
-                    cursor = 0
-                    base = start
-                cand = IPv4Network((base, prefixlen))
-                if not any(cand.overlaps(n) for n in self._real_to_fake.values()):
-                    self._pool_cursor[cat_key] = ( (base - start) + step )
-                    return cand
-                cursor += step
+        step  = 2 ** (32 - prefixlen)
+        start = int(pool.network_address)
+        end   = int(pool.broadcast_address) + 1
 
-            raise RuntimeError(f"Pool {pool} exhausted for /{prefixlen}")
+        # Only compare against fake subnets of the same prefix length to avoid
+        # a single large fake subnet (e.g. /16) exhausting all smaller slots.
+        same_size_fakes = {n for n in self._real_to_fake.values() if n.prefixlen == prefixlen}
+
+        cursor = self._pool_cursor.get(cat_key, 0)
+        for _ in range((end - start) // step):
+            base = start + ((cursor // step) * step)
+            if base >= end:
+                cursor = 0
+                base = start
+            cand = IPv4Network((base, prefixlen))
+            if not any(cand.overlaps(n) for n in same_size_fakes):
+                self._pool_cursor[cat_key] = (base - start) + step
+                return cand
+            cursor += step
+
+        raise RuntimeError(f"Pool {pool} exhausted for /{prefixlen}")
 
 
     def _ensure_fake_subnet(self, real_net: IPv4Network):
