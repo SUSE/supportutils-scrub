@@ -93,3 +93,14 @@ def extract_tgz_archive(archive_path, logger):
 def create_txz(source_dir, output_filename):
     with tarfile.open(output_filename, 'w:xz') as tar:
         tar.add(source_dir, arcname=os.path.basename(source_dir))
+
+def copy_folder_to_scrubbed(folder_path):
+    """
+    Copy folder_path to {folder_path}_scrubbed/ and return (file_list, scrubbed_path).
+    Any existing _scrubbed directory is removed first.
+    """
+    scrubbed_path = folder_path.rstrip('/') + '_scrubbed'
+    if os.path.exists(scrubbed_path):
+        shutil.rmtree(scrubbed_path)
+    shutil.copytree(folder_path, scrubbed_path)
+    return walk_supportconfig(scrubbed_path), scrubbed_path

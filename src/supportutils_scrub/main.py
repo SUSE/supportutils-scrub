@@ -15,8 +15,7 @@ from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.ip_scrubber import IPScrubber
 from supportutils_scrub.domain_scrubber import DomainScrubber
 from supportutils_scrub.hostname_scrubber import HostnameScrubber
-from supportutils_scrub.extractor import extract_supportconfig
-from supportutils_scrub.extractor import create_txz
+from supportutils_scrub.extractor import extract_supportconfig, create_txz, copy_folder_to_scrubbed
 from supportutils_scrub.translator import Translator
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
@@ -29,33 +28,37 @@ from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
 SCRIPT_VERSION = "1.1"
 SCRIPT_DATE = "2025-08-14"
 
-def print_header():
-    print("\n"+"=" * 77)
-    print("          Obfuscation Utility - supportutils-scrub")
-    print("                      Version : {:<12}".format(SCRIPT_VERSION))
-    print("                 Release Date : {:<12}".format(SCRIPT_DATE))
-    print()
-    print(" supportutils-scrub is a python based tool that masks sensitive")
-    print(" information from SUSE supportconfig tarballs. It replaces data such as")
-    print(" IPv4, IPv6, domain names, usernames, hostnames, MAC addresses, and")
-    print(" custom keywords in a consistent way throughout the archive.")
-    print(" The mappings are saved in /var/tmp/obfuscation_mappings.json and can be")
-    print(" reused to keep consistent results across multiple supportconfigs.")
-    print("=" * 77 + "\n")
+def print_header(file=None):
+    if file is None:
+        file = sys.stdout
+    print("\n"+"=" * 77, file=file)
+    print("          Obfuscation Utility - supportutils-scrub", file=file)
+    print("                      Version : {:<12}".format(SCRIPT_VERSION), file=file)
+    print("                 Release Date : {:<12}".format(SCRIPT_DATE), file=file)
+    print(file=file)
+    print(" supportutils-scrub is a python based tool that masks sensitive", file=file)
+    print(" information from SUSE supportconfig tarballs. It replaces data such as", file=file)
+    print(" IPv4, IPv6, domain names, usernames, hostnames, MAC addresses, and", file=file)
+    print(" custom keywords in a consistent way throughout the archive.", file=file)
+    print(" The mappings are saved in /var/tmp/obfuscation_mappings.json and can be", file=file)
+    print(" reused to keep consistent results across multiple supportconfigs.", file=file)
+    print("=" * 77 + "\n", file=file)
 
-def print_footer():
-    print(" The obfuscated supportconfig has been successfully created. Please review")
-    print(" its contents to ensure that all sensitive information has been properly")
-    print(" obfuscated. If some values or keywords were not obfuscated automatically,")
-    print(" you can manually add them using the keyword obfuscation option.")
-    print("=" * 77 + "\n")
+def print_footer(file=None):
+    if file is None:
+        file = sys.stdout
+    print(" The obfuscated supportconfig has been successfully created. Please review", file=file)
+    print(" its contents to ensure that all sensitive information has been properly", file=file)
+    print(" obfuscated. If some values or keywords were not obfuscated automatically,", file=file)
+    print(" you can manually add them using the keyword obfuscation option.", file=file)
+    print("=" * 77 + "\n", file=file)
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Obfuscate SUSE supportconfig archives by masking sensitive data."
     )
-    
-    parser.add_argument("supportconfig_path", nargs="?", help="Path to .txz archive or extracted folder")
+
+    parser.add_argument("supportconfig_path", nargs="?", help="Path to .txz archive, extracted folder, or '-' for stdin")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH,
                         help="Path to config file (defaults provided)")
     parser.add_argument("--verbose", action="store_true",
@@ -97,7 +100,7 @@ def build_hierarchical_domain_map(all_domains, existing_mappings):
 
     for domain in sorted_domains:
         if domain in domain_dict:
-            continue 
+            continue
 
         parts = domain.split('.')
         parent_domain = '.'.join(parts[1:])
@@ -110,7 +113,7 @@ def build_hierarchical_domain_map(all_domains, existing_mappings):
             domain_dict[domain] = f"domain_{base_domain_counter}"
             base_domain_counter += 1
 
-    return domain_dict 
+    return domain_dict
 
 
 def extract_and_map_domains(report_files, additional_domains, mappings):
@@ -178,10 +181,10 @@ def extract_usernames(report_files, additional_usernames, mappings):
         elif 'messages.txt' in file:
             usernames = UsernameScrubber.extract_usernames_from_messages(file)
             all_usernames.extend(usernames)
-        elif 'security-apparmor.txt' in file:             
+        elif 'security-apparmor.txt' in file:
             usernames = UsernameScrubber.extract_usernames_from_messages(file)
             all_usernames.extend(usernames)
-        elif 'sssd.txt' in file:             
+        elif 'sssd.txt' in file:
             usernames = UsernameScrubber.extract_usernames_from_messages(file)
             all_usernames.extend(usernames)
 
@@ -196,17 +199,314 @@ def extract_usernames(report_files, additional_usernames, mappings):
     return username_dict
 
 
+def _init_scrubbers(args, config, logger):
+    """
+    Shared scrubber initialisation used by folder mode and stdin mode.
+    Returns (mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber).
+    Prints informational messages to *out* (default sys.stdout) or *err* (default sys.stderr).
+    """
+    mappings = {}
+    mapping_keywords = []
+    if args.mappings:
+        try:
+            with open(args.mappings, 'r') as f:
+                mappings = json.load(f)
+                mapping_keywords = list(mappings.get('keyword', {}).keys())
+        except Exception as e:
+            print(f"[!] Failed to load mapping from {args.mappings}", file=sys.stderr)
+            sys.exit(1)
+
+    cmd_keywords = []
+    if args.keywords:
+        cmd_keywords = [kw.strip() for kw in re.split(r'[,\s;]+', args.keywords.strip()) if kw.strip()]
+    combined_keywords = set(cmd_keywords).union(mapping_keywords)
+
+    try:
+        keyword_scrubber = KeywordScrubber(keyword_file=args.keyword_file, cmd_keywords=list(combined_keywords))
+        if not keyword_scrubber.is_loaded():
+            keyword_scrubber = None
+    except Exception as e:
+        logger.error(f"Failed to initialize KeywordScrubber: {e}")
+        keyword_scrubber = None
+
+    try:
+        ip_scrubber = IPScrubber(config, mappings=mappings)
+        mac_scrubber = MACScrubber(config, mappings=mappings)
+        ipv6_scrubber = IPv6Scrubber(config, mappings=mappings)
+    except Exception as e:
+        logger.error(f"Error initializing scrubbers: {e}")
+        sys.exit(1)
+
+    return mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber
+
+
+def run_folder_mode(args, logger):
+    """
+    Process a directory: copy to {dir}_scrubbed/, scrub files in-place, no repack.
+    No supportconfig-specific pre-scan; additional --domain/--hostname/--username args still apply.
+    """
+    verbose_flag = args.verbose
+
+    dataset_dir = '/var/tmp'
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dataset_path = os.path.join(dataset_dir, f"obfuscation_mappings_{timestamp}.json")
+
+    config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
+    config = config_reader.read_config(args.config)
+
+    mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber = \
+        _init_scrubbers(args, config, logger)
+
+    if args.mappings:
+        print(f"[✓] Dataset mapping loaded from: {args.mappings} ")
+    if keyword_scrubber is None and (args.keywords or args.keyword_file):
+        print("[!] Keyword obfuscation disabled (no keywords loaded)")
+
+    try:
+        report_files, scrubbed_path = copy_folder_to_scrubbed(args.supportconfig_path)
+        print(f"[✓] Folder copied to: {scrubbed_path}")
+    except Exception as e:
+        print(f"[!] Error copying folder: {e}")
+        raise
+
+    # Build dicts from args only (no supportconfig-specific pre-scan)
+    additional_domains = []
+    if args.domain:
+        additional_domains = re.split(r'[,\s;]+', args.domain)
+    domain_dict = extract_and_map_domains([], additional_domains, mappings)
+    domain_scrubber = DomainScrubber(domain_dict)
+
+    additional_usernames = []
+    if args.username:
+        additional_usernames = re.split(r'[,\s;]+', args.username)
+    username_dict = extract_usernames([], additional_usernames, mappings)
+    username_scrubber = UsernameScrubber(username_dict)
+
+    additional_hostnames = []
+    if args.hostname:
+        additional_hostnames = re.split(r'[,\s;]+', args.hostname)
+    hostname_dict = extract_hostnames([], additional_hostnames, mappings)
+    hostname_scrubber = HostnameScrubber(hostname_dict)
+
+    try:
+        file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
+                                       hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
+    except Exception as e:
+        logger.error(f"Error initializing FileProcessor: {e}")
+        sys.exit(1)
+
+    total_ip_dict = {}
+    total_domain_dict = {}
+    total_user_dict = {}
+    total_hostname_dict = {}
+    total_keyword_dict = {}
+    total_mac_dict = {}
+    total_ipv6_dict = {}
+    total_ipv4_subnet_dict = {}
+    total_ipv6_subnet_dict = {}
+    total_state = {}
+
+    logger.info("Scrubbing:")
+    for report_file in report_files:
+        basename = os.path.basename(report_file)
+        if not re.match(r"^sa\d{8}(\.xz)?$", basename):
+            print(f"        {basename}")
+
+        ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+            file_processor.process_file(report_file, logger, verbose_flag)
+
+        total_ip_dict.update(ip_dict)
+        total_domain_dict.update(domain_dict)
+        total_user_dict.update(username_dict)
+        total_hostname_dict.update(hostname_dict)
+        total_keyword_dict.update(keyword_dict)
+        total_mac_dict.update(mac_dict)
+        total_ipv6_dict.update(ipv6_dict)
+        if hasattr(file_processor, '_ipv4_subnet_map'):
+            total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
+        if hasattr(file_processor, '_ipv4_state'):
+            total_state = file_processor._ipv4_state
+        if hasattr(file_processor, '_ipv6_subnet_map'):
+            total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
+
+    dataset_dict = {
+        'ip': total_ip_dict,
+        'domain': total_domain_dict,
+        'user': total_user_dict,
+        'hostname': total_hostname_dict,
+        'mac': total_mac_dict,
+        'ipv6': total_ipv6_dict,
+        'keyword': total_keyword_dict,
+        'subnet': total_ipv4_subnet_dict,
+        'state': total_state,
+        'ipv6_subnet': total_ipv6_subnet_dict
+    }
+
+    Translator.save_datasets(dataset_path, dataset_dict)
+
+    if verbose_flag:
+        print("\n--- Obfuscated Mapping Preview ---")
+        print(json.dumps(dataset_dict, indent=4))
+
+    total_files_scrubbed = len(report_files)
+    total_obfuscations = (
+        len(total_user_dict) + len(total_ip_dict) + len(total_mac_dict)
+        + len(total_domain_dict) + len(total_hostname_dict) + len(total_ipv6_dict)
+        + len(total_keyword_dict) + len(total_ipv4_subnet_dict) + len(total_ipv6_subnet_dict)
+    )
+
+    print("\n------------------------------------------------------------")
+    print(" Obfuscation Summary")
+    print("------------------------------------------------------------")
+    print(f"| Files obfuscated          : {total_files_scrubbed}")
+    print(f"| Usernames obfuscated      : {len(total_user_dict)}")
+    print(f"| IP addresses obfuscated   : {len(total_ip_dict)}")
+    print(f"| IPv4 subnets obfuscated   : {len(total_ipv4_subnet_dict)}")
+    print(f"| MAC addresses obfuscated  : {len(total_mac_dict)}")
+    print(f"| Domains obfuscated        : {len(total_domain_dict)}")
+    print(f"| Hostnames obfuscated      : {len(total_hostname_dict)}")
+    print(f"| IPv6 addresses obfuscated : {len(total_ipv6_dict)}")
+    print(f"| IPv6 subnets obfuscated   : {len(total_ipv6_subnet_dict)}")
+    if keyword_scrubber:
+        print(f"| Keywords obfuscated       : {len(total_keyword_dict)}")
+    print(f"| Total obfuscation entries : {total_obfuscations}")
+    print(f"| Output folder             : {scrubbed_path}")
+    print(f"| Mapping file              : {dataset_path}")
+    if args.keyword_file and keyword_scrubber:
+        print(f"| Keyword file              : {args.keyword_file}")
+    print("------------------------------------------------------------\n")
+
+
+def run_stdin_mode(args, logger):
+    """
+    Read from stdin, write scrubbed text to stdout, header/summary to stderr.
+    """
+    verbose_flag = args.verbose
+    err = sys.stderr
+
+    print_header(file=err)
+
+    dataset_dir = '/var/tmp'
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dataset_path = os.path.join(dataset_dir, f"obfuscation_mappings_{timestamp}.json")
+
+    config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
+    config = config_reader.read_config(args.config)
+
+    mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber = \
+        _init_scrubbers(args, config, logger)
+
+    if args.mappings:
+        print(f"[✓] Dataset mapping loaded from: {args.mappings} ", file=err)
+    if keyword_scrubber is None and (args.keywords or args.keyword_file):
+        print("[!] Keyword obfuscation disabled (no keywords loaded)", file=err)
+
+    # No pre-scan; build dicts from args only
+    additional_domains = []
+    if args.domain:
+        additional_domains = re.split(r'[,\s;]+', args.domain)
+    domain_dict = extract_and_map_domains([], additional_domains, mappings)
+    domain_scrubber = DomainScrubber(domain_dict)
+
+    additional_usernames = []
+    if args.username:
+        additional_usernames = re.split(r'[,\s;]+', args.username)
+    username_dict = extract_usernames([], additional_usernames, mappings)
+    username_scrubber = UsernameScrubber(username_dict)
+
+    additional_hostnames = []
+    if args.hostname:
+        additional_hostnames = re.split(r'[,\s;]+', args.hostname)
+    hostname_dict = extract_hostnames([], additional_hostnames, mappings)
+    hostname_scrubber = HostnameScrubber(hostname_dict)
+
+    try:
+        file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
+                                       hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
+    except Exception as e:
+        logger.error(f"Error initializing FileProcessor: {e}")
+        sys.exit(1)
+
+    text = sys.stdin.read()
+    scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+        file_processor.process_text(text, logger, verbose_flag)
+
+    sys.stdout.write(scrubbed_text)
+
+    ipv4_subnet_dict = file_processor._ipv4_subnet_map if hasattr(file_processor, '_ipv4_subnet_map') else {}
+    ipv6_subnet_dict = file_processor._ipv6_subnet_map if hasattr(file_processor, '_ipv6_subnet_map') else {}
+    state = file_processor._ipv4_state if hasattr(file_processor, '_ipv4_state') else {}
+
+    dataset_dict = {
+        'ip': ip_dict,
+        'domain': domain_dict,
+        'user': username_dict,
+        'hostname': hostname_dict,
+        'mac': mac_dict,
+        'ipv6': ipv6_dict,
+        'keyword': keyword_dict,
+        'subnet': ipv4_subnet_dict,
+        'state': state,
+        'ipv6_subnet': ipv6_subnet_dict
+    }
+
+    Translator.save_datasets(dataset_path, dataset_dict)
+
+    if verbose_flag:
+        print("\n--- Obfuscated Mapping Preview ---", file=err)
+        print(json.dumps(dataset_dict, indent=4), file=err)
+
+    total_obfuscations = (
+        len(username_dict) + len(ip_dict) + len(mac_dict)
+        + len(domain_dict) + len(hostname_dict) + len(ipv6_dict)
+        + len(keyword_dict) + len(ipv4_subnet_dict) + len(ipv6_subnet_dict)
+    )
+
+    print("\n------------------------------------------------------------", file=err)
+    print(" Obfuscation Summary", file=err)
+    print("------------------------------------------------------------", file=err)
+    print(f"| Usernames obfuscated      : {len(username_dict)}", file=err)
+    print(f"| IP addresses obfuscated   : {len(ip_dict)}", file=err)
+    print(f"| IPv4 subnets obfuscated   : {len(ipv4_subnet_dict)}", file=err)
+    print(f"| MAC addresses obfuscated  : {len(mac_dict)}", file=err)
+    print(f"| Domains obfuscated        : {len(domain_dict)}", file=err)
+    print(f"| Hostnames obfuscated      : {len(hostname_dict)}", file=err)
+    print(f"| IPv6 addresses obfuscated : {len(ipv6_dict)}", file=err)
+    print(f"| IPv6 subnets obfuscated   : {len(ipv6_subnet_dict)}", file=err)
+    if keyword_scrubber:
+        print(f"| Keywords obfuscated       : {len(keyword_dict)}", file=err)
+    print(f"| Total obfuscation entries : {total_obfuscations}", file=err)
+    print(f"| Mapping file              : {dataset_path}", file=err)
+    if args.keyword_file and keyword_scrubber:
+        print(f"| Keyword file              : {args.keyword_file}", file=err)
+    print("------------------------------------------------------------\n", file=err)
+
+    print_footer(file=err)
+
+
 def main():
     args = parse_args()
+    verbose_flag = args.verbose
+    logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
+
+    is_stdin = (not args.supportconfig_path and not sys.stdin.isatty()) \
+               or args.supportconfig_path == '-'
+    is_folder = bool(args.supportconfig_path) and os.path.isdir(args.supportconfig_path)
+
+    if is_stdin:
+        run_stdin_mode(args, logger)
+        return
+
+    if is_folder:
+        print_header()
+        run_folder_mode(args, logger)
+        print_footer()
+        return
+
     print_header()
 
     supportconfig_path = args.supportconfig_path
     config_path = args.config
-    verbose_flag = args.verbose
-
-    # Initialize the logger
-    logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
-
 
     if args.rewrite_pcap and not args.supportconfig_path:
         if not args.mappings or not args.pcap_in:
@@ -249,7 +549,7 @@ def main():
             print_cmd=args.print_tcprewrite,
             logger=logger,
         )
-        
+
     # Load mappings from JSON file if provided
     mappings = {}
     mapping_keywords = []
@@ -278,10 +578,10 @@ def main():
         keyword_scrubber = KeywordScrubber(keyword_file=args.keyword_file, cmd_keywords=list(combined_keywords))
         if not keyword_scrubber.is_loaded():
             print("[!] Keyword obfuscation disabled (no keywords loaded)")
-            keyword_scrubber = None  
+            keyword_scrubber = None
     except Exception as e:
         logger.error(f"Failed to initialize KeywordScrubber: {e}")
-        keyword_scrubber = None  
+        keyword_scrubber = None
 
     try:
         ip_scrubber = IPScrubber(config, mappings=mappings)
@@ -350,7 +650,7 @@ def main():
         basename=os.path.basename(report_file)
         if not re.match(r"^sa\d{8}(\.xz)?$", basename):
             print(f"        {basename}")
-            
+
         # Use FileProcessor to process the file
         ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = file_processor.process_file(report_file, logger, verbose_flag)
 
@@ -381,7 +681,7 @@ def main():
         'mac': total_mac_dict,
         'ipv6': total_ipv6_dict,
         'keyword': total_keyword_dict,
-        'subnet': total_ipv4_subnet_dict,    
+        'subnet': total_ipv4_subnet_dict,
         'state': total_state,
         'ipv6_subnet': total_ipv6_subnet_dict
     }
@@ -394,7 +694,7 @@ def main():
     print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
     print(f"[✓] Mapping file saved to:       {dataset_path}")
 
-    # Clean up: remove the extracted folder 
+    # Clean up: remove the extracted folder
     try:
         shutil.rmtree(clean_folder_path)
     except Exception as e:

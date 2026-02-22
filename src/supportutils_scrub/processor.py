@@ -86,55 +86,8 @@ class FileProcessor:
             with file_handle as file:
                 original_text = file.read()
             
-            scrubbed_text = original_text
-
-            # Scrub IPv4 addresses and subnets
-            if self.config.get("obfuscate_public_ip") == 'yes' or self.config.get("obfuscate_private_ip") == 'yes':
-                new_text, new_ip_map, new_subnet_map, state = self.ip_scrubber.scrub_text(scrubbed_text)
-                ip_dict.update(new_ip_map)
-                self._ipv4_subnet_map.update(new_subnet_map)
-                self._ipv4_state = state
-                scrubbed_text = new_text
-
-            #   # Scrub IPv6 addresses 
-            if self.config.get("obfuscate_ipv6") == 'yes':
-                try:
-                    before = scrubbed_text
-                    scrubbed_text, new_ipv6_map, ipv6_subnet_map, state6 = self.ipv6_scrubber.scrub_text(scrubbed_text)
-                    if scrubbed_text != before:
-                        obfuscation_occurred = True
-                    ipv6_dict.update(new_ipv6_map)
-                    self._ipv6_subnet_map.update(ipv6_subnet_map)
-                    self._ipv6_state = state6
-                except Exception as e:
-                    logger.error(f"IPv6 scrub failed for {file_path}: {e}")
-
-
-            # Scrub MAC addresses 
-            files_to_skip_mac_scrub = ['modules.txt', 'security-apparmor.txt', 'drbd.txt', 'security-audit.txt', 'fs-btrfs.txt']
-            if base_name not in files_to_skip_mac_scrub and self.config.get("obfuscate_mac") == 'yes':
-                scrubbed_text = self.mac_scrubber.scrub(scrubbed_text)
-                mac_dict.update(self.mac_scrubber.mac_dict)
-
-            # Scrub keywords
-            if self.keyword_scrubber:
-                scrubbed_text, line_keyword_dict = self.keyword_scrubber.scrub(scrubbed_text)
-                keyword_dict.update(line_keyword_dict)
-
-            # Scrub hostnames
-            if self.config.get("obfuscate_hostname") == 'yes':
-                scrubbed_text = self.hostname_scrubber.scrub(scrubbed_text)
-                hostname_dict.update(self.hostname_scrubber.hostname_dict)
-
-            # Scrub domain names
-            if self.config.get("obfuscate_domain") == 'yes':
-                scrubbed_text = self.domain_scrubber.scrub(scrubbed_text)
-                domain_dict.update(self.domain_scrubber.domain_dict)
-
-            # Scrub usernames
-            if self.config.get("obfuscate_username") == 'yes':
-                scrubbed_text = self.username_scrubber.scrub(scrubbed_text)
-                username_dict.update(self.username_scrubber.username_dict)
+            scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+                self._scrub_content(original_text, base_name, logger, verbose_flag)
 
             # Write the changes back to the file if any were made
             if scrubbed_text != original_text:
@@ -158,3 +111,74 @@ class FileProcessor:
             logger.error(f"Error processing file {file_path}: {str(e)}")
 
         return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
+
+    def _scrub_content(self, text, basename, logger, verbose_flag):
+        """
+        Apply all configured scrubbers to text.
+
+        Returns:
+        - Tuple (scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict)
+        """
+        ip_dict = {}
+        domain_dict = {}
+        username_dict = {}
+        hostname_dict = {}
+        keyword_dict = {}
+        mac_dict = {}
+        ipv6_dict = {}
+
+        scrubbed_text = text
+
+        # Scrub IPv4 addresses and subnets
+        if self.config.get("obfuscate_public_ip") == 'yes' or self.config.get("obfuscate_private_ip") == 'yes':
+            new_text, new_ip_map, new_subnet_map, state = self.ip_scrubber.scrub_text(scrubbed_text)
+            ip_dict.update(new_ip_map)
+            self._ipv4_subnet_map.update(new_subnet_map)
+            self._ipv4_state = state
+            scrubbed_text = new_text
+
+        # Scrub IPv6 addresses
+        if self.config.get("obfuscate_ipv6") == 'yes':
+            try:
+                scrubbed_text, new_ipv6_map, ipv6_subnet_map, state6 = self.ipv6_scrubber.scrub_text(scrubbed_text)
+                ipv6_dict.update(new_ipv6_map)
+                self._ipv6_subnet_map.update(ipv6_subnet_map)
+                self._ipv6_state = state6
+            except Exception as e:
+                logger.error(f"IPv6 scrub failed for {basename}: {e}")
+
+        # Scrub MAC addresses
+        files_to_skip_mac_scrub = ['modules.txt', 'security-apparmor.txt', 'drbd.txt', 'security-audit.txt', 'fs-btrfs.txt']
+        if basename not in files_to_skip_mac_scrub and self.config.get("obfuscate_mac") == 'yes':
+            scrubbed_text = self.mac_scrubber.scrub(scrubbed_text)
+            mac_dict.update(self.mac_scrubber.mac_dict)
+
+        # Scrub keywords
+        if self.keyword_scrubber:
+            scrubbed_text, line_keyword_dict = self.keyword_scrubber.scrub(scrubbed_text)
+            keyword_dict.update(line_keyword_dict)
+
+        # Scrub hostnames
+        if self.config.get("obfuscate_hostname") == 'yes':
+            scrubbed_text = self.hostname_scrubber.scrub(scrubbed_text)
+            hostname_dict.update(self.hostname_scrubber.hostname_dict)
+
+        # Scrub domain names
+        if self.config.get("obfuscate_domain") == 'yes':
+            scrubbed_text = self.domain_scrubber.scrub(scrubbed_text)
+            domain_dict.update(self.domain_scrubber.domain_dict)
+
+        # Scrub usernames
+        if self.config.get("obfuscate_username") == 'yes':
+            scrubbed_text = self.username_scrubber.scrub(scrubbed_text)
+            username_dict.update(self.username_scrubber.username_dict)
+
+        return scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
+
+    def process_text(self, text, logger, verbose_flag):
+        """
+        Scrub a plain text string (e.g. from stdin).
+
+        Returns the same tuple as _scrub_content().
+        """
+        return self._scrub_content(text, "stdin", logger, verbose_flag)
