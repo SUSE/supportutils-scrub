@@ -11,6 +11,52 @@ _SINGLE_LABEL_BAN = {
     "net", "org", "com", "edu", "gov", "mil", "int", "arpa"
 }
 
+# Only strings whose rightmost label (TLD) is in this set are treated as real domains.
+# This prevents D-Bus names, container runtime interfaces, version strings, systemd
+# scopes, hardware IDs, etc. from being mistaken for domains.
+_VALID_TLDS = frozenset({
+    # Classic gTLDs
+    "com", "org", "net", "edu", "gov", "mil", "int", "arpa",
+    # Widely-used infrastructure / tech gTLDs
+    "io", "co", "biz", "info", "name", "mobi", "tel", "cat", "jobs", "pro",
+    "aero", "coop", "museum", "travel",
+    # New gTLDs common in enterprise/cloud
+    "cloud", "tech", "dev", "app", "ai", "online", "digital", "global",
+    "email", "zone", "host", "data", "software",
+    # Regional
+    "us", "eu",
+    # ccTLDs (ISO 3166-1 alpha-2)
+    "ac", "ad", "ae", "af", "ag", "al", "am", "ao", "ar", "at", "au", "az",
+    "ba", "bb", "bd", "be", "bf", "bg", "bh", "bi", "bj", "bm", "bn", "bo",
+    "br", "bs", "bt", "bw", "by", "bz",
+    "ca", "cd", "cf", "cg", "ch", "ci", "ck", "cl", "cm", "cn", "cr",
+    "cu", "cv", "cy", "cz",
+    "de", "dj", "dk", "dm", "do", "dz",
+    "ec", "ee", "eg", "er", "es", "et",
+    "fi", "fj", "fo", "fr",
+    "ga", "gd", "ge", "gh", "gm", "gn", "gr", "gt", "gw", "gy",
+    "hk", "hn", "hr", "ht", "hu",
+    "id", "ie", "il", "in", "iq", "ir", "is", "it",
+    "jm", "jo", "jp",
+    "ke", "kg", "kh", "km", "kn", "kp", "kr", "kw", "kz",
+    "la", "lb", "lc", "li", "lk", "lr", "ls", "lt", "lu", "lv", "ly",
+    "ma", "mc", "md", "me", "mg", "mk", "ml", "mm", "mn", "mr", "mt", "mu",
+    "mv", "mw", "mx", "my", "mz",
+    "na", "ne", "ng", "ni", "nl", "no", "np", "nr", "nz",
+    "om",
+    "pa", "pe", "ph", "pk", "pl", "pt", "pw", "py",
+    "qa",
+    "ro", "rs", "ru", "rw",
+    "sa", "sb", "sc", "sd", "se", "sg", "si", "sk", "sl", "sm", "sn", "so",
+    "sr", "ss", "st", "sv", "sy", "sz",
+    "td", "tg", "th", "tj", "tl", "tm", "tn", "to", "tr", "tt", "tv", "tz",
+    "ua", "ug", "uk", "uy", "uz",
+    "va", "vc", "ve", "vn", "vu",
+    "ws",
+    "ye",
+    "za", "zm", "zw",
+})
+
 def _norm(d: str) -> str:
     """Normalizes a domain by stripping whitespace, trailing dots, and converting to lowercase."""
     return d.strip().rstrip(".").lower()
@@ -22,14 +68,14 @@ def _labels_count(d: str) -> int:
 def _is_valid_domain(d: str) -> bool:
     """Performs basic validation on a domain string."""
     d = _norm(d)
-    if "." not in d:                   
+    if "." not in d:
         return False
-    if d in _SINGLE_LABEL_BAN:         
+    if d in _SINGLE_LABEL_BAN:
         return False
     if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", d):
         return False
     parts = d.split(".")
-    if any(len(p) == 0 for p in parts): 
+    if any(len(p) == 0 for p in parts):
         return False
     for p in parts:
         if len(p) > 63:
@@ -38,6 +84,11 @@ def _is_valid_domain(d: str) -> bool:
             return False
         if not re.fullmatch(r"[a-zA-Z0-9-]+", p):
             return False
+    # Reject anything whose TLD is not a known real TLD.
+    # This prevents D-Bus names, container runtime interfaces, version strings,
+    # systemd scopes, hardware IDs, etc. from being treated as domains.
+    if parts[-1].lower() not in _VALID_TLDS:
+        return False
     return True
 
 def _sort_specific_first(domains: Iterable[str]) -> List[str]:
