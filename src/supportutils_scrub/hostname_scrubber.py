@@ -74,6 +74,41 @@ class HostnameScrubber:
         return hostnames
 
     @staticmethod
+    def extract_hostnames_from_text(text):
+        """
+        Extracts hostnames from a log text string.
+        Handles:
+          - NFS server lines: 'nfs: server hostname.domain.tld'
+          - RFC 5424 syslog: 'TIMESTAMP HOSTNAME service: ...' (hostname repeated >= 3 lines)
+        """
+        excluded = {
+            "localhost", "ipv6-localhost", "ipv6-loopback",
+            "ipv6-localnet", "ipv6-mcastprefix", "ipv6-allnodes",
+            "ipv6-allrouters", "ipv6-allhosts",
+        }
+        hostnames = set()
+
+        # NFS server: "nfs: server hostname.domain.tld [not responding, ...]"
+        for m in re.finditer(r'nfs: server ([\w][\w.-]*)', text):
+            short = m.group(1).split('.')[0]
+            if len(short) >= 3 and short not in excluded:
+                hostnames.add(short)
+
+        # RFC 5424 syslog timestamp + hostname: "2026-02-17T01:50:02+01:00 HOSTNAME service: ..."
+        counts = {}
+        for m in re.finditer(
+            r'^\d{4}-\d{2}-\d{2}T[\d:.+-]+\s+([\w][\w-]*)\b', text, re.MULTILINE
+        ):
+            h = m.group(1)
+            if len(h) >= 3 and h not in excluded:
+                counts[h] = counts.get(h, 0) + 1
+        for h, count in counts.items():
+            if count >= 3:
+                hostnames.add(h)
+
+        return list(hostnames)
+
+    @staticmethod
     def build_hostname_dict(hostnames):
         hostname_dict = {}
         seen = set()

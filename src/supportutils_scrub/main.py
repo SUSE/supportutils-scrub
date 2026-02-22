@@ -401,22 +401,22 @@ def run_stdin_mode(args, logger):
     if keyword_scrubber is None and (args.keywords or args.keyword_file):
         print("[!] Keyword obfuscation disabled (no keywords loaded)", file=err)
 
-    # No pre-scan; build dicts from args only
-    additional_domains = []
-    if args.domain:
-        additional_domains = re.split(r'[,\s;]+', args.domain)
+    # Read input first so we can pre-scan before building scrubbers
+    text = sys.stdin.read()
+
+    additional_domains = list(re.split(r'[,\s;]+', args.domain) if args.domain else [])
+    additional_domains += DomainScrubber.extract_domains_from_text(text)
+
+    additional_usernames = list(re.split(r'[,\s;]+', args.username) if args.username else [])
+    additional_usernames += UsernameScrubber.extract_usernames_from_text(text)
+
+    additional_hostnames = list(re.split(r'[,\s;]+', args.hostname) if args.hostname else [])
+    additional_hostnames += HostnameScrubber.extract_hostnames_from_text(text)
+
     domain_dict = extract_and_map_domains([], additional_domains, mappings)
     domain_scrubber = DomainScrubber(domain_dict)
-
-    additional_usernames = []
-    if args.username:
-        additional_usernames = re.split(r'[,\s;]+', args.username)
     username_dict = extract_usernames([], additional_usernames, mappings)
     username_scrubber = UsernameScrubber(username_dict)
-
-    additional_hostnames = []
-    if args.hostname:
-        additional_hostnames = re.split(r'[,\s;]+', args.hostname)
     hostname_dict = extract_hostnames([], additional_hostnames, mappings)
     hostname_scrubber = HostnameScrubber(hostname_dict)
 
@@ -426,8 +426,6 @@ def run_stdin_mode(args, logger):
     except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
-
-    text = sys.stdin.read()
     scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
         file_processor.process_text(text, logger, verbose_flag)
 
@@ -507,21 +505,27 @@ def run_file_mode(args, logger):
     if keyword_scrubber is None and (args.keywords or args.keyword_file):
         print("[!] Keyword obfuscation disabled (no keywords loaded)")
 
-    additional_domains = []
-    if args.domain:
-        additional_domains = re.split(r'[,\s;]+', args.domain)
+    # Read input first so we can pre-scan before building scrubbers
+    try:
+        with open(input_path, 'r', encoding='utf-8', errors='ignore') as f:
+            text = f.read()
+    except Exception as e:
+        print(f"[!] Cannot read {input_path}: {e}")
+        sys.exit(1)
+
+    additional_domains = list(re.split(r'[,\s;]+', args.domain) if args.domain else [])
+    additional_domains += DomainScrubber.extract_domains_from_text(text)
+
+    additional_usernames = list(re.split(r'[,\s;]+', args.username) if args.username else [])
+    additional_usernames += UsernameScrubber.extract_usernames_from_text(text)
+
+    additional_hostnames = list(re.split(r'[,\s;]+', args.hostname) if args.hostname else [])
+    additional_hostnames += HostnameScrubber.extract_hostnames_from_text(text)
+
     domain_dict = extract_and_map_domains([], additional_domains, mappings)
     domain_scrubber = DomainScrubber(domain_dict)
-
-    additional_usernames = []
-    if args.username:
-        additional_usernames = re.split(r'[,\s;]+', args.username)
     username_dict = extract_usernames([], additional_usernames, mappings)
     username_scrubber = UsernameScrubber(username_dict)
-
-    additional_hostnames = []
-    if args.hostname:
-        additional_hostnames = re.split(r'[,\s;]+', args.hostname)
     hostname_dict = extract_hostnames([], additional_hostnames, mappings)
     hostname_scrubber = HostnameScrubber(hostname_dict)
 
@@ -530,13 +534,6 @@ def run_file_mode(args, logger):
                                        hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
     except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
-        sys.exit(1)
-
-    try:
-        with open(input_path, 'r', encoding='utf-8', errors='ignore') as f:
-            text = f.read()
-    except Exception as e:
-        print(f"[!] Cannot read {input_path}: {e}")
         sys.exit(1)
 
     scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
