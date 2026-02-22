@@ -69,7 +69,7 @@ class UsernameScrubber:
     # Patterns shared between file-based and text-based extraction
     _LOG_PATTERNS = [
         re.compile(r"session opened for user (\w+)"),
-        re.compile(r"\buser\s*=\s*([A-Za-z0-9._-]+)", re.IGNORECASE),
+        re.compile(r"\b(?:user|logname)\s*=\s*([A-Za-z0-9._-]+)", re.IGNORECASE),
         re.compile(r'acct="([^"]+)"'),
         re.compile(r'NCE/USER/[^/]+/([A-Za-z0-9._-]+)', re.IGNORECASE),
         # pam_unix(service:type): ... for [username]
