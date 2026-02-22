@@ -377,9 +377,9 @@ def run_folder_mode(args, logger):
     print("------------------------------------------------------------\n")
 
 
-def run_stdin_mode(args, logger):
+def run_stdin_mode(args, logger, input_path=None):
     """
-    Read from stdin, write scrubbed text to stdout, header/summary to stderr.
+    Read from stdin (or input_path if given), write scrubbed text to stdout, header/summary to stderr.
     """
     verbose_flag = args.verbose
     err = sys.stderr
@@ -427,7 +427,11 @@ def run_stdin_mode(args, logger):
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
 
-    text = sys.stdin.read()
+    if input_path:
+        with open(input_path, 'r', encoding='utf-8', errors='ignore') as f:
+            text = f.read()
+    else:
+        text = sys.stdin.read()
     scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
         file_processor.process_text(text, logger, verbose_flag)
 
@@ -492,9 +496,16 @@ def main():
     is_stdin = (not args.supportconfig_path and not sys.stdin.isatty()) \
                or args.supportconfig_path == '-'
     is_folder = bool(args.supportconfig_path) and os.path.isdir(args.supportconfig_path)
+    is_file = (bool(args.supportconfig_path)
+               and os.path.isfile(args.supportconfig_path)
+               and not args.supportconfig_path.endswith(('.txz', '.tgz')))
 
     if is_stdin:
         run_stdin_mode(args, logger)
+        return
+
+    if is_file:
+        run_stdin_mode(args, logger, input_path=args.supportconfig_path)
         return
 
     if is_folder:
