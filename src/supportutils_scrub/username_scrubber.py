@@ -66,26 +66,45 @@ class UsernameScrubber:
         
         return list(usernames)
 
+    # Patterns shared between file-based and text-based extraction
+    _LOG_PATTERNS = [
+        re.compile(r"session opened for user (\w+)"),
+        re.compile(r"\buser\s*=\s*([A-Za-z0-9._-]+)", re.IGNORECASE),
+        re.compile(r'acct="([^"]+)"'),
+        re.compile(r'NCE/USER/[^/]+/([A-Za-z0-9._-]+)', re.IGNORECASE),
+        # pam_unix(service:type): ... for [username]
+        re.compile(r'pam_unix\([^)]+\):.*?\[([A-Za-z0-9._-]+)\]'),
+        # unix_chkpwd: password check failed for user (username)
+        re.compile(r'password check failed for user \(([A-Za-z0-9._-]+)\)'),
+    ]
+
     @staticmethod
     def extract_usernames_from_messages(file_name):
         """Extracts non-excluded usernames from log files using regex."""
-        patterns = [
-            re.compile(r"session opened for user (\w+)"),
-            re.compile(r"\buser\s*=\s*([A-Za-z0-9._-]+)", re.IGNORECASE),
-            re.compile(r'acct="([^"]+)"'),
-            re.compile(r'NCE/USER/[^/]+/([A-Za-z0-9._-]+)', re.IGNORECASE),
-        ]
         usernames = set()
         try:
             with open(file_name, 'r', encoding='utf-8', errors='ignore') as file:
                 for line in file:
-                    for pat in patterns:
+                    for pat in UsernameScrubber._LOG_PATTERNS:
                         match = pat.search(line)
                         if match:
                             username = match.group(1)
                             if not UsernameScrubber._is_excluded(username):
                                 usernames.add(username)
         except IOError:
-            pass 
-        
+            pass
+
+        return list(usernames)
+
+    @staticmethod
+    def extract_usernames_from_text(text):
+        """Extracts non-excluded usernames from a text string using log patterns."""
+        usernames = set()
+        for line in text.splitlines():
+            for pat in UsernameScrubber._LOG_PATTERNS:
+                match = pat.search(line)
+                if match:
+                    username = match.group(1)
+                    if not UsernameScrubber._is_excluded(username):
+                        usernames.add(username)
         return list(usernames)
