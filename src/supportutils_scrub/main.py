@@ -58,7 +58,7 @@ def parse_args():
         description="Obfuscate SUSE supportconfig archives by masking sensitive data."
     )
 
-    parser.add_argument("supportconfig_path", nargs="?", help="Path to .txz archive, extracted folder, or '-' for stdin")
+    parser.add_argument("supportconfig_path", nargs="*", help="Path(s) to .txz/.tgz archive(s), a folder, a plain file, or '-' for stdin. Multiple archives are processed sequentially with shared mappings.")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH,
                         help="Path to config file (defaults provided)")
     parser.add_argument("--verbose", action="store_true",
@@ -263,7 +263,7 @@ def run_folder_mode(args, logger):
         print("[!] Keyword obfuscation disabled (no keywords loaded)")
 
     try:
-        report_files, scrubbed_path = copy_folder_to_scrubbed(args.supportconfig_path)
+        report_files, scrubbed_path = copy_folder_to_scrubbed(args.supportconfig_path[0])
         print(f"[✓] Folder copied to: {scrubbed_path}")
     except Exception as e:
         print(f"[!] Error copying folder: {e}")
@@ -487,7 +487,7 @@ def run_file_mode(args, logger):
     Process a single plain file: write scrubbed copy to {path}_scrubbed, summary to stdout.
     """
     verbose_flag = args.verbose
-    input_path = args.supportconfig_path
+    input_path = args.supportconfig_path[0]
     output_path = input_path + '_scrubbed'
 
     dataset_dir = '/var/tmp'
@@ -608,17 +608,141 @@ def run_file_mode(args, logger):
     print("------------------------------------------------------------\n")
 
 
+def _process_one_archive(archive_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
+    """
+    Process a single .txz/.tgz archive using current_mappings for consistency.
+    Returns (updated_mappings, stats_dict).
+    updated_mappings accumulates all known entities so subsequent archives reuse
+    the same fake values for any shared IPs, domains, hostnames, or usernames.
+    """
+    try:
+        ip_scrubber = IPScrubber(config, mappings=current_mappings)
+        mac_scrubber = MACScrubber(config, mappings=current_mappings)
+        ipv6_scrubber = IPv6Scrubber(config, mappings=current_mappings)
+    except Exception as e:
+        logger.error(f"Error initializing scrubbers for {archive_path}: {e}")
+        sys.exit(1)
+
+    try:
+        report_files, clean_folder_path = extract_supportconfig(archive_path, logger)
+    except Exception as e:
+        print(f"[!] Error during extraction of {archive_path}: {e}")
+        raise
+
+    additional_domains = []
+    if args.domain:
+        additional_domains = re.split(r'[,\s;]+', args.domain)
+    domain_dict = extract_and_map_domains(report_files, additional_domains, current_mappings)
+    domain_scrubber = DomainScrubber(domain_dict)
+
+    additional_usernames = []
+    if args.username:
+        additional_usernames = re.split(r'[,\s;]+', args.username)
+    username_dict = extract_usernames(report_files, additional_usernames, current_mappings)
+    username_scrubber = UsernameScrubber(username_dict)
+
+    additional_hostnames = []
+    if args.hostname:
+        additional_hostnames = re.split(r'[,\s;]+', args.hostname)
+    hostname_dict = extract_hostnames(report_files, additional_hostnames, current_mappings)
+    hostname_scrubber = HostnameScrubber(hostname_dict)
+
+    try:
+        file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
+                                       hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
+    except Exception as e:
+        logger.error(f"Error initializing FileProcessor: {e}")
+        sys.exit(1)
+
+    total_ip_dict = {}
+    total_domain_dict = {}
+    total_user_dict = {}
+    total_hostname_dict = {}
+    total_keyword_dict = {}
+    total_mac_dict = {}
+    total_ipv6_dict = {}
+    total_ipv4_subnet_dict = {}
+    total_ipv6_subnet_dict = {}
+    total_state = {}
+
+    logger.info("Scrubbing:")
+    for report_file in report_files:
+        basename = os.path.basename(report_file)
+        if not re.match(r"^sa\d{8}(\.xz)?$", basename):
+            print(f"        {basename}")
+
+        ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+            file_processor.process_file(report_file, logger, verbose_flag)
+
+        total_ip_dict.update(ip_dict)
+        total_domain_dict.update(domain_dict)
+        total_user_dict.update(username_dict)
+        total_hostname_dict.update(hostname_dict)
+        total_keyword_dict.update(keyword_dict)
+        total_mac_dict.update(mac_dict)
+        total_ipv6_dict.update(ipv6_dict)
+        if hasattr(file_processor, '_ipv4_subnet_map'):
+            total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
+        if hasattr(file_processor, '_ipv4_state'):
+            total_state = file_processor._ipv4_state
+        if hasattr(file_processor, '_ipv6_subnet_map'):
+            total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
+
+    base_name = os.path.splitext(archive_path)[0]
+    new_txz_file_path = base_name + "_scrubbed.txz"
+    create_txz(clean_folder_path, new_txz_file_path)
+    print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
+
+    try:
+        shutil.rmtree(clean_folder_path)
+    except Exception as e:
+        print(f"[!] Could not remove temp folder {clean_folder_path}: {e}")
+
+    try:
+        stat = os.stat(new_txz_file_path)
+        archive_size_mb = stat.st_size / (1024 * 1024)
+        archive_owner = pwd.getpwuid(stat.st_uid).pw_name
+    except Exception:
+        archive_size_mb = 0
+        archive_owner = "unknown"
+
+    updated_mappings = {
+        'ip': total_ip_dict,
+        'domain': total_domain_dict,
+        'user': total_user_dict,
+        'hostname': total_hostname_dict,
+        'mac': total_mac_dict,
+        'ipv6': total_ipv6_dict,
+        'keyword': total_keyword_dict,
+        'subnet': total_ipv4_subnet_dict,
+        'state': total_state,
+        'ipv6_subnet': total_ipv6_subnet_dict,
+    }
+
+    stats = {
+        'archive_path': archive_path,
+        'output_path': new_txz_file_path,
+        'files': len(report_files),
+        'size_mb': archive_size_mb,
+        'owner': archive_owner,
+    }
+
+    return updated_mappings, stats
+
+
 def main():
     args = parse_args()
     verbose_flag = args.verbose
     logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
 
-    is_stdin = (not args.supportconfig_path and not sys.stdin.isatty()) \
-               or args.supportconfig_path == '-'
-    is_folder = bool(args.supportconfig_path) and os.path.isdir(args.supportconfig_path)
-    is_file = (bool(args.supportconfig_path)
-               and os.path.isfile(args.supportconfig_path)
-               and not args.supportconfig_path.endswith(('.txz', '.tgz')))
+    paths = args.supportconfig_path  # list (nargs="*")
+
+    is_stdin = (len(paths) == 0 and not sys.stdin.isatty()) \
+               or (len(paths) == 1 and paths[0] == '-')
+    is_folder = len(paths) == 1 and os.path.isdir(paths[0])
+    is_file = (len(paths) == 1
+               and os.path.isfile(paths[0])
+               and not paths[0].endswith(('.txz', '.tgz')))
 
     if is_stdin:
         run_stdin_mode(args, logger)
@@ -638,10 +762,8 @@ def main():
 
     print_header()
 
-    supportconfig_path = args.supportconfig_path
-    config_path = args.config
-
-    if args.rewrite_pcap and not args.supportconfig_path:
+    # pcap-only mode (no archives given)
+    if args.rewrite_pcap and not paths:
         if not args.mappings or not args.pcap_in:
             print("[!] For --rewrite-pcap without a supportconfig, provide --mappings and --pcap-in")
             sys.exit(2)
@@ -652,18 +774,19 @@ def main():
             print_cmd=args.print_tcprewrite,
             logger=logger,
         )
+        print_footer()
         return
+
+    if not paths:
+        print("[!] No input specified. Provide a .txz/.tgz archive, folder, plain file, or '-' for stdin.")
+        sys.exit(2)
 
     dataset_dir = '/var/tmp'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    unique_name = f"obfuscation_mappings_{timestamp}.json"
-    dataset_path = os.path.join(dataset_dir, unique_name)
+    dataset_path = os.path.join(dataset_dir, f"obfuscation_mappings_{timestamp}.json")
 
-
-
-    # Use the ConfigReader class to read the configuration
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
-    config = config_reader.read_config(config_path)
+    config = config_reader.read_config(args.config)
 
     if args.rewrite_pcap:
         if not args.pcap_in:
@@ -675,7 +798,6 @@ def main():
         except Exception as e:
             print(f"[!] Failed to read mappings for pcap rewrite from {mapping_src_path}: {e}")
             sys.exit(2)
-
         rewrite_pcaps_with_tcprewrite(
             mappings_for_pcap, args.pcap_in, args.pcap_out_dir,
             tcprewrite=args.tcprewrite_path,
@@ -683,204 +805,91 @@ def main():
             logger=logger,
         )
 
-    # Load mappings from JSON file if provided
-    mappings = {}
+    # Load initial mappings (from --mappings if provided)
+    initial_mappings = {}
     mapping_keywords = []
     if args.mappings:
         try:
             with open(args.mappings, 'r') as f:
-                mappings = json.load(f)
+                initial_mappings = json.load(f)
                 print(f"[✓] Dataset mapping loaded from: {args.mappings} ")
-                # Extract keywords from mappings if available
-                mapping_keywords = list(mappings.get('keyword', {}).keys())
+                mapping_keywords = list(initial_mappings.get('keyword', {}).keys())
         except Exception as e:
             print(f"[!] Failed to load mapping from {args.mappings}")
             sys.exit(1)
 
-    # Parse command-line keywords
+    # Keyword scrubber is initialized once and shared across all archives
     cmd_keywords = []
     if args.keywords:
         cmd_keywords = [kw.strip() for kw in re.split(r'[,\s;]+', args.keywords.strip()) if kw.strip()]
-
-
-    # Combine keywords from command line, file, and mappings
     combined_keywords = set(cmd_keywords).union(mapping_keywords)
-
-    # Initialize KeywordScrubber with file and combined keywords
     try:
         keyword_scrubber = KeywordScrubber(keyword_file=args.keyword_file, cmd_keywords=list(combined_keywords))
         if not keyword_scrubber.is_loaded():
-            print("[!] Keyword obfuscation disabled (no keywords loaded)")
+            if args.keywords or args.keyword_file:
+                print("[!] Keyword obfuscation disabled (no keywords loaded)")
             keyword_scrubber = None
     except Exception as e:
         logger.error(f"Failed to initialize KeywordScrubber: {e}")
         keyword_scrubber = None
 
-    try:
-        ip_scrubber = IPScrubber(config, mappings=mappings)
-        mac_scrubber = MACScrubber(config, mappings=mappings)
-        ipv6_scrubber = IPv6Scrubber(config, mappings=mappings)
-    except Exception as e:
-        logger.error(f"Error initializing FileProcessor: {e}")
-        sys.exit(1)
+    # Process archives sequentially, chaining mappings for consistency
+    current_mappings = initial_mappings
+    all_stats = []
 
-    try:
-        report_files, clean_folder_path = extract_supportconfig(supportconfig_path, logger)
-    except Exception as e:
-        print(f"[!] Error during extraction: {e}")
-        raise
+    for i, archive_path in enumerate(paths):
+        if len(paths) > 1:
+            print(f"\n[{i+1}/{len(paths)}] Processing: {os.path.basename(archive_path)}")
+        current_mappings, stats = _process_one_archive(
+            archive_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag
+        )
+        all_stats.append(stats)
 
-    # Populate the domains dictionary
-    additional_domains = []
-    if args.domain:
-        additional_domains = re.split(r'[,\s;]+', args.domain)
-    domain_dict = extract_and_map_domains(report_files, additional_domains, mappings)
-    domain_scrubber = DomainScrubber(domain_dict)
-
-    # Extract and build the username dictionary
-    additional_usernames = []
-    if args.username:
-        additional_usernames = re.split(r'[,\s;]+', args.username)
-    username_dict = extract_usernames(report_files, additional_usernames, mappings)
-    username_scrubber = UsernameScrubber(username_dict)
-
-    # Extract hostnames and build dictionary
-    additional_hostnames = []
-    if args.hostname:
-        additional_hostnames = re.split(r'[,\s;]+', args.hostname)
-    hostname_dict = extract_hostnames(report_files, additional_hostnames, mappings)
-    hostname_scrubber = HostnameScrubber(hostname_dict)
-
-    # Initialize FileProcessor
-    try:
-        file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber, hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
-    except Exception as e:
-        logger.error(f"Error initializing FileProcessor: {e}")
-        sys.exit(1)
-
-    # List of filenames to exclude from scrubbing
-    exclude_files = []
-
-    # Dictionaries to store obfuscation mappings
-    total_ip_dict = {}
-    total_domain_dict = {}
-    total_user_dict = {}
-    total_hostname_dict = {}
-    total_keyword_dict = {}
-    total_mac_dict = {}
-    total_ipv6_dict = {}
-    total_ipv4_subnet_dict = {}
-    total_ipv6_subnet_dict = {}
-    total_state = {}
-    total_state6 = {}
-
-    # Process supportconfig files
-    logger.info("Scrubbing:")
-    for report_file in report_files:
-        if os.path.basename(report_file) in exclude_files:
-            print(f"        {os.path.basename(report_file)} (Excluded)")
-            continue
-        basename=os.path.basename(report_file)
-        if not re.match(r"^sa\d{8}(\.xz)?$", basename):
-            print(f"        {basename}")
-
-        # Use FileProcessor to process the file
-        ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = file_processor.process_file(report_file, logger, verbose_flag)
-
-        # Aggregate the translation dictionaries
-        total_ip_dict.update(ip_dict)
-        total_domain_dict.update(domain_dict)
-        total_user_dict.update(username_dict)
-        total_hostname_dict.update(hostname_dict)
-        total_keyword_dict.update(keyword_dict)
-        total_mac_dict.update(mac_dict)
-        total_ipv6_dict.update(ipv6_dict)
-        total_ipv4_subnet_dict = {}
-        total_ipv6_subnet_dict = {}
-
-        if hasattr(file_processor, '_ipv4_subnet_map'):
-            total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
-        if hasattr(file_processor, '_ipv4_state'):
-            total_state = file_processor._ipv4_state
-        if hasattr(file_processor, "_ipv6_subnet_map"):
-           total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
-
-
-    dataset_dict = {
-        'ip': total_ip_dict,
-        'domain': total_domain_dict,
-        'user': total_user_dict,
-        'hostname': total_hostname_dict,
-        'mac': total_mac_dict,
-        'ipv6': total_ipv6_dict,
-        'keyword': total_keyword_dict,
-        'subnet': total_ipv4_subnet_dict,
-        'state': total_state,
-        'ipv6_subnet': total_ipv6_subnet_dict
-    }
-
-    Translator.save_datasets(dataset_path, dataset_dict)
-
-    base_name = os.path.splitext(args.supportconfig_path)[0]
-    new_txz_file_path = base_name + "_scrubbed.txz"
-    create_txz(clean_folder_path, new_txz_file_path)
-    print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
+    # Save final combined mappings (single file covering all archives)
+    Translator.save_datasets(dataset_path, current_mappings)
     print(f"[✓] Mapping file saved to:       {dataset_path}")
-
-    # Clean up: remove the extracted folder
-    try:
-        shutil.rmtree(clean_folder_path)
-    except Exception as e:
-        print(f"[!] Could not remove temp folder {clean_folder_path}: {e}")
-
-    # Get size and owner of the scrubbed tarball
-    try:
-        stat = os.stat(new_txz_file_path)
-        archive_size_mb = stat.st_size / (1024 * 1024)
-        archive_owner = pwd.getpwuid(stat.st_uid).pw_name
-    except Exception as e:
-        archive_size_mb = 0
-        archive_owner = "unknown"
 
     if verbose_flag:
         print("\n--- Obfuscated Mapping Preview ---")
-        print(json.dumps(dataset_dict, indent=4))
+        print(json.dumps(current_mappings, indent=4))
 
-    total_files_scrubbed = len([
-        f for f in report_files if os.path.basename(f) not in exclude_files
-    ])
-
+    total_files_scrubbed = sum(s['files'] for s in all_stats)
     total_obfuscations = (
-        len(total_user_dict)
-        + len(total_ip_dict)
-        + len(total_mac_dict)
-        + len(total_domain_dict)
-        + len(total_hostname_dict)
-        + len(total_ipv6_dict)
-        + len(total_keyword_dict)
-        + len(total_ipv4_subnet_dict)
-        + len(total_ipv6_subnet_dict)
+        len(current_mappings.get('user', {}))
+        + len(current_mappings.get('ip', {}))
+        + len(current_mappings.get('mac', {}))
+        + len(current_mappings.get('domain', {}))
+        + len(current_mappings.get('hostname', {}))
+        + len(current_mappings.get('ipv6', {}))
+        + len(current_mappings.get('keyword', {}))
+        + len(current_mappings.get('subnet', {}))
+        + len(current_mappings.get('ipv6_subnet', {}))
     )
 
     print("\n------------------------------------------------------------")
-    print(" Obfuscation Summary")
+    if len(paths) > 1:
+        print(f" Combined Obfuscation Summary ({len(paths)} archives)")
+    else:
+        print(" Obfuscation Summary")
     print("------------------------------------------------------------")
     print(f"| Files obfuscated          : {total_files_scrubbed}")
-    print(f"| Usernames obfuscated      : {len(total_user_dict)}")
-    print(f"| IP addresses obfuscated   : {len(total_ip_dict)}")
-    print(f"| IPv4 subnets obfuscated   : {len(total_ipv4_subnet_dict)}")
-    print(f"| MAC addresses obfuscated  : {len(total_mac_dict)}")
-    print(f"| Domains obfuscated        : {len(total_domain_dict)}")
-    print(f"| Hostnames obfuscated      : {len(total_hostname_dict)}")
-    print(f"| IPv6 addresses obfuscated : {len(total_ipv6_dict)}")
-    print(f"| IPv6 subnets obfuscated   : {len(total_ipv6_subnet_dict)}")
-
+    print(f"| Usernames obfuscated      : {len(current_mappings.get('user', {}))}")
+    print(f"| IP addresses obfuscated   : {len(current_mappings.get('ip', {}))}")
+    print(f"| IPv4 subnets obfuscated   : {len(current_mappings.get('subnet', {}))}")
+    print(f"| MAC addresses obfuscated  : {len(current_mappings.get('mac', {}))}")
+    print(f"| Domains obfuscated        : {len(current_mappings.get('domain', {}))}")
+    print(f"| Hostnames obfuscated      : {len(current_mappings.get('hostname', {}))}")
+    print(f"| IPv6 addresses obfuscated : {len(current_mappings.get('ipv6', {}))}")
+    print(f"| IPv6 subnets obfuscated   : {len(current_mappings.get('ipv6_subnet', {}))}")
     if keyword_scrubber:
-        print(f"| Keywords obfuscated       : {len(total_keyword_dict)}")
+        print(f"| Keywords obfuscated       : {len(current_mappings.get('keyword', {}))}")
     print(f"| Total obfuscation entries : {total_obfuscations}")
-    print(f"| Size                      : {archive_size_mb:.2f} MB")
-    print(f"| Owner                     : {archive_owner}")
-    print(f"| Output archive            : {new_txz_file_path}")
+    if len(paths) == 1:
+        stats = all_stats[0]
+        print(f"| Size                      : {stats['size_mb']:.2f} MB")
+        print(f"| Owner                     : {stats['owner']}")
+    for stats in all_stats:
+        print(f"| Output archive            : {stats['output_path']}")
     print(f"| Mapping file              : {dataset_path}")
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}")
