@@ -163,13 +163,13 @@ class IPScrubber:
             
             try:
                 real_net = ip_network(f"{ip}/{pfx}", strict=False)
-                
+
                 is_private = self._is_private(ip)
                 if is_private and not self._should_obfuscate_private():
-                    continue  
-                
+                    continue
+
                 self._ensure_fake_subnet(real_net)
-            except ValueError:
+            except (ValueError, RuntimeError):
                 pass
 
     def _map_in_subnets(self, ip_str):
@@ -244,7 +244,10 @@ class IPScrubber:
         if self._is_private(str(real_net.network_address)) and not self._should_obfuscate_private():
             return None, None
 
-        self._ensure_fake_subnet(real_net)
+        try:
+            self._ensure_fake_subnet(real_net)
+        except RuntimeError:
+            return None, None
         return real_net, self._real_to_fake.get(real_net)
 
     
