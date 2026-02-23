@@ -3,7 +3,7 @@
 import os
 import shutil
 import logging
-import tarfile 
+import tarfile
 
 def extract_supportconfig(supportconfig_path, logger):
     """
@@ -85,8 +85,15 @@ def extract_tgz_archive(archive_path, logger):
     with tarfile.open(archive_path, "r:gz") as tar:
         members = tar.getmembers()
         for member in members:
+            if member.issym() or member.islnk():
+                continue
+            if member.isdir():
+                continue
             member.name = os.path.join(clean_folder_name, os.path.basename(member.name))
-            tar.extract(member, path=extract_base_folder)
+            try:
+                tar.extract(member, path=extract_base_folder)
+            except Exception as e:
+                logging.warning(f"Skipping {member.name}: {e}")
 
     report_files = walk_supportconfig(clean_folder_path)
     print(f"[✓] Archive extracted to: {clean_folder_path}")
