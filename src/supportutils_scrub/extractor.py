@@ -82,14 +82,36 @@ def extract_tgz_archive(archive_path, logger):
     if os.path.exists(clean_folder_path):
         shutil.rmtree(clean_folder_path)
 
+    os.makedirs(clean_folder_path, exist_ok=True)
+
     with tarfile.open(archive_path, "r:gz") as tar:
         members = tar.getmembers()
+
+        # Identify the top-level directory inside the archive so we can strip
+        # it and replace it with clean_folder_name, preserving the rest of the
+        # path (e.g. hana-t1/ha-log.txt stays intact).
+        top_level = None
+        for member in members:
+            top = member.name.split('/')[0]
+            if top:
+                top_level = top
+                break
+
         for member in members:
             if member.issym() or member.islnk():
                 continue
             if member.isdir():
                 continue
-            member.name = os.path.join(clean_folder_name, os.path.basename(member.name))
+
+            if top_level and member.name.startswith(top_level + '/'):
+                relative_path = member.name[len(top_level) + 1:]
+            else:
+                relative_path = os.path.basename(member.name)
+
+            if not relative_path:
+                continue
+
+            member.name = os.path.join(clean_folder_name, relative_path)
             try:
                 tar.extract(member, path=extract_base_folder)
             except Exception as e:
