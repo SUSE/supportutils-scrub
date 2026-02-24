@@ -6,6 +6,9 @@ from typing import Set, Dict, List, Optional, Tuple, Iterable, Match
 LABEL = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
 DOMAIN_RE = re.compile(rf"(?<![\w-])({LABEL}(?:\.{LABEL})+)(?![\w-])", re.IGNORECASE)
 
+# Matches LDAP DN DC components: DC=example,DC=com or dc=example,dc=com
+_DC_RE = re.compile(r'(DC=[A-Za-z0-9-]+(?:,DC=[A-Za-z0-9-]+)+)', re.IGNORECASE)
+
 _SINGLE_LABEL_BAN = {
     "local", "localhost", "internal", "intranet", "corp", "lan", "home",
     "net", "org", "com", "edu", "gov", "mil", "int", "arpa"
@@ -96,6 +99,14 @@ def _sort_specific_first(domains: Iterable[str]) -> List[str]:
     uniq = {_norm(d) for d in domains if _is_valid_domain(d)}
     return sorted(uniq, key=lambda s: (_labels_count(s), len(s)), reverse=True)
 
+def _dc_to_domain(dc_str: str) -> str:
+    """Converts 'DC=example,DC=com' to 'example.com'."""
+    return '.'.join(re.findall(r'(?i)DC=([A-Za-z0-9-]+)', dc_str)).lower()
+
+def _domain_to_dc(domain: str) -> str:
+    """Converts 'example.com' to 'DC=example,DC=com'."""
+    return ','.join(f'DC={label}' for label in domain.split('.'))
+
 class DomainScrubber:
 
 
@@ -116,17 +127,32 @@ class DomainScrubber:
         else:
             self._re = None
 
+        # Build DC= (LDAP distinguished name) format mappings
+        # e.g. 'example.com' -> 'domain_0' becomes 'DC=example,DC=com' -> 'DC=domain_0'
+        self._dc_dict: Dict[str, str] = {}
+        for real, fake in self.domain_dict.items():
+            self._dc_dict[_domain_to_dc(real).lower()] = _domain_to_dc(fake)
+        if self._dc_dict:
+            dc_alts = "|".join(re.escape(k) for k in sorted(self._dc_dict, key=len, reverse=True))
+            self._dc_re = re.compile(rf'(?:{dc_alts})', re.IGNORECASE)
+        else:
+            self._dc_re = None
+
     def scrub(self, text: str) -> str:
         """Replaces all known domains in a block of text using a single regex pass."""
-        if not self._re:
-            return text
+        if self._re:
+            def _replacer(match: Match) -> str:
+                found_domain = _norm(match.group(0))
+                return self.domain_dict.get(found_domain, match.group(0))
+            text = self._re.sub(_replacer, text)
 
-        def _replacer(match: Match) -> str:
-            """Callback function for re.sub to find the correct replacement."""
-            found_domain = _norm(match.group(0))
-            return self.domain_dict.get(found_domain, match.group(0))
+        if self._dc_re:
+            text = self._dc_re.sub(
+                lambda m: self._dc_dict.get(m.group(0).lower(), m.group(0)),
+                text
+            )
 
-        return self._re.sub(_replacer, text)
+        return text
 
 
     @staticmethod
@@ -147,11 +173,17 @@ class DomainScrubber:
                 continue
 
             parts = fqdn.split('.')
-           
+
             for i in range(1, len(parts) - 1):
                 parent_domain = '.'.join(parts[i:])
                 if _is_valid_domain(parent_domain):
                     all_domain_parts.add(parent_domain)
+
+        # Also extract domains from LDAP DN DC= format (e.g. DC=example,DC=com)
+        for m in _DC_RE.finditer(text):
+            domain = _dc_to_domain(m.group(1))
+            if _is_valid_domain(domain):
+                DomainScrubber._add_domain_and_parents(domain, all_domain_parts)
 
         return _sort_specific_first(all_domain_parts)
 

@@ -25,8 +25,8 @@ from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.processor import FileProcessor
 from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
 
-SCRIPT_VERSION = "1.1"
-SCRIPT_DATE = "2025-08-14"
+SCRIPT_VERSION = "1.2"
+SCRIPT_DATE = "2026-02-24"
 
 def print_header(file=None):
     if file is None:
@@ -110,7 +110,7 @@ def build_hierarchical_domain_map(all_domains, existing_mappings):
             sub_domain_counter += 1
             domain_dict[domain] = f"{obfuscated_sub_part}.{domain_dict[parent_domain]}"
         else:
-            domain_dict[domain] = f"domain_{base_domain_counter}"
+            domain_dict[domain] = f"domain_{base_domain_counter}.obf"
             base_domain_counter += 1
 
     return domain_dict
@@ -128,7 +128,8 @@ def extract_and_map_domains(report_files, additional_domains, mappings):
     files_to_scan = {
         'network.txt': ['# /etc/hosts', '# /etc/resolv.conf'],
         'nfs.txt': ['# /bin/egrep'],
-        'ntp.txt': ['# /etc/ntp.conf', '# /etc/chrony.conf']
+        'ntp.txt': ['# /etc/ntp.conf', '# /etc/chrony.conf'],
+        'sssd.txt': ['# /etc/sssd/sssd.conf'],
     }
 
     for file_path in report_files:

@@ -75,37 +75,64 @@ class FileProcessor:
                 print(f"[!] Failed to remove binary file {file_path}: {e} " )
             return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
         
-        is_sar_xz_file  = base_name.startswith("sar") and base_name.endswith(".xz")
+        SAR_XZ_PATTERN   = re.compile(r'^sar\d{8}\.xz$')
+        SAR_PLAIN_PATTERN = re.compile(r'^sar\d{8}$')
+        is_sar_xz_file   = bool(SAR_XZ_PATTERN.match(base_name))
+        is_sar_plain_file = bool(SAR_PLAIN_PATTERN.match(base_name))
+
+        _SCRUB_INFO_HEADER = (
+            "#" + "-" * 93 + "\n"
+            "# INFO: Sensitive information in this file has been obfuscated by supportutils-scrub.\n"
+            "#" + "-" * 93 + "\n\n"
+        )
 
         try:
             if is_sar_xz_file:
-                file_handle = lzma.open(file_path, mode="rt", encoding="utf-8", errors="ignore")
-            else:
-                file_handle = open(file_path, mode="r", encoding="utf-8", errors="ignore")
+                # sar files only have sensitive data on the first line (hostname).
+                # Read only the first line - avoids decompressing the entire file.
+                with lzma.open(file_path, mode="rt", encoding="utf-8", errors="ignore") as f:
+                    first_line = f.readline()
 
-            with file_handle as file:
-                original_text = file.read()
-            
-            scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
-                self._scrub_content(original_text, base_name, logger, verbose_flag)
+                scrubbed_first_line, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+                    self._scrub_content(first_line, base_name, logger, verbose_flag)
 
-            # Write the changes back to the file if any were made
-            if scrubbed_text != original_text:
-                obfuscation_occurred = True
-                header = [
-                    "#" + "-" * 93 + "\n",
-                    "# INFO: Sensitive information in this file has been obfuscated by supportutils-scrub.\n",
-                    "#" + "-" * 93 + "\n\n",
-                ]
-                
-                final_content = "".join(header) + scrubbed_text
+                if scrubbed_first_line != first_line:
+                    obfuscation_occurred = True
+                    # Re-open to read the rest only now that we know a change is needed.
+                    # Write as plain text to avoid expensive xz recompression.
+                    with lzma.open(file_path, mode="rt", encoding="utf-8", errors="ignore") as f:
+                        f.readline()  # skip the already-scrubbed first line
+                        rest = f.read()
+                    plain_path = file_path[:-3]  # strip .xz
+                    with open(plain_path, mode="w", encoding="utf-8") as out_f:
+                        out_f.write(_SCRUB_INFO_HEADER + scrubbed_first_line + rest)
+                    os.remove(file_path)
 
-                if is_sar_xz_file:
-                    with lzma.open(file_path, mode="wt", encoding="utf-8") as out_f:
-                        out_f.write(final_content)
-                else:
+            elif is_sar_plain_file:
+                # Plain (uncompressed) sar text files: same first-line-only approach.
+                with open(file_path, mode="r", encoding="utf-8", errors="ignore") as f:
+                    first_line = f.readline()
+                    rest = f.read()
+
+                scrubbed_first_line, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+                    self._scrub_content(first_line, base_name, logger, verbose_flag)
+
+                if scrubbed_first_line != first_line:
+                    obfuscation_occurred = True
                     with open(file_path, mode="w", encoding="utf-8") as out_f:
-                        out_f.write(final_content)
+                        out_f.write(_SCRUB_INFO_HEADER + scrubbed_first_line + rest)
+
+            else:
+                with open(file_path, mode="r", encoding="utf-8", errors="ignore") as file:
+                    original_text = file.read()
+
+                scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+                    self._scrub_content(original_text, base_name, logger, verbose_flag)
+
+                if scrubbed_text != original_text:
+                    obfuscation_occurred = True
+                    with open(file_path, mode="w", encoding="utf-8") as out_f:
+                        out_f.write(_SCRUB_INFO_HEADER + scrubbed_text)
 
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {str(e)}")

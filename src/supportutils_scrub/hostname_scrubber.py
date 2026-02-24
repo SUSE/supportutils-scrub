@@ -9,7 +9,7 @@ class HostnameScrubber:
     def scrub(self, text):
         for hostname in sorted(self.hostname_dict, key=len, reverse=True):
             obfuscated = self.hostname_dict[hostname]
-            pattern = r'\b' + re.escape(hostname) + r'(?=\s|$|\.|\:|\/|\,|\;)'
+            pattern = r'\b' + re.escape(hostname) + r'\b'
             text = re.sub(pattern, obfuscated, text)         
         return text
     

@@ -14,9 +14,9 @@ class UsernameScrubber:
         "ssm-user", "hapadm", "sapadm", "postfix", "pimuser", "rtkit", "pulse",
         "daaadm", "ubroker", "openslp", "scard", "ftpsecure", "cwagent", "aoc",
         "systemd-network", "tftp", "srvGeoClue", "flatpak", "mysql", "usbmux",
-        "avahi", "dnsmasq", "nm-openconnect", "nm-openvpn", "sddm", "ronald",
+        "avahi", "dnsmasq", "nm-openconnect", "nm-openvpn", "sddm",
         "svn", "citrixlog", "salt", "dockremap", "chrony", "laptop", "qemu", "tss",
-        "wsdd", "gdm", "?", "(unknown)"
+        "wsdd", "gdm", "zabbix", "vscan", "lldpd", "?", "(unknown)"
     }
 
     def __init__(self, username_dict):
