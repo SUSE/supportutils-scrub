@@ -61,18 +61,35 @@ def extract_xz_archive(archive_path, logger, extract_base=None):
 
     with tarfile.open(archive_path, 'r:xz') as tar:
         members = tar.getmembers()
+
+        # Find the top-level directory so we can strip it, putting files
+        # directly into clean_folder_path (avoids double-nested structure).
+        top_level = None
         for member in members:
-            if not _is_safe_path(clean_folder_path, member.name):
+            top = member.name.split('/')[0]
+            if top:
+                top_level = top
+                break
+
+        for member in members:
+            if member.issym() or member.islnk():
+                continue
+            if member.isdir():
+                continue
+            if top_level and member.name.startswith(top_level + '/'):
+                relative_path = member.name[len(top_level) + 1:]
+            else:
+                relative_path = os.path.basename(member.name)
+            if not relative_path:
+                continue
+            if not _is_safe_path(clean_folder_path, relative_path):
                 print(f"[!] Blocked unsafe path in archive: {member.name}")
                 continue
+            member.name = relative_path
             try:
-                if member.isdir():
-                    os.makedirs(os.path.join(clean_folder_path, member.name), exist_ok=True)
-                else:
-                    tar.extract(member, path=clean_folder_path)
-            except IsADirectoryError:
-                print(f"[!] Error: {member.name} is a directory, skipping")
-            continue
+                tar.extract(member, path=clean_folder_path)
+            except Exception as e:
+                print(f"[!] Error extracting {member.name}: {e}")
 
     report_files = walk_supportconfig(clean_folder_path)
     if extract_base:
