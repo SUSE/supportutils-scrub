@@ -23,6 +23,7 @@ class ConfigReader:
             'obfuscate_hostname': 'yes',
             'obfuscate_mac': 'yes',
             'obfuscate_ipv6': 'yes',
+            'obfuscate_serial': 'yes',
             'verbose': 'true',
             'log_level': 'verbose',
             'use_key_words_file': 'yes',

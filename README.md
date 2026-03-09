@@ -216,12 +216,16 @@ IPv4 subnet rewrite rules (most-specific first):
 - `supportconfig_path`: Path(s) to `.txz`/`.tgz` archive(s), a folder, a plain file, or `-` for stdin. Multiple archives share mappings.
 - `--config PATH`: Path to configuration file (default: `/etc/supportutils-scrub/supportutils-scrub.conf`)
 - `--verbose`: Enable verbose output
+- `--quiet`: Suppress the startup banner and per-file listing. Errors and warnings still go to stderr. Useful when called from scripts or `supportconfig`.
 - `--mappings FILE`: JSON or encrypted `*.json.enc` mapping file from a prior run. Prompts for passphrase automatically when the file is encrypted.
 - `--username USERNAMES`: Additional usernames to obfuscate (comma/semicolon/space-separated)
 - `--hostname HOSTNAMES`: Additional hostnames to obfuscate
 - `--domain DOMAINS`: Additional domains to obfuscate
 - `--keywords KEYWORDS`: Additional keywords to obfuscate
 - `--keyword-file FILE`: File containing keywords to obfuscate (one per line)
+- `--output-dir DIR`: Write the scrubbed archive to DIR instead of alongside the input file.
+- `--report FILE`: Write a JSON coverage report to FILE listing which files contained each data category (IPv4, domain, hostname, serial, etc.).
+- `--verify`: After scrubbing, re-scan the output for any remaining real values. Exits with code 3 if leaks are found; exits 0 if clean.
 
 ### PCAP Processing
 
@@ -386,6 +390,23 @@ These options are also available in the configuration file:
 secure_tmp = yes
 encrypt_mappings = yes
 ```
+
+## supportconfig Integration
+
+`supportutils-scrub` is designed to be called directly from the `supportconfig` script. Set defaults via the environment variable so `supportconfig` can pass options without changing the call interface:
+
+```bash
+export SUPPORTUTILS_SCRUB_OPTS="--quiet --output-dir /var/log/scrubbed"
+supportutils-scrub /var/log/scc_node1.txz
+```
+
+Exit codes for programmatic use:
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Fatal error |
+| 2 | Completed with warnings |
+| 3 | `--verify` found remaining sensitive data |
 
 ## License
 

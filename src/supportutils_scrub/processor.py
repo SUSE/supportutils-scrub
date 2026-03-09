@@ -16,9 +16,10 @@ from supportutils_scrub.keyword_scrubber import KeywordScrubber
 from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
+from supportutils_scrub.serial_scrubber import SerialScrubber
 
 class FileProcessor:
-    def __init__(self, config, ip_scrubber: IPScrubber, domain_scrubber: DomainScrubber, username_scrubber: UsernameScrubber, hostname_scrubber: HostnameScrubber, mac_scrubber: MACScrubber, ipv6_scrubber: IPv6Scrubber, keyword_scrubber: KeywordScrubber = None):
+    def __init__(self, config, ip_scrubber: IPScrubber, domain_scrubber: DomainScrubber, username_scrubber: UsernameScrubber, hostname_scrubber: HostnameScrubber, mac_scrubber: MACScrubber, ipv6_scrubber: IPv6Scrubber, keyword_scrubber: KeywordScrubber = None, serial_scrubber: SerialScrubber = None):
         self.config = config
         self.ip_scrubber = ip_scrubber
         self.domain_scrubber = domain_scrubber
@@ -27,6 +28,7 @@ class FileProcessor:
         self.username_scrubber = username_scrubber
         self.mac_scrubber = mac_scrubber
         self.ipv6_scrubber = ipv6_scrubber
+        self.serial_scrubber = serial_scrubber
         self.current_section = None
         self.current_interface = None
         self.in_network_config = False
@@ -58,9 +60,10 @@ class FileProcessor:
         domain_dict = {}
         username_dict = {}
         hostname_dict = {}
-        keyword_dict = {} 
+        keyword_dict = {}
         mac_dict = {}
         ipv6_dict = {}
+        serial_dict = {}
 
         obfuscation_occurred = False
 
@@ -73,8 +76,8 @@ class FileProcessor:
                 os.remove(file_path)
             except Exception as e:
                 print(f"[!] Failed to remove binary file {file_path}: {e} " )
-            return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
-        
+            return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict
+
         SAR_XZ_PATTERN   = re.compile(r'^sar\d{8}\.xz$')
         SAR_PLAIN_PATTERN = re.compile(r'^sar\d{8}$')
         is_sar_xz_file   = bool(SAR_XZ_PATTERN.match(base_name))
@@ -93,7 +96,7 @@ class FileProcessor:
                 with lzma.open(file_path, mode="rt", encoding="utf-8", errors="ignore") as f:
                     first_line = f.readline()
 
-                scrubbed_first_line, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+                scrubbed_first_line, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict = \
                     self._scrub_content(first_line, base_name, logger, verbose_flag)
 
                 if scrubbed_first_line != first_line:
@@ -114,7 +117,7 @@ class FileProcessor:
                     first_line = f.readline()
                     rest = f.read()
 
-                scrubbed_first_line, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+                scrubbed_first_line, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict = \
                     self._scrub_content(first_line, base_name, logger, verbose_flag)
 
                 if scrubbed_first_line != first_line:
@@ -126,7 +129,7 @@ class FileProcessor:
                 with open(file_path, mode="r", encoding="utf-8", errors="ignore") as file:
                     original_text = file.read()
 
-                scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+                scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict = \
                     self._scrub_content(original_text, base_name, logger, verbose_flag)
 
                 if scrubbed_text != original_text:
@@ -137,7 +140,7 @@ class FileProcessor:
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {str(e)}")
 
-        return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
+        return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict
 
     def _scrub_content(self, text, basename, logger, verbose_flag):
         """
@@ -153,6 +156,7 @@ class FileProcessor:
         keyword_dict = {}
         mac_dict = {}
         ipv6_dict = {}
+        serial_dict = {}
 
         scrubbed_text = text
 
@@ -200,12 +204,17 @@ class FileProcessor:
             scrubbed_text = self.username_scrubber.scrub(scrubbed_text)
             username_dict.update(self.username_scrubber.username_dict)
 
-        return scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict
+        # Scrub serial numbers and UUIDs
+        if self.serial_scrubber:
+            scrubbed_text = self.serial_scrubber.scrub(scrubbed_text)
+            serial_dict.update(self.serial_scrubber.serial_dict)
+
+        return scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict
 
     def process_text(self, text, logger, verbose_flag):
         """
         Scrub a plain text string (e.g. from stdin).
 
-        Returns the same tuple as _scrub_content().
+        Returns the same tuple as _scrub_content() (9-tuple).
         """
         return self._scrub_content(text, "stdin", logger, verbose_flag)

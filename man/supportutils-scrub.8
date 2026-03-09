@@ -1,4 +1,4 @@
-.TH SUPPORTUTILS-SCRUB 8 "23 Feb 2026" "supportutils-scrub 1.2" "Support Utilities Manual"
+.TH SUPPORTUTILS-SCRUB 8 "09 Mar 2026" "supportutils-scrub 1.3" "Support Utilities Manual"
 .SH NAME
 supportutils-scrub \- Obfuscate sensitive data from SUSE supportconfig tarballs and network packet captures
 .SH SYNOPSIS
@@ -91,6 +91,18 @@ Do not write a mapping file after processing. Obfuscation mappings will not be r
 Decrypt and print the contents of an encrypted mapping file (\fI*.json.enc\fR) to standard output, then exit. Prompts for the passphrase interactively. Passing a \fI*.json.enc\fR file as a positional argument is equivalent and triggers decrypt mode automatically.
 
 .SS Obfuscation Options
+.TP
+\fB\-\-verify\fR
+After scrubbing, re-scan the output for any remaining real values from the mapping. Prints a list of leaks if found. Exits with code 3 if any sensitive data remains; exits 0 if clean.
+.TP
+\fB\-\-report\fR \fIFILE\fR
+Write a JSON coverage report to FILE. Records which files in the archive contained each data category (IPv4, domain, hostname, serial, etc.). Useful for compliance evidence.
+.TP
+\fB\-\-quiet\fR
+Suppress the startup banner and per-file listing. Errors and warnings still go to stderr. Useful when called from scripts or \fBsupportconfig\fR(8).
+.TP
+\fB\-\-output\-dir\fR \fIDIR\fR
+Write the scrubbed archive to DIR instead of alongside the input file.
 .TP
 \fB\-\-domain\fR \fIDOMAINS\fR
 Comma, semicolon, or space-separated list of additional domain names to obfuscate.
@@ -231,6 +243,24 @@ AES-encrypted mapping files produced by \fB\-\-encrypt\-mappings\fR. Can be decr
 .RS
 Audit log written after every run. Records operator identity, hostname, UTC timestamp, input/output file paths with SHA-256 checksums, CLI arguments used, and the mapping file path. Mode 0600. Provides chain of custody for compliance purposes.
 .RE
+.I /var/tmp/obfuscation_report_*.json
+.RS
+Coverage report written by \fB\-\-report\fR. Lists which files in the archive contained each obfuscated data category.
+.RE
+
+.SH EXIT STATUS
+.TP
+.B 0
+Success. All archives processed without error.
+.TP
+.B 1
+Fatal error. Input not found, permission denied, or unrecoverable failure.
+.TP
+.B 2
+Completed with warnings. Some files were skipped or non-critical errors occurred.
+.TP
+.B 3
+Verify failed. \fB\-\-verify\fR detected remaining sensitive data in the scrubbed output.
 
 .SH SECURITY CONSIDERATIONS
 .IP \(bu 2
@@ -249,6 +279,19 @@ Use \fB\-\-no\-mappings\fR when a one-shot obfuscation is sufficient and the map
 An audit log is written automatically to \fI/var/tmp/obfuscation_audit_*.json\fR after every run. It records operator, hostname, UTC timestamp, SHA-256 checksums of input and output files, and CLI arguments. Never delete this file before sharing the scrubbed archive — it is your chain of custody.
 .IP \(bu 2
 All sensitive files (\fI*.json\fR, \fI*.json.enc\fR, \fI*_audit_*.json\fR) are written with mode \fB0600\fR.
+
+.SS Integration with supportconfig
+\fBsupportutils-scrub\fR is designed to be called directly from the \fBsupportconfig\fR(8) script. Use the following pattern:
+
+.nf
+SUPPORTUTILS_SCRUB_OPTS="--quiet --output-dir /var/log"
+export SUPPORTUTILS_SCRUB_OPTS
+supportutils-scrub "$archive"
+rc=$?
+# rc=0 success, rc=1 error, rc=2 warnings, rc=3 verify failed
+.fi
+
+The \fBSUPPORTUTILS_SCRUB_OPTS\fR environment variable lets \fBsupportconfig\fR pass default options without modifying the command line. Any CLI flags override it. Audit logs in \fI/var/tmp/obfuscation_audit_*.json\fR provide machine-readable results including SHA-256 checksums of inputs and outputs.
 
 .SH AUTHOR
 Ronald Pina <ronald.pina@suse.com>

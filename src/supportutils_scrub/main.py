@@ -26,9 +26,17 @@ from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.processor import FileProcessor
 from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
+import shlex
+from supportutils_scrub.serial_scrubber import SerialScrubber
+from supportutils_scrub.verify import verify_scrubbed_folder
 
-SCRIPT_VERSION = "1.2"
-SCRIPT_DATE = "2026-02-24"
+SCRIPT_VERSION = "1.3"
+SCRIPT_DATE = "2026-03-09"
+
+EXIT_OK           = 0   # success
+EXIT_ERROR        = 1   # fatal error
+EXIT_WARNING      = 2   # completed with warnings
+EXIT_VERIFY_FAIL  = 3   # --verify found remaining sensitive data
 
 def print_header(file=None):
     if file is None:
@@ -99,6 +107,14 @@ def parse_args():
         help="Do not write a mapping file. Obfuscation cannot be reused across runs.")
     parser.add_argument("--decrypt-mappings", metavar="FILE",
         help="Decrypt and print an encrypted mapping file (*.json.enc) then exit.")
+    parser.add_argument("--quiet", action="store_true",
+        help="Suppress banner and per-file listing. Errors still go to stderr.")
+    parser.add_argument("--output-dir", metavar="DIR",
+        help="Directory for scrubbed output archives. Default: same directory as input.")
+    parser.add_argument("--report", metavar="FILE",
+        help="Write a JSON coverage report to FILE (lists which files contained each data category).")
+    parser.add_argument("--verify", action="store_true",
+        help="After scrubbing, re-scan the output for any remaining real values. Exit 3 if leaks found.")
 
     return parser.parse_args()
 
@@ -394,6 +410,40 @@ def extract_usernames(report_files, additional_usernames, mappings):
     return username_dict
 
 
+def extract_serials(report_files, mappings):
+    """Pre-scan targeted files for hardware serial numbers and system UUIDs."""
+    serial_scrubber = SerialScrubber(mappings=mappings)
+    target_files = {'basic-environment.txt', 'boot.txt', 'hardware.txt'}
+    for fpath in report_files:
+        if os.path.basename(fpath) in target_files:
+            try:
+                with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                    serial_scrubber.pre_scan(f.read())
+            except Exception:
+                pass
+    return serial_scrubber.serial_dict
+
+
+def _write_report(report_path: str, archives: list, version: str):
+    """Write a JSON coverage report showing which files contained each data category."""
+    import socket as _sock
+    data = {
+        'tool':      'supportutils-scrub',
+        'version':   version,
+        'timestamp': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'hostname':  _sock.gethostname(),
+        'archives':  archives,
+    }
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
+        with open(report_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+        os.chmod(report_path, 0o600)
+        print(f"[✓] Coverage report written to:  {report_path}")
+    except Exception as e:
+        print(f"[!] Could not write report to {report_path}: {e}", file=sys.stderr)
+
+
 def _init_scrubbers(args, config, logger):
     """
     Shared scrubber initialisation used by folder mode and stdin mode.
@@ -497,6 +547,7 @@ def run_folder_mode(args, logger):
     total_ipv4_subnet_dict = {}
     total_ipv6_subnet_dict = {}
     total_state = {}
+    total_serial_dict = {}
 
     logger.info("Scrubbing:")
     for report_file in report_files:
@@ -504,7 +555,7 @@ def run_folder_mode(args, logger):
         if not re.match(r"^sa\d{8}(\.xz)?$", basename):
             print(f"        {basename}")
 
-        ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+        ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict_file = \
             file_processor.process_file(report_file, logger, verbose_flag)
 
         total_ip_dict.update(ip_dict)
@@ -514,6 +565,7 @@ def run_folder_mode(args, logger):
         total_keyword_dict.update(keyword_dict)
         total_mac_dict.update(mac_dict)
         total_ipv6_dict.update(ipv6_dict)
+        total_serial_dict.update(serial_dict_file)
         if hasattr(file_processor, '_ipv4_subnet_map'):
             total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
         if hasattr(file_processor, '_ipv4_state'):
@@ -533,6 +585,7 @@ def run_folder_mode(args, logger):
         'state': total_state,
         'ipv6_subnet': total_ipv6_subnet_dict,
         'tld_map': tld_map,
+        'serial': total_serial_dict,
     }
 
     saved_mapping_path = _save_mappings(args, dataset_path, dataset_dict)
@@ -546,6 +599,7 @@ def run_folder_mode(args, logger):
         len(total_user_dict) + len(total_ip_dict) + len(total_mac_dict)
         + len(total_domain_dict) + len(total_hostname_dict) + len(total_ipv6_dict)
         + len(total_keyword_dict) + len(total_ipv4_subnet_dict) + len(total_ipv6_subnet_dict)
+        + len(total_serial_dict)
     )
 
     print("\n------------------------------------------------------------")
@@ -562,6 +616,7 @@ def run_folder_mode(args, logger):
     print(f"| IPv6 subnets obfuscated   : {len(total_ipv6_subnet_dict)}")
     if keyword_scrubber:
         print(f"| Keywords obfuscated       : {len(total_keyword_dict)}")
+    print(f"| Serials/UUIDs obfuscated  : {len(total_serial_dict)}")
     print(f"| Total obfuscation entries : {total_obfuscations}")
     print(f"| Output folder             : {scrubbed_path}")
     if saved_mapping_path:
@@ -631,7 +686,7 @@ def run_stdin_mode(args, logger):
     except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
-    scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+    scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict = \
         file_processor.process_text(text, logger, verbose_flag)
 
     sys.stdout.write(scrubbed_text)
@@ -652,6 +707,7 @@ def run_stdin_mode(args, logger):
         'state': state,
         'ipv6_subnet': ipv6_subnet_dict,
         'tld_map': tld_map,
+        'serial': {},
     }
 
     saved_mapping_path = _save_mappings(args, dataset_path, dataset_dict)
@@ -754,7 +810,7 @@ def run_file_mode(args, logger):
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
 
-    scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+    scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict = \
         file_processor.process_text(text, logger, verbose_flag)
 
     if scrubbed_text != text:
@@ -792,6 +848,7 @@ def run_file_mode(args, logger):
         'state': state,
         'ipv6_subnet': ipv6_subnet_dict,
         'tld_map': tld_map,
+        'serial': {},
     }
 
     saved_mapping_path = _save_mappings(args, dataset_path, dataset_dict)
@@ -856,6 +913,11 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
 
     new_txz_file_path = None
     clean_folder_path = None
+    verify_findings = []
+    report_file_hits = {}
+    total_serial_dict = {}
+    tld_map = {}
+    report_files = []
     try:
         try:
             report_files, clean_folder_path = extract_supportconfig(archive_path, logger, extract_base=extract_base)
@@ -885,6 +947,10 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         clean_folder_path = _rename_extraction_paths(clean_folder_path, hostname_dict)
         report_files = walk_supportconfig(clean_folder_path)
 
+        serial_dict = extract_serials(report_files, current_mappings)
+        serial_scrubber = SerialScrubber(mappings=current_mappings)
+        serial_scrubber.serial_dict = serial_dict
+
         # Compute obfuscated output archive name
         archive_dir = os.path.dirname(os.path.abspath(archive_path))
         archive_basename = os.path.basename(archive_path)
@@ -893,11 +959,15 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         else:
             archive_name_no_ext = os.path.splitext(archive_basename)[0]
         scrubbed_archive_name = _scrub_name(archive_name_no_ext, hostname_dict)
-        new_txz_file_path = os.path.join(archive_dir, scrubbed_archive_name + "_scrubbed.txz")
+        out_dir = getattr(args, 'output_dir', None) or archive_dir
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        new_txz_file_path = os.path.join(out_dir, scrubbed_archive_name + "_scrubbed.txz")
 
         try:
             file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
-                                           hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
+                                           hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
+                                           serial_scrubber=serial_scrubber)
         except Exception as e:
             logger.error(f"Error initializing FileProcessor: {e}")
             sys.exit(1)
@@ -917,9 +987,10 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         for report_file in report_files:
             basename = os.path.basename(report_file)
             if not re.match(r"^sa\d{8}(\.xz)?$", basename):
-                print(f"        {basename}")
+                if not getattr(args, 'quiet', False):
+                    print(f"        {basename}")
 
-            ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+            ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict_file = \
                 file_processor.process_file(report_file, logger, verbose_flag)
 
             total_ip_dict.update(ip_dict)
@@ -929,6 +1000,7 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
             total_keyword_dict.update(keyword_dict)
             total_mac_dict.update(mac_dict)
             total_ipv6_dict.update(ipv6_dict)
+            total_serial_dict.update(serial_dict_file)
             if hasattr(file_processor, '_ipv4_subnet_map'):
                 total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
             if hasattr(file_processor, '_ipv4_state'):
@@ -936,8 +1008,39 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
             if hasattr(file_processor, '_ipv6_subnet_map'):
                 total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
 
+            # Track which categories this file had hits for
+            file_hits = []
+            if ip_dict:           file_hits.append('ip')
+            if ipv6_dict:         file_hits.append('ipv6')
+            if mac_dict:          file_hits.append('mac')
+            if domain_dict:       file_hits.append('domain')
+            if hostname_dict:     file_hits.append('hostname')
+            if username_dict:     file_hits.append('username')
+            if keyword_dict:      file_hits.append('keyword')
+            if serial_dict_file:  file_hits.append('serial')
+            if file_hits:
+                report_file_hits[os.path.basename(report_file)] = file_hits
+
         create_txz(clean_folder_path, new_txz_file_path)
         print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
+
+        verify_findings = []
+        if getattr(args, 'verify', False):
+            combined_mappings_for_verify = {
+                'ip': total_ip_dict, 'ipv6': total_ipv6_dict, 'mac': total_mac_dict,
+                'domain': total_domain_dict, 'hostname': total_hostname_dict,
+                'user': total_user_dict, 'keyword': total_keyword_dict,
+                'serial': total_serial_dict,
+            }
+            verify_findings = verify_scrubbed_folder(clean_folder_path, combined_mappings_for_verify)
+            if verify_findings:
+                print(f"[!] VERIFY: {len(verify_findings)} potential leak(s) found in scrubbed output:")
+                for f in verify_findings[:20]:
+                    print(f"    {f['file']}:{f['line']}  [{f['category']}]  {f['value']!r}")
+                if len(verify_findings) > 20:
+                    print(f"    ... and {len(verify_findings)-20} more (see --report for full details)")
+            else:
+                print("[✓] VERIFY: No sensitive data found in scrubbed output.")
 
     finally:
         if clean_folder_path and os.path.exists(clean_folder_path):
@@ -966,6 +1069,7 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         'state': total_state,
         'ipv6_subnet': total_ipv6_subnet_dict,
         'tld_map': tld_map,
+        'serial': total_serial_dict,
     }
 
     stats = {
@@ -974,12 +1078,26 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         'files': len(report_files),
         'size_mb': archive_size_mb,
         'owner': archive_owner,
+        'report_data': {
+            'input':  archive_path,
+            'output': new_txz_file_path,
+            'files_total': len(report_files),
+            'file_hits': report_file_hits,
+        },
+        'verify_findings': verify_findings,
     }
 
     return updated_mappings, stats
 
 
 def main():
+    env_opts = os.environ.get('SUPPORTUTILS_SCRUB_OPTS', '')
+    if env_opts:
+        try:
+            sys.argv[1:1] = shlex.split(env_opts)
+        except ValueError:
+            print('[!] Warning: could not parse SUPPORTUTILS_SCRUB_OPTS', file=sys.stderr)
+
     args = parse_args()
 
     # Auto-detect encrypted mapping file passed as positional argument
@@ -1046,18 +1164,21 @@ def main():
         return
 
     if is_file:
-        print_header()
+        if not getattr(args, 'quiet', False):
+            print_header()
         run_file_mode(args, logger)
         print_footer()
         return
 
     if is_folder:
-        print_header()
+        if not getattr(args, 'quiet', False):
+            print_header()
         run_folder_mode(args, logger)
         print_footer()
         return
 
-    print_header()
+    if not getattr(args, 'quiet', False):
+        print_header()
 
     # pcap-only mode (no archives given)
     if args.rewrite_pcap and not paths:
@@ -1141,6 +1262,21 @@ def main():
         )
         all_stats.append(stats)
 
+    # Collect verify findings across all archives
+    all_verify_findings = []
+    for s in all_stats:
+        all_verify_findings.extend(s.get('verify_findings', []))
+
+    if all_verify_findings:
+        verify_exit = EXIT_VERIFY_FAIL
+    else:
+        verify_exit = EXIT_OK
+
+    # Write report if requested
+    if getattr(args, 'report', None):
+        archives_report = [s['report_data'] for s in all_stats]
+        _write_report(args.report, archives_report, SCRIPT_VERSION)
+
     # Save final combined mappings (single file covering all archives)
     saved_mapping_path = _save_mappings(args, dataset_path, current_mappings)
     if saved_mapping_path:
@@ -1161,6 +1297,7 @@ def main():
         + len(current_mappings.get('keyword', {}))
         + len(current_mappings.get('subnet', {}))
         + len(current_mappings.get('ipv6_subnet', {}))
+        + len(current_mappings.get('serial', {}))
     )
 
     print("\n------------------------------------------------------------")
@@ -1180,6 +1317,7 @@ def main():
     print(f"| IPv6 subnets obfuscated   : {len(current_mappings.get('ipv6_subnet', {}))}")
     if keyword_scrubber:
         print(f"| Keywords obfuscated       : {len(current_mappings.get('keyword', {}))}")
+    print(f"| Serials/UUIDs obfuscated  : {len(current_mappings.get('serial', {}))}")
     print(f"| Total obfuscation entries : {total_obfuscations}")
     if len(paths) == 1:
         stats = all_stats[0]
@@ -1203,6 +1341,9 @@ def main():
     _write_audit_log(audit_path, record)
 
     print_footer()
+
+    if verify_exit == EXIT_VERIFY_FAIL:
+        sys.exit(EXIT_VERIFY_FAIL)
 
 if __name__ == "__main__":
     main()
