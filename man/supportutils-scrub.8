@@ -224,6 +224,10 @@ JSON files containing obfuscation mappings. These files map real data to obfusca
 .RS
 AES-encrypted mapping files produced by \fB\-\-encrypt\-mappings\fR. Can be decrypted by passing the file directly to \fBsupportutils-scrub\fR or using \fB\-\-decrypt\-mappings\fR.
 .RE
+.I /var/tmp/obfuscation_audit_*.json
+.RS
+Audit log written after every run. Records operator identity, hostname, UTC timestamp, input/output file paths with SHA-256 checksums, CLI arguments used, and the mapping file path. Mode 0600. Provides chain of custody for compliance purposes.
+.RE
 
 .SH SECURITY CONSIDERATIONS
 .IP \(bu 2
@@ -238,6 +242,10 @@ Use \fB\-\-encrypt\-mappings\fR to protect the mapping file at rest. Without enc
 Use \fB\-\-secure\-tmp\fR on systems where disk forensics are a concern. Extraction to \fI/dev/shm\fR ensures sensitive data stays in RAM only.
 .IP \(bu 2
 Use \fB\-\-no\-mappings\fR when a one-shot obfuscation is sufficient and the mapping file must not exist on disk.
+.IP \(bu 2
+An audit log is written automatically to \fI/var/tmp/obfuscation_audit_*.json\fR after every run. It records operator, hostname, UTC timestamp, SHA-256 checksums of input and output files, and CLI arguments. Never delete this file before sharing the scrubbed archive — it is your chain of custody.
+.IP \(bu 2
+All sensitive files (\fI*.json\fR, \fI*.json.enc\fR, \fI*_audit_*.json\fR) are written with mode \fB0600\fR.
 
 .SH AUTHOR
 Ronald Pina <ronald.pina@suse.com>

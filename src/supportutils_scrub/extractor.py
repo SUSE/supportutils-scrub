@@ -5,6 +5,16 @@ import shutil
 import logging
 import tarfile
 
+
+def _is_safe_path(target_dir: str, member_name: str) -> bool:
+    """Return True if member_name extracts safely within target_dir (blocks path traversal)."""
+    norm = os.path.normpath(member_name)
+    if os.path.isabs(norm) or norm.startswith('..'):
+        return False
+    target = os.path.realpath(target_dir)
+    dest   = os.path.realpath(os.path.join(target_dir, member_name))
+    return dest.startswith(target + os.sep) or dest == target
+
 def extract_supportconfig(supportconfig_path, logger, extract_base=None):
     """
     Extract Supportconfig files and return a list of  files.
@@ -52,12 +62,13 @@ def extract_xz_archive(archive_path, logger, extract_base=None):
     with tarfile.open(archive_path, 'r:xz') as tar:
         members = tar.getmembers()
         for member in members:
+            if not _is_safe_path(clean_folder_path, member.name):
+                print(f"[!] Blocked unsafe path in archive: {member.name}")
+                continue
             try:
                 if member.isdir():
-                    # If it's a directory, create it if it doesn't exist
                     os.makedirs(os.path.join(clean_folder_path, member.name), exist_ok=True)
                 else:
-                    # Extract files normally
                     tar.extract(member, path=clean_folder_path)
             except IsADirectoryError:
                 print(f"[!] Error: {member.name} is a directory, skipping")
@@ -117,6 +128,10 @@ def extract_tgz_archive(archive_path, logger, extract_base=None):
                 relative_path = os.path.basename(member.name)
 
             if not relative_path:
+                continue
+
+            if not _is_safe_path(clean_folder_path, relative_path):
+                print(f"[!] Blocked unsafe path in archive: {member.name}")
                 continue
 
             member.name = os.path.join(clean_folder_name, relative_path)

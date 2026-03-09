@@ -310,6 +310,27 @@ The mapping file (`/var/tmp/obfuscation_mappings_*.json`) records every translat
 
 **IMPORTANT:** Never share the mapping file with SUSE Support or any third party. It contains the translation between real and obfuscated data and must remain private.
 
+## Audit Trail
+
+After every run, an audit log is written to `/var/tmp/obfuscation_audit_TIMESTAMP.json` (mode 0600). It records:
+
+```json
+{
+    "tool":         "supportutils-scrub",
+    "version":      "1.2",
+    "timestamp":    "2026-03-09T14:22:01Z",
+    "operator":     "root",
+    "hostname":     "myserver",
+    "mode":         "archive",
+    "inputs":  [{"path": "/var/log/scc_node1.txz",          "sha256": "e3b0c4..."}],
+    "outputs": [{"path": "/var/log/scc_node1_scrubbed.txz", "sha256": "a665a4..."}],
+    "cli_args":     ["--domain", "corp.example.com"],
+    "mapping_file": "/var/tmp/obfuscation_mappings_20260309_142201.json"
+}
+```
+
+This provides chain of custody: proof of who ran the tool, on which files, producing which output. Keep the audit log alongside the scrubbed archive before sharing with support.
+
 ## Data Sovereignty and Security
 
 - **Customer responsibility:** Always review the obfuscated output before sharing to confirm all sensitive data is properly masked.

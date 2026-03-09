@@ -9,7 +9,9 @@ import time
 import pwd
 import shutil
 import subprocess
-from datetime import datetime
+import hashlib
+import socket
+from datetime import datetime, timezone
 from supportutils_scrub.config import DEFAULT_CONFIG_PATH
 from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.ip_scrubber import IPScrubber
@@ -154,6 +156,49 @@ def _save_mappings(args, dataset_path, dataset_dict):
             print("    Falling back to plain mapping file.")
     Translator.save_datasets(dataset_path, dataset_dict)
     return dataset_path
+
+
+def _sha256_file(path: str) -> str:
+    """Return SHA-256 hex digest of a file, or 'unavailable' on error."""
+    h = hashlib.sha256()
+    try:
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return 'unavailable'
+
+
+def _write_audit_log(audit_path: str, record: dict):
+    """Write an audit record as JSON (mode 0600)."""
+    try:
+        os.makedirs(os.path.dirname(audit_path), exist_ok=True)
+        with open(audit_path, 'w', encoding='utf-8') as f:
+            json.dump(record, f, indent=4)
+        os.chmod(audit_path, 0o600)
+    except Exception as e:
+        print(f"[!] Could not write audit log: {e}")
+
+
+def _audit_record(mode: str, inputs: list, outputs: list, mapping_path, args) -> dict:
+    """Build the audit record dict."""
+    try:
+        operator = pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        operator = os.environ.get('USER', os.environ.get('LOGNAME', 'unknown'))
+    return {
+        'tool':         'supportutils-scrub',
+        'version':      SCRIPT_VERSION,
+        'timestamp':    datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'operator':     operator,
+        'hostname':     socket.gethostname(),
+        'mode':         mode,
+        'inputs':       inputs,
+        'outputs':      outputs,
+        'cli_args':     sys.argv[1:],
+        'mapping_file': mapping_path or 'none (--no-mappings)',
+    }
 
 
 def build_hierarchical_domain_map(all_domains, existing_mappings):
@@ -328,6 +373,7 @@ def run_folder_mode(args, logger):
     dataset_dir = '/var/tmp'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dataset_path = os.path.join(dataset_dir, f"obfuscation_mappings_{timestamp}.json")
+    audit_path   = os.path.join(dataset_dir, f"obfuscation_audit_{timestamp}.json")
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
@@ -457,7 +503,14 @@ def run_folder_mode(args, logger):
             _print_enc_note(saved_mapping_path)
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}")
+    print(f"| Audit log                 : {audit_path}")
     print("------------------------------------------------------------\n")
+
+    record = _audit_record('folder',
+        inputs  = [{'path': os.path.abspath(args.supportconfig_path[0]), 'sha256': 'n/a (directory)'}],
+        outputs = [{'path': os.path.abspath(scrubbed_path), 'sha256': 'n/a (directory)'}],
+        mapping_path = saved_mapping_path, args = args)
+    _write_audit_log(audit_path, record)
 
 
 def run_stdin_mode(args, logger):
@@ -472,6 +525,7 @@ def run_stdin_mode(args, logger):
     dataset_dir = '/var/tmp'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dataset_path = os.path.join(dataset_dir, f"obfuscation_mappings_{timestamp}.json")
+    audit_path   = os.path.join(dataset_dir, f"obfuscation_audit_{timestamp}.json")
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
@@ -565,7 +619,14 @@ def run_stdin_mode(args, logger):
             _print_enc_note(saved_mapping_path, file=err)
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}", file=err)
+    print(f"| Audit log                 : {audit_path}", file=err)
     print("------------------------------------------------------------\n", file=err)
+
+    record = _audit_record('stdin',
+        inputs  = [{'path': 'stdin', 'sha256': 'n/a'}],
+        outputs = [{'path': 'stdout', 'sha256': 'n/a'}],
+        mapping_path = saved_mapping_path, args = args)
+    _write_audit_log(audit_path, record)
 
     print_footer(file=err)
 
@@ -581,6 +642,7 @@ def run_file_mode(args, logger):
     dataset_dir = '/var/tmp'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dataset_path = os.path.join(dataset_dir, f"obfuscation_mappings_{timestamp}.json")
+    audit_path   = os.path.join(dataset_dir, f"obfuscation_audit_{timestamp}.json")
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
@@ -698,7 +760,14 @@ def run_file_mode(args, logger):
             _print_enc_note(saved_mapping_path)
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}")
+    print(f"| Audit log                 : {audit_path}")
     print("------------------------------------------------------------\n")
+
+    record = _audit_record('file',
+        inputs  = [{'path': os.path.abspath(input_path),  'sha256': _sha256_file(input_path)}],
+        outputs = [{'path': os.path.abspath(output_path), 'sha256': _sha256_file(output_path)}],
+        mapping_path = saved_mapping_path, args = args)
+    _write_audit_log(audit_path, record)
 
 
 def _process_one_archive(archive_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
@@ -936,6 +1005,7 @@ def main():
     dataset_dir = '/var/tmp'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dataset_path = os.path.join(dataset_dir, f"obfuscation_mappings_{timestamp}.json")
+    audit_path   = os.path.join(dataset_dir, f"obfuscation_audit_{timestamp}.json")
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
@@ -1050,7 +1120,14 @@ def main():
             _print_enc_note(saved_mapping_path)
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}")
+    print(f"| Audit log                 : {audit_path}")
     print("------------------------------------------------------------\n")
+
+    record = _audit_record('archive',
+        inputs  = [{'path': os.path.abspath(p), 'sha256': _sha256_file(p)} for p in paths],
+        outputs = [{'path': s['output_path'], 'sha256': _sha256_file(s['output_path'])} for s in all_stats],
+        mapping_path = saved_mapping_path, args = args)
+    _write_audit_log(audit_path, record)
 
     print_footer()
 
