@@ -235,6 +235,12 @@ IPv4 subnet rewrite rules (most-specific first):
 - `--print-tcprewrite`: Print the exact tcprewrite command being executed
 - `--tcprewrite-path PATH`: Path to the tcprewrite binary (default: `tcprewrite`)
 
+### Security Options
+
+- `--secure-tmp`: Extract archives to `/dev/shm` (RAM-backed tmpfs) so sensitive data never touches persistent storage. Falls back to `/var/tmp` with a warning if unavailable. Cleanup is guaranteed even on interruption.
+- `--encrypt-mappings`: Encrypt the mapping file with a passphrase (AES-128/Fernet). The file is saved as `*.json.enc`. Requires `pip install cryptography`. Also settable via `encrypt_mappings = yes` in the config file.
+- `--no-mappings`: Do not write a mapping file. Use for one-shot obfuscation where the mapping file itself is a risk.
+
 ## Configuration File
 
 Default: `/etc/supportutils-scrub/supportutils-scrub.conf`
@@ -308,6 +314,42 @@ The mapping file (`/var/tmp/obfuscation_mappings_*.json`) records every translat
 - **Customer responsibility:** Always review the obfuscated output before sharing to confirm all sensitive data is properly masked.
 - **Data sovereignty compliance:** This tool supports SUSE's commitment to digital sovereignty by letting customers control their sensitive data while still receiving technical support.
 - **Keyword obfuscation:** Use `--keywords` or `--keyword-file` to remove additional sensitive strings not caught automatically.
+
+## Security Hardening
+
+For use in sensitive environments, three optional security controls are available:
+
+### Encrypted Mapping File
+
+The mapping file maps every real value to its fake replacement — if leaked alongside the scrubbed archive, it fully reverses the obfuscation. Protect it:
+
+```bash
+supportutils-scrub /var/log/scc_node1.txz --encrypt-mappings
+# Prompts for passphrase -> writes obfuscation_mappings_*.json.enc
+```
+
+### RAM-Only Temporary Extraction
+
+By default, archives are extracted to disk. Use `--secure-tmp` to extract to `/dev/shm` (tmpfs) so sensitive data stays in RAM only and is guaranteed cleaned up:
+
+```bash
+supportutils-scrub /var/log/scc_node1.txz --secure-tmp
+```
+
+### No Mapping File
+
+When a one-shot scrub is sufficient and no mapping file should exist on disk:
+
+```bash
+supportutils-scrub /var/log/scc_node1.txz --no-mappings
+```
+
+These options are also available in the configuration file:
+
+```ini
+secure_tmp = yes
+encrypt_mappings = yes
+```
 
 ## License
 

@@ -89,22 +89,75 @@ def parse_args():
                help="Print the exact tcprewrite commands executed.")
     parser.add_argument("--tcprewrite-path", default="tcprewrite",
                help="Path to tcprewrite binary (default: 'tcprewrite').")
-
+    parser.add_argument("--secure-tmp", action="store_true",
+        help="Extract archives to /dev/shm (tmpfs) to prevent sensitive data touching persistent storage.")
+    parser.add_argument("--encrypt-mappings", action="store_true",
+        help="Encrypt the mapping file with a passphrase (requires 'cryptography' package).")
+    parser.add_argument("--no-mappings", action="store_true",
+        help="Do not write a mapping file. Obfuscation cannot be reused across runs.")
 
     return parser.parse_args()
 
 
 
 
+def _next_fake_tld(counter: int) -> str:
+    """Generate a fake TLD suffix: aaa, aab, ..., aaz, aba, abb, ..."""
+    letters = 'abcdefghijklmnopqrstuvwxyz'
+    a, b, c = counter // 676, (counter // 26) % 26, counter % 26
+    return letters[a] + letters[b] + letters[c]
+
+
+def _get_encryption_passphrase() -> str:
+    import getpass
+    passphrase = getpass.getpass("[*] Mapping file encryption passphrase: ")
+    confirm    = getpass.getpass("[*] Confirm passphrase: ")
+    if passphrase != confirm:
+        print("[!] Passphrases do not match. Aborting.")
+        sys.exit(1)
+    if len(passphrase) < 8:
+        print("[!] Passphrase must be at least 8 characters.")
+        sys.exit(1)
+    return passphrase
+
+
+def _get_secure_tmp_base() -> str:
+    """Return /dev/shm if available (tmpfs), else /var/tmp with a warning."""
+    if os.path.exists('/dev/shm') and os.access('/dev/shm', os.W_OK):
+        return '/dev/shm'
+    print("[!] WARNING: /dev/shm not available, falling back to /var/tmp for temporary extraction.")
+    return '/var/tmp'
+
+
+def _save_mappings(args, dataset_path, dataset_dict):
+    """Save mapping file: plain, encrypted, or skip (--no-mappings)."""
+    if args.no_mappings:
+        print("[!] Mapping file not written (--no-mappings). Obfuscation cannot be reused.")
+        return None
+    if getattr(args, '_enc_passphrase', None):
+        try:
+            enc_path = Translator.save_datasets_encrypted(dataset_path, dataset_dict, args._enc_passphrase)
+            print(f"[+] Encrypted mapping file : {enc_path}")
+            return enc_path
+        except RuntimeError as e:
+            print(f"[!] Encryption failed: {e}")
+            print("    Falling back to plain mapping file.")
+    Translator.save_datasets(dataset_path, dataset_dict)
+    return dataset_path
+
+
 def build_hierarchical_domain_map(all_domains, existing_mappings):
     """
     Builds a domain mapping dictionary that preserves parent-child relationships.
+    Fake TLDs are derived from the real TLD family (e.g. .net → .dxa, .com → .dxb).
+    Returns (domain_dict, tld_map).
     """
     valid_domains = {d for d in all_domains if '.' in d}
 
     sorted_domains = sorted(list(valid_domains), key=lambda d: len(d.split('.')))
 
     domain_dict = existing_mappings.get('domain', {})
+    tld_map = existing_mappings.get('tld_map', {})  # real_tld -> fake_tld
     base_domain_counter = len(domain_dict)
     sub_domain_counter = 0
 
@@ -120,10 +173,14 @@ def build_hierarchical_domain_map(all_domains, existing_mappings):
             sub_domain_counter += 1
             domain_dict[domain] = f"{obfuscated_sub_part}.{domain_dict[parent_domain]}"
         else:
-            domain_dict[domain] = f"domain_{base_domain_counter}.obf"
+            real_tld = parts[-1].lower()
+            if real_tld not in tld_map:
+                tld_map[real_tld] = _next_fake_tld(len(tld_map))
+            fake_tld = tld_map[real_tld]
+            domain_dict[domain] = f"domain_{base_domain_counter}.{fake_tld}"
             base_domain_counter += 1
 
-    return domain_dict
+    return domain_dict, tld_map
 
 
 def extract_and_map_domains(report_files, additional_domains, mappings):
@@ -153,8 +210,8 @@ def extract_and_map_domains(report_files, additional_domains, mappings):
             except Exception as e:
                 logging.error(f"Error reading file {file_path}: {e}")
 
-    domain_map = build_hierarchical_domain_map(all_domains, mappings)
-    return domain_map
+    domain_map, tld_map = build_hierarchical_domain_map(all_domains, mappings)
+    return domain_map, tld_map
 
 
 def extract_hostnames(report_files, additional_hostnames, mappings):
@@ -285,7 +342,7 @@ def run_folder_mode(args, logger):
     additional_domains = []
     if args.domain:
         additional_domains = re.split(r'[,\s;]+', args.domain)
-    domain_dict = extract_and_map_domains([], additional_domains, mappings)
+    domain_dict, tld_map = extract_and_map_domains([], additional_domains, mappings)
     domain_scrubber = DomainScrubber(domain_dict)
 
     additional_usernames = []
@@ -351,10 +408,11 @@ def run_folder_mode(args, logger):
         'keyword': total_keyword_dict,
         'subnet': total_ipv4_subnet_dict,
         'state': total_state,
-        'ipv6_subnet': total_ipv6_subnet_dict
+        'ipv6_subnet': total_ipv6_subnet_dict,
+        'tld_map': tld_map,
     }
 
-    Translator.save_datasets(dataset_path, dataset_dict)
+    saved_mapping_path = _save_mappings(args, dataset_path, dataset_dict)
 
     if verbose_flag:
         print("\n--- Obfuscated Mapping Preview ---")
@@ -383,7 +441,8 @@ def run_folder_mode(args, logger):
         print(f"| Keywords obfuscated       : {len(total_keyword_dict)}")
     print(f"| Total obfuscation entries : {total_obfuscations}")
     print(f"| Output folder             : {scrubbed_path}")
-    print(f"| Mapping file              : {dataset_path}")
+    if saved_mapping_path:
+        print(f"| Mapping file              : {saved_mapping_path}")
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}")
     print("------------------------------------------------------------\n")
@@ -426,7 +485,7 @@ def run_stdin_mode(args, logger):
     additional_hostnames = list(re.split(r'[,\s;]+', args.hostname) if args.hostname else [])
     additional_hostnames += HostnameScrubber.extract_hostnames_from_text(text)
 
-    domain_dict = extract_and_map_domains([], additional_domains, mappings)
+    domain_dict, tld_map = extract_and_map_domains([], additional_domains, mappings)
     domain_scrubber = DomainScrubber(domain_dict)
     username_dict = extract_usernames([], additional_usernames, mappings)
     username_scrubber = UsernameScrubber(username_dict)
@@ -458,10 +517,11 @@ def run_stdin_mode(args, logger):
         'keyword': keyword_dict,
         'subnet': ipv4_subnet_dict,
         'state': state,
-        'ipv6_subnet': ipv6_subnet_dict
+        'ipv6_subnet': ipv6_subnet_dict,
+        'tld_map': tld_map,
     }
 
-    Translator.save_datasets(dataset_path, dataset_dict)
+    saved_mapping_path = _save_mappings(args, dataset_path, dataset_dict)
 
     if verbose_flag:
         print("\n--- Obfuscated Mapping Preview ---", file=err)
@@ -487,7 +547,8 @@ def run_stdin_mode(args, logger):
     if keyword_scrubber:
         print(f"| Keywords obfuscated       : {len(keyword_dict)}", file=err)
     print(f"| Total obfuscation entries : {total_obfuscations}", file=err)
-    print(f"| Mapping file              : {dataset_path}", file=err)
+    if saved_mapping_path:
+        print(f"| Mapping file              : {saved_mapping_path}", file=err)
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}", file=err)
     print("------------------------------------------------------------\n", file=err)
@@ -536,7 +597,7 @@ def run_file_mode(args, logger):
     additional_hostnames = list(re.split(r'[,\s;]+', args.hostname) if args.hostname else [])
     additional_hostnames += HostnameScrubber.extract_hostnames_from_text(text)
 
-    domain_dict = extract_and_map_domains([], additional_domains, mappings)
+    domain_dict, tld_map = extract_and_map_domains([], additional_domains, mappings)
     domain_scrubber = DomainScrubber(domain_dict)
     username_dict = extract_usernames([], additional_usernames, mappings)
     username_scrubber = UsernameScrubber(username_dict)
@@ -586,10 +647,11 @@ def run_file_mode(args, logger):
         'keyword': keyword_dict,
         'subnet': ipv4_subnet_dict,
         'state': state,
-        'ipv6_subnet': ipv6_subnet_dict
+        'ipv6_subnet': ipv6_subnet_dict,
+        'tld_map': tld_map,
     }
 
-    Translator.save_datasets(dataset_path, dataset_dict)
+    saved_mapping_path = _save_mappings(args, dataset_path, dataset_dict)
 
     if verbose_flag:
         print("\n--- Obfuscated Mapping Preview ---")
@@ -616,7 +678,8 @@ def run_file_mode(args, logger):
         print(f"| Keywords obfuscated       : {len(keyword_dict)}")
     print(f"| Total obfuscation entries : {total_obfuscations}")
     print(f"| Output file               : {output_path}")
-    print(f"| Mapping file              : {dataset_path}")
+    if saved_mapping_path:
+        print(f"| Mapping file              : {saved_mapping_path}")
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}")
     print("------------------------------------------------------------\n")
@@ -637,83 +700,90 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         logger.error(f"Error initializing scrubbers for {archive_path}: {e}")
         sys.exit(1)
 
+    extract_base = _get_secure_tmp_base() if getattr(args, 'secure_tmp', False) else None
+
+    new_txz_file_path = None
+    clean_folder_path = None
     try:
-        report_files, clean_folder_path = extract_supportconfig(archive_path, logger)
-    except Exception as e:
-        print(f"[!] Error during extraction of {archive_path}: {e}")
-        raise
+        try:
+            report_files, clean_folder_path = extract_supportconfig(archive_path, logger, extract_base=extract_base)
+        except Exception as e:
+            print(f"[!] Error during extraction of {archive_path}: {e}")
+            raise
 
-    additional_domains = []
-    if args.domain:
-        additional_domains = re.split(r'[,\s;]+', args.domain)
-    domain_dict = extract_and_map_domains(report_files, additional_domains, current_mappings)
-    domain_scrubber = DomainScrubber(domain_dict)
+        additional_domains = []
+        if args.domain:
+            additional_domains = re.split(r'[,\s;]+', args.domain)
+        domain_dict, tld_map = extract_and_map_domains(report_files, additional_domains, current_mappings)
+        domain_scrubber = DomainScrubber(domain_dict)
 
-    additional_usernames = []
-    if args.username:
-        additional_usernames = re.split(r'[,\s;]+', args.username)
-    username_dict = extract_usernames(report_files, additional_usernames, current_mappings)
-    username_scrubber = UsernameScrubber(username_dict)
+        additional_usernames = []
+        if args.username:
+            additional_usernames = re.split(r'[,\s;]+', args.username)
+        username_dict = extract_usernames(report_files, additional_usernames, current_mappings)
+        username_scrubber = UsernameScrubber(username_dict)
 
-    additional_hostnames = []
-    if args.hostname:
-        additional_hostnames = re.split(r'[,\s;]+', args.hostname)
-    hostname_dict = extract_hostnames(report_files, additional_hostnames, current_mappings)
-    hostname_scrubber = HostnameScrubber(hostname_dict)
+        additional_hostnames = []
+        if args.hostname:
+            additional_hostnames = re.split(r'[,\s;]+', args.hostname)
+        hostname_dict = extract_hostnames(report_files, additional_hostnames, current_mappings)
+        hostname_scrubber = HostnameScrubber(hostname_dict)
 
-    try:
-        file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
-                                       hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
-    except Exception as e:
-        logger.error(f"Error initializing FileProcessor: {e}")
-        sys.exit(1)
+        try:
+            file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
+                                           hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
+        except Exception as e:
+            logger.error(f"Error initializing FileProcessor: {e}")
+            sys.exit(1)
 
-    total_ip_dict = {}
-    total_domain_dict = {}
-    total_user_dict = {}
-    total_hostname_dict = {}
-    total_keyword_dict = {}
-    total_mac_dict = {}
-    total_ipv6_dict = {}
-    total_ipv4_subnet_dict = {}
-    total_ipv6_subnet_dict = {}
-    total_state = {}
+        total_ip_dict = {}
+        total_domain_dict = {}
+        total_user_dict = {}
+        total_hostname_dict = {}
+        total_keyword_dict = {}
+        total_mac_dict = {}
+        total_ipv6_dict = {}
+        total_ipv4_subnet_dict = {}
+        total_ipv6_subnet_dict = {}
+        total_state = {}
 
-    logger.info("Scrubbing:")
-    for report_file in report_files:
-        basename = os.path.basename(report_file)
-        if not re.match(r"^sa\d{8}(\.xz)?$", basename):
-            print(f"        {basename}")
+        logger.info("Scrubbing:")
+        for report_file in report_files:
+            basename = os.path.basename(report_file)
+            if not re.match(r"^sa\d{8}(\.xz)?$", basename):
+                print(f"        {basename}")
 
-        ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
-            file_processor.process_file(report_file, logger, verbose_flag)
+            ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict = \
+                file_processor.process_file(report_file, logger, verbose_flag)
 
-        total_ip_dict.update(ip_dict)
-        total_domain_dict.update(domain_dict)
-        total_user_dict.update(username_dict)
-        total_hostname_dict.update(hostname_dict)
-        total_keyword_dict.update(keyword_dict)
-        total_mac_dict.update(mac_dict)
-        total_ipv6_dict.update(ipv6_dict)
-        if hasattr(file_processor, '_ipv4_subnet_map'):
-            total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
-        if hasattr(file_processor, '_ipv4_state'):
-            total_state = file_processor._ipv4_state
-        if hasattr(file_processor, '_ipv6_subnet_map'):
-            total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
+            total_ip_dict.update(ip_dict)
+            total_domain_dict.update(domain_dict)
+            total_user_dict.update(username_dict)
+            total_hostname_dict.update(hostname_dict)
+            total_keyword_dict.update(keyword_dict)
+            total_mac_dict.update(mac_dict)
+            total_ipv6_dict.update(ipv6_dict)
+            if hasattr(file_processor, '_ipv4_subnet_map'):
+                total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
+            if hasattr(file_processor, '_ipv4_state'):
+                total_state = file_processor._ipv4_state
+            if hasattr(file_processor, '_ipv6_subnet_map'):
+                total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
 
-    if archive_path.endswith(".tar.gz"):
-        base_name = archive_path[:-7]
-    else:
-        base_name = os.path.splitext(archive_path)[0]
-    new_txz_file_path = base_name + "_scrubbed.txz"
-    create_txz(clean_folder_path, new_txz_file_path)
-    print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
+        if archive_path.endswith(".tar.gz"):
+            base_name = archive_path[:-7]
+        else:
+            base_name = os.path.splitext(archive_path)[0]
+        new_txz_file_path = base_name + "_scrubbed.txz"
+        create_txz(clean_folder_path, new_txz_file_path)
+        print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
 
-    try:
-        shutil.rmtree(clean_folder_path)
-    except Exception as e:
-        print(f"[!] Could not remove temp folder {clean_folder_path}: {e}")
+    finally:
+        if clean_folder_path and os.path.exists(clean_folder_path):
+            try:
+                shutil.rmtree(clean_folder_path)
+            except Exception as e:
+                print(f"[!] Could not remove temp folder {clean_folder_path}: {e}")
 
     try:
         stat = os.stat(new_txz_file_path)
@@ -734,6 +804,7 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         'subnet': total_ipv4_subnet_dict,
         'state': total_state,
         'ipv6_subnet': total_ipv6_subnet_dict,
+        'tld_map': tld_map,
     }
 
     stats = {
@@ -751,6 +822,25 @@ def main():
     args = parse_args()
     verbose_flag = args.verbose
     logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
+
+    # Resolve security options early (CLI flag OR config file)
+    _early_config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
+    _early_config = _early_config_reader.read_config(args.config)
+    args.secure_tmp       = args.secure_tmp       or _early_config.get('secure_tmp',       'no').lower() == 'yes'
+    args.encrypt_mappings = args.encrypt_mappings or _early_config.get('encrypt_mappings', 'no').lower() == 'yes'
+
+    if args.encrypt_mappings and args.no_mappings:
+        print("[!] --encrypt-mappings and --no-mappings are mutually exclusive.")
+        sys.exit(1)
+
+    if args.encrypt_mappings and not args.no_mappings:
+        try:
+            args._enc_passphrase = _get_encryption_passphrase()
+        except RuntimeError as e:
+            print(f"[!] {e}")
+            sys.exit(1)
+    else:
+        args._enc_passphrase = None
 
     paths = args.supportconfig_path  # list (nargs="*")
 
@@ -864,8 +954,9 @@ def main():
         all_stats.append(stats)
 
     # Save final combined mappings (single file covering all archives)
-    Translator.save_datasets(dataset_path, current_mappings)
-    print(f"[✓] Mapping file saved to:       {dataset_path}")
+    saved_mapping_path = _save_mappings(args, dataset_path, current_mappings)
+    if saved_mapping_path:
+        print(f"[✓] Mapping file saved to:       {saved_mapping_path}")
 
     if verbose_flag:
         print("\n--- Obfuscated Mapping Preview ---")
@@ -908,7 +999,8 @@ def main():
         print(f"| Owner                     : {stats['owner']}")
     for stats in all_stats:
         print(f"| Output archive            : {stats['output_path']}")
-    print(f"| Mapping file              : {dataset_path}")
+    if saved_mapping_path:
+        print(f"| Mapping file              : {saved_mapping_path}")
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}")
     print("------------------------------------------------------------\n")

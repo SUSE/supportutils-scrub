@@ -74,6 +74,15 @@ Enable verbose output with more detailed logging information.
 .TP
 \fB\-\-mappings\fR \fIFILE\fR
 Load an existing obfuscation mapping file before processing. Ensures that any previously assigned fake values are reused for consistency.
+.TP
+\fB\-\-secure\-tmp\fR
+Extract archives to \fI/dev/shm\fR (tmpfs) to prevent sensitive data from touching persistent storage during processing. Falls back to \fI/var/tmp\fR with a warning if \fI/dev/shm\fR is not available. Guaranteed cleanup via try/finally even if the process is interrupted. Can also be enabled with \fIsecure_tmp = yes\fR in the configuration file.
+.TP
+\fB\-\-encrypt\-mappings\fR
+Encrypt the obfuscation mapping file with a user-supplied passphrase using AES-128 (Fernet). The encrypted file is saved with a \fI.enc\fR extension. Requires the Python \fBcryptography\fR package (\fBpip install cryptography\fR). Can also be enabled with \fIencrypt_mappings = yes\fR in the configuration file. Mutually exclusive with \fB\-\-no\-mappings\fR.
+.TP
+\fB\-\-no\-mappings\fR
+Do not write a mapping file after processing. Obfuscation mappings will not be reusable across runs. Use this when the mapping file itself is considered a security risk.
 
 .SS Obfuscation Options
 .TP
@@ -202,6 +211,12 @@ JSON files containing obfuscation mappings. These files map real data to obfusca
 The obfuscation process is the customer's responsibility. Always review the obfuscated output before sharing.
 .IP \(bu 2
 Keywords are replaced even within words (substring matching) for thorough obfuscation.
+.IP \(bu 2
+Use \fB\-\-encrypt\-mappings\fR to protect the mapping file at rest. Without encryption, the mapping file contains all real values as keys and can be used to fully reverse the obfuscation.
+.IP \(bu 2
+Use \fB\-\-secure\-tmp\fR on systems where disk forensics are a concern. Extraction to \fI/dev/shm\fR ensures sensitive data stays in RAM only.
+.IP \(bu 2
+Use \fB\-\-no\-mappings\fR when a one-shot obfuscation is sufficient and the mapping file must not exist on disk.
 
 .SH AUTHOR
 Ronald Pina <ronald.pina@suse.com>

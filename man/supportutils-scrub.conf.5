@@ -88,6 +88,20 @@ Specifies the path to the file containing keywords to be obfuscated. Each keywor
 .IP * 2
 \fBDefault\fR: \fI/var/lib/supportutils-scrub-keywords.txt\fR
 .PD
+.TP
+.B secure_tmp
+When set to \fIyes\fR, archives are extracted to \fI/dev/shm\fR (RAM-backed tmpfs) instead of alongside the archive on persistent storage. Falls back to \fI/var/tmp\fR if \fI/dev/shm\fR is unavailable. Equivalent to the \fB\-\-secure\-tmp\fR command-line flag.
+.PD 0
+.IP * 2
+\fBValues\fR: \fIyes\fR or \fIno\fR (default: no)
+.PD
+.TP
+.B encrypt_mappings
+When set to \fIyes\fR, the obfuscation mapping file is encrypted with a user-supplied passphrase (AES-128 via Fernet). Requires the Python \fBcryptography\fR package. Equivalent to the \fB\-\-encrypt\-mappings\fR command-line flag.
+.PD 0
+.IP * 2
+\fBValues\fR: \fIyes\fR or \fIno\fR (default: no)
+.PD
 
 .SH FILES
 .TP

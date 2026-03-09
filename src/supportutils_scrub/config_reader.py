@@ -26,7 +26,9 @@ class ConfigReader:
             'verbose': 'true',
             'log_level': 'verbose',
             'use_key_words_file': 'yes',
-            'key_words_file': '/var/lib/supportutils-scrub-keywords.txt'
+            'key_words_file': '/var/lib/supportutils-scrub-keywords.txt',
+            'secure_tmp': 'no',
+            'encrypt_mappings': 'no',
         }
 
 
