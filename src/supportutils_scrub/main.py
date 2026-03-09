@@ -44,6 +44,16 @@ def print_header(file=None):
     print(" reused to keep consistent results across multiple supportconfigs.", file=file)
     print("=" * 77 + "\n", file=file)
 
+def _warn_private_ip(config, file=None):
+    if file is None:
+        file = sys.stdout
+    if config.get('obfuscate_private_ip', 'no').lower() != 'yes':
+        print("[!] WARNING: Private IP obfuscation is DISABLED.", file=file)
+        print( "    Only public IP addresses will be obfuscated.", file=file)
+        print(f"    To also obfuscate private IPs (10.x, 172.16.x, 192.168.x),", file=file)
+        print(f"    set 'obfuscate_private_ip = yes' in {DEFAULT_CONFIG_PATH}", file=file)
+        print(file=file)
+
 def print_footer(file=None):
     if file is None:
         file = sys.stdout
@@ -254,6 +264,7 @@ def run_folder_mode(args, logger):
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
+    _warn_private_ip(config)
 
     mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber = \
         _init_scrubbers(args, config, logger)
@@ -393,6 +404,7 @@ def run_stdin_mode(args, logger):
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
+    _warn_private_ip(config, file=err)
 
     mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber = \
         _init_scrubbers(args, config, logger)
@@ -497,6 +509,7 @@ def run_file_mode(args, logger):
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
+    _warn_private_ip(config)
 
     mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber = \
         _init_scrubbers(args, config, logger)
@@ -791,6 +804,7 @@ def main():
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
+    _warn_private_ip(config)
 
     if args.rewrite_pcap:
         if not args.pcap_in:
