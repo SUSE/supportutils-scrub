@@ -122,32 +122,21 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
 
 ### Multi-Archive Mode — HA Clusters (v1.2+)
 
-Process all cluster nodes in a single run. Mappings are chained so the same real value always maps to the same fake value across all archives:
+Pass all cluster archives in a single run — both node supportconfigs and the `crm_report`/`hb_report` `.tar.gz`. Mappings are chained so the same real value always maps to the same fake value across all archives:
 
 ```bash
-supportutils-scrub \
-    /var/log/scc_node1_250814.txz \
-    /var/log/scc_node2_250814.txz \
-    /var/log/scc_node3_250814.txz
+supportutils-scrub scc_hana-t1_260222_2336.txz scc_hana-t2_260222_2337.txz crm_report-Mon-23-Feb-2026.tar.gz
 ```
 
 Or reuse mappings from a previous run for consistency:
 
 ```bash
 # Node 1 — creates the mapping file
-supportutils-scrub /var/log/scc_erphana01a_250411_1640.txz
+supportutils-scrub scc_hana-t1_260222_2336.txz
 
-# Node 2 — reuses node 1 mappings
-supportutils-scrub /var/log/scc_erphana02a_250813_1211.txz \
-    --mappings /var/tmp/obfuscation_mappings_20250815_125900.json
-```
-
-### crm_report / hb_report Archives (v1.2+)
-
-HA cluster reports in `.tar.gz` format are handled natively:
-
-```bash
-supportutils-scrub /var/log/hb_report_cluster1.tar.gz --verbose
+# Node 2 + crm_report — reuse node 1 mappings
+supportutils-scrub scc_hana-t2_260222_2337.txz crm_report-Mon-23-Feb-2026.tar.gz \
+    --mappings /var/tmp/obfuscation_mappings_20260222_125900.json
 ```
 
 ### Stdin / Pipeline Mode (v1.2+)
