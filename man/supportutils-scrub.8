@@ -18,6 +18,9 @@ supportutils-scrub \- Obfuscate sensitive data from SUSE supportconfig tarballs 
 .br
 .B supportutils-scrub
 \fB\-\-rewrite\-pcap\fR \fB\-\-mappings\fR \fIFILE\fR \fB\-\-pcap\-in\fR \fIFILES\fR [\fIOPTIONS\fR]
+.br
+.B supportutils-scrub
+\fImappings.json.enc\fR
 .SH DESCRIPTION
 \fBsupportutils-scrub\fR is a utility designed to sanitize and remove sensitive or unwanted data from SUSE supportconfig tarballs, directories, plain log files, and network packet captures. This tool assists users and organizations in aligning with data protection policies, privacy requirements, and GDPR compliance standards.
 
@@ -83,6 +86,9 @@ Encrypt the obfuscation mapping file with a user-supplied passphrase using AES-1
 .TP
 \fB\-\-no\-mappings\fR
 Do not write a mapping file after processing. Obfuscation mappings will not be reusable across runs. Use this when the mapping file itself is considered a security risk.
+.TP
+\fB\-\-decrypt\-mappings\fR \fIFILE\fR
+Decrypt and print the contents of an encrypted mapping file (\fI*.json.enc\fR) to standard output, then exit. Prompts for the passphrase interactively. Passing a \fI*.json.enc\fR file as a positional argument is equivalent and triggers decrypt mode automatically.
 
 .SS Obfuscation Options
 .TP
@@ -150,6 +156,17 @@ Explicitly reads from stdin using the dash argument.
 \fBsupportutils-scrub \-\-domain corp.com < /var/log/auth.log > auth_scrubbed.log\fR
 Scrubs auth.log and saves result to a file.
 
+.SS Encrypted mapping file
+.TP
+\fBsupportutils-scrub\fR /var/log/scc_node1.txz \-\-encrypt\-mappings
+Scrubs the archive and saves an AES-encrypted mapping file (\fI*.json.enc\fR). Prompts for a passphrase at startup.
+.TP
+\fBsupportutils-scrub\fR /var/tmp/obfuscation_mappings_20260309_142201.json.enc
+Decrypts and prints the mapping file to stdout. The \fI.json.enc\fR extension is detected automatically.
+.TP
+\fBsupportutils-scrub\fR \-\-decrypt\-mappings /var/tmp/obfuscation_mappings_20260309_142201.json.enc
+Equivalent explicit form using the \fB\-\-decrypt\-mappings\fR flag.
+
 .SS PCAP Obfuscation
 .TP
 \fBsupportutils-scrub\fR \-\-rewrite\-pcap \-\-mappings /var/tmp/obfuscation_mappings_20260223_120000.json \-\-pcap\-in trace.pcap
@@ -202,6 +219,10 @@ for details.
 .I /var/tmp/obfuscation_mappings_*.json
 .RS
 JSON files containing obfuscation mappings. These files map real data to obfuscated data and must be kept secure. The subnet section is used for tcprewrite operations.
+.RE
+.I /var/tmp/obfuscation_mappings_*.json.enc
+.RS
+AES-encrypted mapping files produced by \fB\-\-encrypt\-mappings\fR. Can be decrypted by passing the file directly to \fBsupportutils-scrub\fR or using \fB\-\-decrypt\-mappings\fR.
 .RE
 
 .SH SECURITY CONSIDERATIONS

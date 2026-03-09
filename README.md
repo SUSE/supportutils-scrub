@@ -240,6 +240,7 @@ IPv4 subnet rewrite rules (most-specific first):
 - `--secure-tmp`: Extract archives to `/dev/shm` (RAM-backed tmpfs) so sensitive data never touches persistent storage. Falls back to `/var/tmp` with a warning if unavailable. Cleanup is guaranteed even on interruption.
 - `--encrypt-mappings`: Encrypt the mapping file with a passphrase (AES-128/Fernet). The file is saved as `*.json.enc`. Requires `pip install cryptography`. Also settable via `encrypt_mappings = yes` in the config file.
 - `--no-mappings`: Do not write a mapping file. Use for one-shot obfuscation where the mapping file itself is a risk.
+- `--decrypt-mappings FILE`: Decrypt and print an encrypted mapping file (`*.json.enc`) to stdout, then exit. Passing a `*.json.enc` file as a positional argument triggers decrypt mode automatically.
 
 ## Configuration File
 
@@ -317,7 +318,7 @@ The mapping file (`/var/tmp/obfuscation_mappings_*.json`) records every translat
 
 ## Security Hardening
 
-For use in sensitive environments, three optional security controls are available:
+For use in sensitive environments, four optional security controls are available:
 
 ### Encrypted Mapping File
 
@@ -325,7 +326,17 @@ The mapping file maps every real value to its fake replacement — if leaked alo
 
 ```bash
 supportutils-scrub /var/log/scc_node1.txz --encrypt-mappings
-# Prompts for passphrase -> writes obfuscation_mappings_*.json.enc
+# Prompts for passphrase → writes obfuscation_mappings_*.json.enc
+```
+
+To inspect the encrypted file later, simply pass it to the tool:
+
+```bash
+supportutils-scrub /var/tmp/obfuscation_mappings_20260309_142201.json.enc
+# or explicitly:
+supportutils-scrub --decrypt-mappings /var/tmp/obfuscation_mappings_20260309_142201.json.enc
+Passphrase for ...:
+{ ... JSON output ... }
 ```
 
 ### RAM-Only Temporary Extraction
