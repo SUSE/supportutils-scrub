@@ -221,6 +221,8 @@ def _rename_extraction_paths(clean_folder_path: str, hostname_dict: dict) -> str
     if scrubbed_basename != basename:
         new_path = os.path.join(parent, scrubbed_basename)
         try:
+            if os.path.exists(new_path):
+                shutil.rmtree(new_path)
             os.rename(clean_folder_path, new_path)
             return new_path
         except Exception as e:
