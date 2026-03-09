@@ -837,6 +837,11 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
 def main():
     args = parse_args()
 
+    # Auto-detect encrypted mapping file passed as positional argument
+    if not args.decrypt_mappings and len(args.supportconfig_path) == 1 \
+            and args.supportconfig_path[0].endswith('.json.enc'):
+        args.decrypt_mappings = args.supportconfig_path[0]
+
     # --decrypt-mappings: decrypt and print an encrypted mapping file, then exit
     if args.decrypt_mappings:
         import getpass
