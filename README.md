@@ -73,8 +73,8 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
 ```
 =============================================================================
           Obfuscation Utility - supportutils-scrub
-                      Version : 1.2
-                 Release Date : 2025-08-14
+                      Version : 1.2         
+                 Release Date : 2026-02-24  
 
  supportutils-scrub is a python based tool that masks sensitive
  information from SUSE supportconfig tarballs. It replaces data such as
@@ -83,6 +83,13 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
  The mappings are saved in /var/tmp/obfuscation_mappings.json and can be
  reused to keep consistent results across multiple supportconfigs.
 =============================================================================
+
+[!] Configuration file not found: /etc/supportutils-scrub/supportutils-scrub.conf.
+     → Using default settings
+[!] WARNING: Private IP obfuscation is DISABLED.
+    Only public IP addresses will be obfuscated.
+    To also obfuscate private IPs (10.x, 172.16.x, 192.168.x),
+    set 'obfuscate_private_ip = yes' in /etc/supportutils-scrub/supportutils-scrub.conf
 
 [✓] Archive extracted to: /var/log/scc_terminus_250814_1549_scrubbed
         basic-environment.txt
