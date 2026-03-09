@@ -129,6 +129,27 @@ def _get_secure_tmp_base() -> str:
     return '/var/tmp'
 
 
+def _print_enc_note(mapping_path, file=None):
+    """Print a decryption hint after the mapping file line in a summary block."""
+    if file is None:
+        file = sys.stdout
+    print("|", file=file)
+    print("|   The mapping file is AES-encrypted (Fernet / scrypt).", file=file)
+    print("|   To decrypt and inspect it, run:", file=file)
+    print("|", file=file)
+    print("|     python3 - <<'EOF'", file=file)
+    print("|     import base64, hashlib, json, getpass", file=file)
+    print("|     from cryptography.fernet import Fernet", file=file)
+    print("|     p = getpass.getpass('Passphrase: ').encode()", file=file)
+    print("|     k = base64.urlsafe_b64encode(", file=file)
+    print("|         hashlib.scrypt(p, salt=b'supportutils-scrub-v1',", file=file)
+    print("|                        n=16384, r=8, p=1, dklen=32))", file=file)
+    print(f"|     data = json.loads(Fernet(k).decrypt(open('{mapping_path}','rb').read()))", file=file)
+    print("|     print(json.dumps(data, indent=2))", file=file)
+    print("|     EOF", file=file)
+    print("|", file=file)
+
+
 def _save_mappings(args, dataset_path, dataset_dict):
     """Save mapping file: plain, encrypted, or skip (--no-mappings)."""
     if args.no_mappings:
@@ -443,6 +464,8 @@ def run_folder_mode(args, logger):
     print(f"| Output folder             : {scrubbed_path}")
     if saved_mapping_path:
         print(f"| Mapping file              : {saved_mapping_path}")
+        if getattr(args, '_enc_passphrase', None):
+            _print_enc_note(saved_mapping_path)
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}")
     print("------------------------------------------------------------\n")
@@ -549,6 +572,8 @@ def run_stdin_mode(args, logger):
     print(f"| Total obfuscation entries : {total_obfuscations}", file=err)
     if saved_mapping_path:
         print(f"| Mapping file              : {saved_mapping_path}", file=err)
+        if getattr(args, '_enc_passphrase', None):
+            _print_enc_note(saved_mapping_path, file=err)
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}", file=err)
     print("------------------------------------------------------------\n", file=err)
@@ -680,6 +705,8 @@ def run_file_mode(args, logger):
     print(f"| Output file               : {output_path}")
     if saved_mapping_path:
         print(f"| Mapping file              : {saved_mapping_path}")
+        if getattr(args, '_enc_passphrase', None):
+            _print_enc_note(saved_mapping_path)
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}")
     print("------------------------------------------------------------\n")
@@ -1001,6 +1028,8 @@ def main():
         print(f"| Output archive            : {stats['output_path']}")
     if saved_mapping_path:
         print(f"| Mapping file              : {saved_mapping_path}")
+        if getattr(args, '_enc_passphrase', None):
+            _print_enc_note(saved_mapping_path)
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}")
     print("------------------------------------------------------------\n")
