@@ -76,7 +76,7 @@ Specify the path to the configuration file. Defaults to \fI/etc/supportutils-scr
 Enable verbose output with more detailed logging information.
 .TP
 \fB\-\-mappings\fR \fIFILE\fR
-Load an existing obfuscation mapping file before processing. Ensures that any previously assigned fake values are reused for consistency.
+Load an existing obfuscation mapping file before processing. Accepts both plain \fI*.json\fR and encrypted \fI*.json.enc\fR files — prompts for the passphrase automatically when the file is encrypted. Ensures that any previously assigned fake values are reused for consistency.
 .TP
 \fB\-\-secure\-tmp\fR
 Extract archives to \fI/dev/shm\fR (tmpfs) to prevent sensitive data from touching persistent storage during processing. Falls back to \fI/var/tmp\fR with a warning if \fI/dev/shm\fR is not available. Guaranteed cleanup via try/finally even if the process is interrupted. Can also be enabled with \fIsecure_tmp = yes\fR in the configuration file.
@@ -160,6 +160,9 @@ Scrubs auth.log and saves result to a file.
 .TP
 \fBsupportutils-scrub\fR /var/log/scc_node1.txz \-\-encrypt\-mappings
 Scrubs the archive and saves an AES-encrypted mapping file (\fI*.json.enc\fR). Prompts for a passphrase at startup.
+.TP
+\fBsupportutils-scrub\fR /var/log/scc_node2.txz \-\-mappings /var/tmp/obfuscation_mappings_20260309_142201.json.enc
+Reuses an encrypted mapping file from a prior run to scrub a second archive consistently. Prompts for the passphrase to decrypt the mapping file before processing.
 .TP
 \fBsupportutils-scrub\fR /var/tmp/obfuscation_mappings_20260309_142201.json.enc
 Decrypts and prints the mapping file to stdout. The \fI.json.enc\fR extension is detected automatically.

@@ -75,7 +75,7 @@ def parse_args():
                         help="Path to config file (defaults provided)")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
-    parser.add_argument("--mappings", help="JSON file with prior obfuscation mappings")
+    parser.add_argument("--mappings", help="JSON or encrypted *.json.enc mapping file from a prior run. Prompts for passphrase when the file is encrypted.")
     parser.add_argument("--username", help="Additional usernames to obfuscate")
     parser.add_argument("--domain", help="Additional domains to obfuscate")
     parser.add_argument("--hostname", help="Additional hostnames to obfuscate")
@@ -139,6 +139,38 @@ def _print_enc_note(mapping_path, file=None):
         file = sys.stdout
     print("|   [encrypted] To decrypt:", file=file)
     print(f"|   supportutils-scrub --decrypt-mappings {mapping_path}", file=file)
+
+
+def _load_mappings_file(path: str) -> dict:
+    """Load a mapping file — plain JSON or AES-encrypted *.json.enc.
+    Prompts for passphrase when the file is encrypted.
+    Returns the parsed dict, or {} on failure."""
+    if path.endswith('.json.enc'):
+        import getpass
+        try:
+            from cryptography.fernet import Fernet
+        except ImportError:
+            print("[!] Package 'cryptography' is required to load encrypted mappings.\n"
+                  "    Install with: pip install cryptography")
+            sys.exit(1)
+        import base64 as _b64, hashlib as _hl
+        passphrase = getpass.getpass(f"Passphrase for {path}: ").encode('utf-8')
+        try:
+            key = _b64.urlsafe_b64encode(
+                _hl.scrypt(passphrase, salt=b'supportutils-scrub-v1',
+                           n=16384, r=8, p=1, dklen=32)
+            )
+            return json.loads(Fernet(key).decrypt(open(path, 'rb').read()))
+        except Exception:
+            print(f"[!] Failed to decrypt {path}. Wrong passphrase or corrupted file.")
+            sys.exit(1)
+    else:
+        try:
+            with open(path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[!] Failed to load mapping from {path}: {e}", file=sys.stderr)
+            return {}
 
 
 def _save_mappings(args, dataset_path, dataset_dict):
@@ -369,13 +401,8 @@ def _init_scrubbers(args, config, logger):
     mappings = {}
     mapping_keywords = []
     if args.mappings:
-        try:
-            with open(args.mappings, 'r') as f:
-                mappings = json.load(f)
-                mapping_keywords = list(mappings.get('keyword', {}).keys())
-        except Exception as e:
-            print(f"[!] Failed to load mapping from {args.mappings}", file=sys.stderr)
-            sys.exit(1)
+        mappings = _load_mappings_file(args.mappings)
+        mapping_keywords = list(mappings.get('keyword', {}).keys())
 
     cmd_keywords = []
     if args.keywords:
@@ -1035,7 +1062,7 @@ def main():
         if not args.mappings or not args.pcap_in:
             print("[!] For --rewrite-pcap without a supportconfig, provide --mappings and --pcap-in")
             sys.exit(2)
-        mappings = json.load(open(args.mappings))
+        mappings = _load_mappings_file(args.mappings)
         rewrite_pcaps_with_tcprewrite(
             mappings, args.pcap_in, args.pcap_out_dir,
             tcprewrite=args.tcprewrite_path,
@@ -1064,7 +1091,9 @@ def main():
             sys.exit(2)
         mapping_src_path = args.mappings or dataset_path
         try:
-            mappings_for_pcap = json.load(open(mapping_src_path))
+            mappings_for_pcap = _load_mappings_file(mapping_src_path)
+        except SystemExit:
+            raise
         except Exception as e:
             print(f"[!] Failed to read mappings for pcap rewrite from {mapping_src_path}: {e}")
             sys.exit(2)
@@ -1079,14 +1108,9 @@ def main():
     initial_mappings = {}
     mapping_keywords = []
     if args.mappings:
-        try:
-            with open(args.mappings, 'r') as f:
-                initial_mappings = json.load(f)
-                print(f"[✓] Dataset mapping loaded from: {args.mappings} ")
-                mapping_keywords = list(initial_mappings.get('keyword', {}).keys())
-        except Exception as e:
-            print(f"[!] Failed to load mapping from {args.mappings}")
-            sys.exit(1)
+        initial_mappings = _load_mappings_file(args.mappings)
+        print(f"[✓] Dataset mapping loaded from: {args.mappings} ")
+        mapping_keywords = list(initial_mappings.get('keyword', {}).keys())
 
     # Keyword scrubber is initialized once and shared across all archives
     cmd_keywords = []

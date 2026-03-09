@@ -216,7 +216,7 @@ IPv4 subnet rewrite rules (most-specific first):
 - `supportconfig_path`: Path(s) to `.txz`/`.tgz` archive(s), a folder, a plain file, or `-` for stdin. Multiple archives share mappings.
 - `--config PATH`: Path to configuration file (default: `/etc/supportutils-scrub/supportutils-scrub.conf`)
 - `--verbose`: Enable verbose output
-- `--mappings FILE`: JSON file with prior obfuscation mappings for consistency
+- `--mappings FILE`: JSON or encrypted `*.json.enc` mapping file from a prior run. Prompts for passphrase automatically when the file is encrypted.
 - `--username USERNAMES`: Additional usernames to obfuscate (comma/semicolon/space-separated)
 - `--hostname HOSTNAMES`: Additional hostnames to obfuscate
 - `--domain DOMAINS`: Additional domains to obfuscate
@@ -344,6 +344,14 @@ The mapping file maps every real value to its fake replacement — if leaked alo
 ```bash
 supportutils-scrub /var/log/scc_node1.txz --encrypt-mappings
 # Prompts for passphrase → writes obfuscation_mappings_*.json.enc
+```
+
+To reuse an encrypted mapping file for scrubbing another archive, pass it directly to `--mappings`. The tool detects the `.enc` extension and prompts for the passphrase:
+
+```bash
+supportutils-scrub /var/log/scc_node2.txz \
+    --mappings /var/tmp/obfuscation_mappings_20260309_142201.json.enc
+# Passphrase for ...: (prompted)
 ```
 
 To inspect the encrypted file later, simply pass it to the tool:
