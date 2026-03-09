@@ -95,6 +95,8 @@ def parse_args():
         help="Encrypt the mapping file with a passphrase (requires 'cryptography' package).")
     parser.add_argument("--no-mappings", action="store_true",
         help="Do not write a mapping file. Obfuscation cannot be reused across runs.")
+    parser.add_argument("--decrypt-mappings", metavar="FILE",
+        help="Decrypt and print an encrypted mapping file (*.json.enc) then exit.")
 
     return parser.parse_args()
 
@@ -133,21 +135,8 @@ def _print_enc_note(mapping_path, file=None):
     """Print a decryption hint after the mapping file line in a summary block."""
     if file is None:
         file = sys.stdout
-    print("|", file=file)
-    print("|   The mapping file is AES-encrypted (Fernet / scrypt).", file=file)
-    print("|   To decrypt and inspect it, run:", file=file)
-    print("|", file=file)
-    print("|     python3 - <<'EOF'", file=file)
-    print("|     import base64, hashlib, json, getpass", file=file)
-    print("|     from cryptography.fernet import Fernet", file=file)
-    print("|     p = getpass.getpass('Passphrase: ').encode()", file=file)
-    print("|     k = base64.urlsafe_b64encode(", file=file)
-    print("|         hashlib.scrypt(p, salt=b'supportutils-scrub-v1',", file=file)
-    print("|                        n=16384, r=8, p=1, dklen=32))", file=file)
-    print(f"|     data = json.loads(Fernet(k).decrypt(open('{mapping_path}','rb').read()))", file=file)
-    print("|     print(json.dumps(data, indent=2))", file=file)
-    print("|     EOF", file=file)
-    print("|", file=file)
+    print("|   [encrypted] To decrypt:", file=file)
+    print(f"|   supportutils-scrub --decrypt-mappings {mapping_path}", file=file)
 
 
 def _save_mappings(args, dataset_path, dataset_dict):
@@ -847,6 +836,30 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
 
 def main():
     args = parse_args()
+
+    # --decrypt-mappings: decrypt and print an encrypted mapping file, then exit
+    if args.decrypt_mappings:
+        import getpass
+        enc_file = args.decrypt_mappings
+        try:
+            from cryptography.fernet import Fernet
+        except ImportError:
+            print("[!] Package 'cryptography' is required. Install with: pip install cryptography")
+            sys.exit(1)
+        import base64, hashlib
+        passphrase = getpass.getpass(f"Passphrase for {enc_file}: ").encode('utf-8')
+        try:
+            key = base64.urlsafe_b64encode(
+                hashlib.scrypt(passphrase, salt=b'supportutils-scrub-v1',
+                               n=16384, r=8, p=1, dklen=32)
+            )
+            data = json.loads(Fernet(key).decrypt(open(enc_file, 'rb').read()))
+            print(json.dumps(data, indent=2))
+        except Exception:
+            print("[!] Decryption failed. Wrong passphrase or corrupted file.")
+            sys.exit(1)
+        return
+
     verbose_flag = args.verbose
     logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
 
