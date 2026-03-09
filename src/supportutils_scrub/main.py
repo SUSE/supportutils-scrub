@@ -17,7 +17,7 @@ from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.ip_scrubber import IPScrubber
 from supportutils_scrub.domain_scrubber import DomainScrubber
 from supportutils_scrub.hostname_scrubber import HostnameScrubber
-from supportutils_scrub.extractor import extract_supportconfig, create_txz, copy_folder_to_scrubbed
+from supportutils_scrub.extractor import extract_supportconfig, create_txz, copy_folder_to_scrubbed, walk_supportconfig
 from supportutils_scrub.translator import Translator
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
@@ -156,6 +156,44 @@ def _save_mappings(args, dataset_path, dataset_dict):
             print("    Falling back to plain mapping file.")
     Translator.save_datasets(dataset_path, dataset_dict)
     return dataset_path
+
+
+def _scrub_name(name: str, hostname_dict: dict) -> str:
+    """Replace real hostnames in a filename/dirname (plain replace, no word boundaries)."""
+    for real, fake in sorted(hostname_dict.items(), key=lambda x: len(x[0]), reverse=True):
+        name = name.replace(real, fake)
+    return name
+
+
+def _rename_extraction_paths(clean_folder_path: str, hostname_dict: dict) -> str:
+    """
+    Rename any subdirectories inside clean_folder_path whose names contain a real
+    hostname, then rename clean_folder_path itself.
+    Returns the (possibly new) clean_folder_path.
+    """
+    if not hostname_dict:
+        return clean_folder_path
+    # Bottom-up so deeper dirs are renamed before their parents
+    for root, dirs, _ in os.walk(clean_folder_path, topdown=False):
+        for d in dirs:
+            scrubbed = _scrub_name(d, hostname_dict)
+            if scrubbed != d:
+                try:
+                    os.rename(os.path.join(root, d), os.path.join(root, scrubbed))
+                except Exception as e:
+                    print(f"[!] Could not rename directory '{d}': {e}")
+    # Rename the top-level extraction folder
+    parent   = os.path.dirname(clean_folder_path)
+    basename = os.path.basename(clean_folder_path)
+    scrubbed_basename = _scrub_name(basename, hostname_dict)
+    if scrubbed_basename != basename:
+        new_path = os.path.join(parent, scrubbed_basename)
+        try:
+            os.rename(clean_folder_path, new_path)
+            return new_path
+        except Exception as e:
+            print(f"[!] Could not rename extraction folder: {e}")
+    return clean_folder_path
 
 
 def _sha256_file(path: str) -> str:
@@ -814,6 +852,20 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         hostname_dict = extract_hostnames(report_files, additional_hostnames, current_mappings)
         hostname_scrubber = HostnameScrubber(hostname_dict)
 
+        # Rename extraction folder and internal subdirs to replace real hostname
+        clean_folder_path = _rename_extraction_paths(clean_folder_path, hostname_dict)
+        report_files = walk_supportconfig(clean_folder_path)
+
+        # Compute obfuscated output archive name
+        archive_dir = os.path.dirname(os.path.abspath(archive_path))
+        archive_basename = os.path.basename(archive_path)
+        if archive_path.endswith(".tar.gz"):
+            archive_name_no_ext = archive_basename[:-7]
+        else:
+            archive_name_no_ext = os.path.splitext(archive_basename)[0]
+        scrubbed_archive_name = _scrub_name(archive_name_no_ext, hostname_dict)
+        new_txz_file_path = os.path.join(archive_dir, scrubbed_archive_name + "_scrubbed.txz")
+
         try:
             file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
                                            hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
@@ -855,11 +907,6 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
             if hasattr(file_processor, '_ipv6_subnet_map'):
                 total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
 
-        if archive_path.endswith(".tar.gz"):
-            base_name = archive_path[:-7]
-        else:
-            base_name = os.path.splitext(archive_path)[0]
-        new_txz_file_path = base_name + "_scrubbed.txz"
         create_txz(clean_folder_path, new_txz_file_path)
         print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
 
