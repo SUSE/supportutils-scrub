@@ -51,8 +51,9 @@ def print_header(file=None):
     print(" IPv4, IPv6, domain names, usernames, hostnames, MAC addresses,", file=file)
     print(" hardware serial numbers, system UUIDs, and custom keywords in a", file=file)
     print(" consistent way throughout the archive.", file=file)
-    print(" The mappings are saved in /var/tmp/obfuscation_mappings.json and can be", file=file)
-    print(" reused to keep consistent results across multiple supportconfigs.", file=file)
+    print(" Mappings are saved to /var/tmp/obfuscation_mappings_TIMESTAMP.json", file=file)
+    print(" (or .json.enc with --encrypt-mappings) and can be reused across runs", file=file)
+    print(" with --mappings to keep values consistent across multiple archives.", file=file)
     print("=" * 77 + "\n", file=file)
 
 def _warn_private_ip(config, file=None):
