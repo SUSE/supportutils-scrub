@@ -64,7 +64,10 @@ def extract_xz_archive(archive_path, logger, extract_base=None):
             continue
 
     report_files = walk_supportconfig(clean_folder_path)
-    print(f"[✓] Archive extracted to: {clean_folder_path}")
+    if extract_base:
+        print(f"[✓] Archive extracted to RAM (tmpfs)")
+    else:
+        print(f"[✓] Archive extracted to: {clean_folder_path}")
 
     return report_files, clean_folder_path
 
@@ -123,7 +126,10 @@ def extract_tgz_archive(archive_path, logger, extract_base=None):
                 logging.warning(f"Skipping {member.name}: {e}")
 
     report_files = walk_supportconfig(clean_folder_path)
-    print(f"[✓] Archive extracted to: {clean_folder_path}")
+    if extract_base:
+        print(f"[✓] Archive extracted to RAM (tmpfs)")
+    else:
+        print(f"[✓] Archive extracted to: {clean_folder_path}")
     return report_files, clean_folder_path
 
 def create_txz(source_dir, output_filename):
