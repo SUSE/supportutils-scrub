@@ -158,26 +158,6 @@ supportutils-scrub /var/log/messages
 # Output: /var/log/messages_scrubbed
 ```
 
-### SSSD / Active Directory Obfuscation (v1.2+)
-
-`sssd.txt` is pre-scanned for domain names. Both dot-notation and LDAP DN (`DC=`) formats are replaced, with the component structure preserved:
-
-**Original:**
-```
-domains = corp.example.com
-ldap_search_base      = DC=corp,DC=example,DC=com
-ad_access_filter      = (&(memberOf=CN=SupportGroup,OU=Groups,DC=corp,DC=example,DC=com))
-krb5_realm            = CORP.EXAMPLE.COM
-```
-
-**Scrubbed:**
-```
-domains = domain_0.aaa
-ldap_search_base      = DC=domain_0,DC=aaa
-ad_access_filter      = (&(memberOf=CN=SupportGroup,OU=Groups,DC=domain_0,DC=aaa))
-krb5_realm            = domain_0.aaa
-```
-
 Each real TLD (`.com`, `.net`, `.de`, ...) is mapped to a unique 3-letter sequence (`aaa`, `aab`, `aac`, ...) that is consistent across runs when reusing a mapping file.
 
 ### PCAP Obfuscation with tcprewrite
