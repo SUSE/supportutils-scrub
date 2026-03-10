@@ -149,6 +149,31 @@ journalctl -u pacemaker --since "1 hour ago" \
   > pacemaker_scrubbed.log
 ```
 
+### Streaming Mode — Live Pipes (v1.3+)
+
+By default, stdin mode reads all input before producing any output (batch mode). This is correct for files but **blocks indefinitely** on a live source like `journalctl -f`.
+
+Use `--stream` to scrub and flush each line immediately after an initial 500-line bootstrap window that builds the entity maps:
+
+```bash
+# Live journal — scrub and flush each line in real time
+journalctl -f | supportutils-scrub --stream --no-mappings
+
+# Live pacemaker journal with explicit entities
+journalctl -f -u pacemaker \
+  | supportutils-scrub --stream \
+      --hostname node1,node2 \
+      --domain corp.example.com \
+      --mappings /var/tmp/obfuscation_mappings.json
+
+# Feed scrubbed live logs directly to a local AI agent
+journalctl -f \
+  | supportutils-scrub --stream --no-mappings \
+  | ai-agent --listen-stdin
+```
+
+> **Note:** Entities that first appear after the 500-line bootstrap window may not be detected automatically. Declare known hostnames, domains, and usernames explicitly with `--hostname`, `--domain`, `--username` when using `--stream`.
+
 ### Single File Mode (v1.2+)
 
 Scrub a single plain-text file. A `_scrubbed` copy is written next to the original:
@@ -208,6 +233,7 @@ IPv4 subnet rewrite rules (most-specific first):
 - `--output-dir DIR`: Write the scrubbed archive to DIR instead of alongside the input file.
 - `--report FILE`: Write a JSON coverage report to FILE listing which files contained each data category (IPv4, domain, hostname, serial, etc.).
 - `--verify`: After scrubbing, re-scan the output for any remaining real values. Exits with code 3 if leaks are found; exits 0 if clean.
+- `--stream`: Streaming stdin mode. Buffers the first 500 lines to build entity maps, then scrubs and flushes each subsequent line immediately. Required for live pipes such as `journalctl -f`. Without this flag, stdin mode waits for EOF before producing any output.
 
 ### PCAP Processing
 

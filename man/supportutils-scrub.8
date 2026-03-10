@@ -101,6 +101,14 @@ Write a JSON coverage report to FILE. Records which files in the archive contain
 \fB\-\-quiet\fR
 Suppress the startup banner and per-file listing. Errors and warnings still go to stderr. Useful when called from scripts or \fBsupportconfig\fR(8).
 .TP
+\fB\-\-stream\fR
+Enable streaming stdin mode. Instead of buffering all input before processing, the tool reads the first 500 lines to build entity maps (IP subnets, hostnames, usernames, domains), then scrubs and flushes each subsequent line immediately to stdout.
+.sp
+Use this flag when piping a live log source that does not produce EOF, such as \fBjournalctl \-f\fR or \fBtail \-f\fR. Without \fB\-\-stream\fR, the tool waits for EOF before producing any output, which blocks indefinitely on a live pipe.
+.sp
+.B Limitation:
+Entities that first appear after the 500-line bootstrap window may not be detected and scrubbed. Use \fB\-\-hostname\fR, \fB\-\-domain\fR, or \fB\-\-username\fR to declare known entities explicitly when using streaming mode.
+.TP
 \fB\-\-output\-dir\fR \fIDIR\fR
 Write the scrubbed archive to DIR instead of alongside the input file.
 .TP
@@ -167,6 +175,17 @@ Explicitly reads from stdin using the dash argument.
 .TP
 \fBsupportutils-scrub \-\-domain corp.com < /var/log/auth.log > auth_scrubbed.log\fR
 Scrubs auth.log and saves result to a file.
+
+.SS Streaming mode (live pipes)
+.TP
+\fBjournalctl \-f | supportutils-scrub \-\-stream \-\-no\-mappings\fR
+Tail the system journal in real time. Each line is scrubbed and flushed immediately. Without \fB\-\-stream\fR this command would block forever waiting for EOF.
+.TP
+\fBjournalctl \-f \-u pacemaker | supportutils-scrub \-\-stream \-\-hostname node1,node2 \-\-domain corp.example.com\fR
+Live stream of the pacemaker journal with known hostnames and domain declared explicitly so they are scrubbed from the first line.
+.TP
+\fBjournalctl \-f | supportutils-scrub \-\-stream \-\-mappings /var/tmp/obfuscation_mappings.json | ai\-agent \-\-listen\-stdin\fR
+Feed a live scrubbed log stream to a local AI agent. Sensitive data is removed before the agent ever sees any input.
 
 .SS Encrypted mapping file
 .TP
