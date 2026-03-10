@@ -21,13 +21,17 @@ class UsernameScrubber:
 
     def __init__(self, username_dict):
         self.username_dict = username_dict
+        self._re = None
+        if username_dict:
+            sorted_users = sorted(username_dict.keys(), key=len, reverse=True)
+            alts = '|'.join(re.escape(u) for u in sorted_users)
+            self._re = re.compile(r'\b(?:' + alts + r')\b')
 
     def scrub(self, text):
         """Replaces usernames in a block of text based on the provided mapping."""
-        sorted_users = sorted(self.username_dict.keys(), key=len, reverse=True)
-        for username in sorted_users:
-            text = re.sub(rf'\b{re.escape(username)}\b', self.username_dict[username], text)
-        return text
+        if not self._re:
+            return text
+        return self._re.sub(lambda m: self.username_dict[m.group(0)], text)
 
     @staticmethod
     def _is_excluded(username):

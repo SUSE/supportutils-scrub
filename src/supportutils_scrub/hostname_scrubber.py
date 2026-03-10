@@ -5,13 +5,16 @@ import re
 class HostnameScrubber:
     def __init__(self, hostname_dict):
         self.hostname_dict = hostname_dict
+        self._re = None
+        if hostname_dict:
+            sorted_hosts = sorted(hostname_dict.keys(), key=len, reverse=True)
+            alts = '|'.join(re.escape(h) for h in sorted_hosts)
+            self._re = re.compile(r'\b(?:' + alts + r')\b')
 
     def scrub(self, text):
-        for hostname in sorted(self.hostname_dict, key=len, reverse=True):
-            obfuscated = self.hostname_dict[hostname]
-            pattern = r'\b' + re.escape(hostname) + r'\b'
-            text = re.sub(pattern, obfuscated, text)         
-        return text
+        if not self._re:
+            return text
+        return self._re.sub(lambda m: self.hostname_dict[m.group(0)], text)
     
 
 

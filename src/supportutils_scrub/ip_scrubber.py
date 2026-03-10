@@ -43,7 +43,11 @@ class IPScrubber:
             try:
                 self._real_to_fake[IPv4Network(k)] = IPv4Network(v)
             except:
-                pass  
+                pass
+        # Cache sorted by prefixlen desc; rebuilt whenever a new subnet is added
+        self._sorted_subnets = sorted(
+            self._real_to_fake.items(), key=lambda kv: kv[0].prefixlen, reverse=True
+        )
 
 
     def _sanitize_ip_map(self):
@@ -134,6 +138,7 @@ class IPScrubber:
         fake_net = self._alloc_fake_subnet_from_pool(cat, real_net.prefixlen)
         self._real_to_fake[real_net] = fake_net
         self.subnet_dict[str(real_net)] = str(fake_net)
+        self._sorted_subnets = None  # invalidate cache
 
 
     def _prepare_subnets(self, text):
@@ -171,6 +176,10 @@ class IPScrubber:
                 self._ensure_fake_subnet(real_net)
             except (ValueError, RuntimeError):
                 pass
+        # Rebuild sorted cache once after all subnets are learned
+        self._sorted_subnets = sorted(
+            self._real_to_fake.items(), key=lambda kv: kv[0].prefixlen, reverse=True
+        )
 
     def _map_in_subnets(self, ip_str):
         """
@@ -182,11 +191,15 @@ class IPScrubber:
         try:
             ip = IPv4Address(ip_str)
         except:
-            return None      
-          
-        for real_net, fake_net in sorted(self._real_to_fake.items(),
-                                        key=lambda kv: kv[0].prefixlen,
-                                        reverse=True):
+            return None
+
+        # Rebuild cache only if invalidated by a new subnet addition
+        if self._sorted_subnets is None:
+            self._sorted_subnets = sorted(
+                self._real_to_fake.items(), key=lambda kv: kv[0].prefixlen, reverse=True
+            )
+
+        for real_net, fake_net in self._sorted_subnets:
             if ip in real_net:
                 off = int(ip) - int(real_net.network_address)
                 return str(IPv4Address(int(fake_net.network_address) + off))

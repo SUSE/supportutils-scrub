@@ -117,6 +117,10 @@ def parse_args():
         help="Write a JSON coverage report to FILE (lists which files contained each data category).")
     parser.add_argument("--verify", action="store_true",
         help="After scrubbing, re-scan the output for any remaining real values. Exit 3 if leaks found.")
+    parser.add_argument("--stream", action="store_true",
+        help="Streaming stdin mode: buffer the first 500 lines to build entity maps, "
+             "then scrub and flush each subsequent line immediately. "
+             "Use for live pipes such as: journalctl -f | supportutils-scrub --stream")
 
     return parser.parse_args()
 
@@ -663,35 +667,84 @@ def run_stdin_mode(args, logger):
     if keyword_scrubber is None and (args.keywords or args.keyword_file):
         print("[!] Keyword obfuscation disabled (no keywords loaded)", file=err)
 
-    # Read input first so we can pre-scan before building scrubbers
-    text = sys.stdin.read()
+    _STREAM_BOOTSTRAP = 500  # lines to buffer before scrubbing begins in --stream mode
 
-    additional_domains = list(re.split(r'[,\s;]+', args.domain) if args.domain else [])
-    additional_domains += DomainScrubber.extract_domains_from_text(text)
+    if getattr(args, 'stream', False):
+        # --- Streaming mode: buffer first N lines, build entity maps, then flush line by line ---
+        print("[i] Stream mode: buffering bootstrap window...", file=err)
+        bootstrap_lines = []
+        for line in sys.stdin:
+            bootstrap_lines.append(line)
+            if len(bootstrap_lines) >= _STREAM_BOOTSTRAP:
+                break
+        bootstrap_text = ''.join(bootstrap_lines)
 
-    additional_usernames = list(re.split(r'[,\s;]+', args.username) if args.username else [])
-    additional_usernames += UsernameScrubber.extract_usernames_from_text(text)
+        additional_domains   = list(re.split(r'[,\s;]+', args.domain)    if args.domain    else [])
+        additional_domains   += DomainScrubber.extract_domains_from_text(bootstrap_text)
+        additional_usernames = list(re.split(r'[,\s;]+', args.username)  if args.username  else [])
+        additional_usernames += UsernameScrubber.extract_usernames_from_text(bootstrap_text)
+        additional_hostnames = list(re.split(r'[,\s;]+', args.hostname)  if args.hostname  else [])
+        additional_hostnames += HostnameScrubber.extract_hostnames_from_text(bootstrap_text)
 
-    additional_hostnames = list(re.split(r'[,\s;]+', args.hostname) if args.hostname else [])
-    additional_hostnames += HostnameScrubber.extract_hostnames_from_text(text)
+        domain_dict, tld_map  = extract_and_map_domains([], additional_domains,   mappings)
+        username_dict         = extract_usernames([],       additional_usernames,  mappings)
+        hostname_dict         = extract_hostnames([],       additional_hostnames,  mappings)
 
-    domain_dict, tld_map = extract_and_map_domains([], additional_domains, mappings)
-    domain_scrubber = DomainScrubber(domain_dict)
-    username_dict = extract_usernames([], additional_usernames, mappings)
-    username_scrubber = UsernameScrubber(username_dict)
-    hostname_dict = extract_hostnames([], additional_hostnames, mappings)
-    hostname_scrubber = HostnameScrubber(hostname_dict)
+        try:
+            file_processor = FileProcessor(config, ip_scrubber,
+                                           DomainScrubber(domain_dict),
+                                           UsernameScrubber(username_dict),
+                                           HostnameScrubber(hostname_dict),
+                                           mac_scrubber, ipv6_scrubber, keyword_scrubber)
+        except Exception as e:
+            logger.error(f"Error initializing FileProcessor: {e}")
+            sys.exit(1)
 
-    try:
-        file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
-                                       hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
-    except Exception as e:
-        logger.error(f"Error initializing FileProcessor: {e}")
-        sys.exit(1)
-    scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict = \
-        file_processor.process_text(text, logger, verbose_flag)
+        # Process bootstrap and flush
+        scrubbed_bootstrap, ip_dict, domain_dict, username_dict, hostname_dict, \
+            keyword_dict, mac_dict, ipv6_dict, serial_dict = \
+            file_processor.process_text(bootstrap_text, logger, verbose_flag)
+        sys.stdout.write(scrubbed_bootstrap)
+        sys.stdout.flush()
 
-    sys.stdout.write(scrubbed_text)
+        # Stream remaining lines one by one
+        for line in sys.stdin:
+            scrubbed_line, _ip, _dom, _usr, _host, _kw, _mac, _ipv6, _ser = \
+                file_processor.process_text(line, logger, False)
+            sys.stdout.write(scrubbed_line)
+            sys.stdout.flush()
+            ip_dict.update(_ip);  mac_dict.update(_mac);  ipv6_dict.update(_ipv6)
+            keyword_dict.update(_kw);  serial_dict.update(_ser)
+
+    else:
+        # --- Batch mode: read all stdin, then scrub ---
+        text = sys.stdin.read()
+
+        additional_domains   = list(re.split(r'[,\s;]+', args.domain)   if args.domain   else [])
+        additional_domains   += DomainScrubber.extract_domains_from_text(text)
+        additional_usernames = list(re.split(r'[,\s;]+', args.username) if args.username else [])
+        additional_usernames += UsernameScrubber.extract_usernames_from_text(text)
+        additional_hostnames = list(re.split(r'[,\s;]+', args.hostname) if args.hostname else [])
+        additional_hostnames += HostnameScrubber.extract_hostnames_from_text(text)
+
+        domain_dict, tld_map  = extract_and_map_domains([], additional_domains,   mappings)
+        username_dict         = extract_usernames([],       additional_usernames,  mappings)
+        hostname_dict         = extract_hostnames([],       additional_hostnames,  mappings)
+
+        try:
+            file_processor = FileProcessor(config, ip_scrubber,
+                                           DomainScrubber(domain_dict),
+                                           UsernameScrubber(username_dict),
+                                           HostnameScrubber(hostname_dict),
+                                           mac_scrubber, ipv6_scrubber, keyword_scrubber)
+        except Exception as e:
+            logger.error(f"Error initializing FileProcessor: {e}")
+            sys.exit(1)
+
+        scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, \
+            keyword_dict, mac_dict, ipv6_dict, serial_dict = \
+            file_processor.process_text(text, logger, verbose_flag)
+        sys.stdout.write(scrubbed_text)
 
     ipv4_subnet_dict = file_processor._ipv4_subnet_map if hasattr(file_processor, '_ipv4_subnet_map') else {}
     ipv6_subnet_dict = file_processor._ipv6_subnet_map if hasattr(file_processor, '_ipv6_subnet_map') else {}
