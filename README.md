@@ -4,16 +4,18 @@
 
 ## Features
 
-- **Comprehensive Data Obfuscation**: Obfuscates IPv4/IPv6 addresses, MAC addresses, domain names, hostnames, usernames, and custom keywords — consistently across every file in the archive.
+- **Comprehensive Data Obfuscation**: Obfuscates IPv4/IPv6 addresses, MAC addresses, domain names, hostnames, usernames, hardware serial numbers, system UUIDs, and custom keywords — consistently across every file in the archive.
 - **Subnet-Aware IP Mapping**: Maps whole subnets to fake subnets while preserving host offsets (e.g., gateway `.1` remains `.1`), maintaining meaningful routing and topology for troubleshooting.
 - **LDAP / SSSD DN Obfuscation** (v1.2+): Obfuscates LDAP distinguished names in `DC=` format (e.g. `DC=example,DC=com`) found in SSSD configurations. Fake domains preserve the DC= component count so the structure remains readable for support analysis.
+- **Hardware Serial Number / UUID Obfuscation** (v1.3+): Detects and replaces hardware serial numbers and system UUIDs from `dmidecode` output (`Serial Number:`, `UUID:`, `Asset Tag:`). Placeholder values like `Not Specified` are not touched.
 - **Flexible Input Modes** (v1.2+): Accepts `.txz`/`.tgz` supportconfigs, `crm_report`/`hb_report` `.tar.gz` archives, plain directories, single files, and stdin — making it easy to obfuscate the output of commands like `journalctl` directly in a pipeline.
 - **Multi-Archive / Cluster Support** (v1.2+): Process multiple supportconfigs in one run with shared mappings, keeping values consistent across all HA cluster nodes.
 - **PCAP Obfuscation**: Rewrites tcpdump captures using the same subnet-aware IP mappings via `tcprewrite`, ensuring logs and packet captures tell a consistent story.
-- **Consistency Across Runs**: Mapping files can be saved and reloaded to guarantee the same fake values are reused across different runs or supportconfigs.
+- **Consistency Across Runs**: Mapping files (plain or encrypted) can be saved and reloaded to guarantee the same fake values are reused across different runs or supportconfigs.
+- **Post-Scrub Verification** (v1.3+): `--verify` re-scans the scrubbed output for any remaining real values and exits with code 3 if leaks are found.
+- **Coverage Report** (v1.3+): `--report` writes a JSON file listing which files in the archive contained each data category — useful for compliance evidence.
 
 ## Installation
-
 
 ### 1. RPM Installation
 
@@ -38,11 +40,10 @@ zypper install supportutils-scrub
 For direct RPM downloads or other distributions, visit the Open Build Service page:
 [https://software.opensuse.org//download.html?project=home%3Aronald_pina&package=supportutils-scrub]
 
-
 ### 2. Install with pip
 
 ```bash
-git clone https://github.com/SUSE/supportutils-scrub 
+git clone https://github.com/SUSE/supportutils-scrub
 cd supportutils-scrub
 pip install .
 ```
@@ -53,7 +54,7 @@ pip install .
 git clone https://github.com/SUSE/supportutils-scrub
 cd supportutils-scrub
 export PYTHONPATH=$PWD/src:$PYTHONPATH
-./bin/supportutils-scrub /var/log/scc_terminus_250814_1549.txz  --verbose
+./bin/supportutils-scrub /var/log/scc_terminus_250814_1549.txz --verbose
 ```
 
 ## Usage
@@ -73,25 +74,20 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
 ```
 =============================================================================
           Obfuscation Utility - supportutils-scrub
-                      Version : 1.2         
-                 Release Date : 2026-02-24  
+                      Version : 1.3
+                 Release Date : 2026-03-09
 
  supportutils-scrub is a python based tool that masks sensitive
  information from SUSE supportconfig tarballs. It replaces data such as
- IPv4, IPv6, domain names, usernames, hostnames, MAC addresses, and
- custom keywords in a consistent way throughout the archive.
- The mappings are saved in /var/tmp/obfuscation_mappings.json and can be
- reused to keep consistent results across multiple supportconfigs.
+ IPv4, IPv6, domain names, usernames, hostnames, MAC addresses,
+ hardware serial numbers, system UUIDs, and custom keywords in a
+ consistent way throughout the archive.
+ Mappings are saved to /var/tmp/obfuscation_mappings_TIMESTAMP.json
+ (or .json.enc with --encrypt-mappings) and can be reused across runs
+ with --mappings to keep values consistent across multiple archives.
 =============================================================================
 
-[!] Configuration file not found: /etc/supportutils-scrub/supportutils-scrub.conf.
-     → Using default settings
-[!] WARNING: Private IP obfuscation is DISABLED.
-    Only public IP addresses will be obfuscated.
-    To also obfuscate private IPs (10.x, 172.16.x, 192.168.x),
-    set 'obfuscate_private_ip = yes' in /etc/supportutils-scrub/supportutils-scrub.conf
-
-[✓] Archive extracted to: /var/log/scc_terminus_250814_1549_scrubbed
+[✓] Archive extracted to: /var/log/scc_hostname_1_250814_1549_scrubbed
         basic-environment.txt
         basic-health-check.txt
         boot.txt
@@ -111,14 +107,18 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
 | Hostnames obfuscated      : 2
 | IPv6 addresses obfuscated : 44
 | IPv6 subnets obfuscated   : 2
+| Serials/UUIDs obfuscated  : 3
 | Keywords obfuscated       : 2
-| Total obfuscation entries : 172
+| Total obfuscation entries : 175
 | Size                      : 1.97 MB
 | Owner                     : root
-| Output archive            : /var/log/scc_terminus_250814_1549_scrubbed.txz
+| Output archive            : /var/log/scc_hostname_1_250814_1549_scrubbed.txz
 | Mapping file              : /var/tmp/obfuscation_mappings_20250815_125900.json
+| Audit log                 : /var/tmp/obfuscation_audit_20250815_125900.json
 ------------------------------------------------------------
 ```
+
+> Note: The output archive filename has the real hostname replaced (e.g. `scc_terminus_...` → `scc_hostname_1_...`).
 
 ### Multi-Archive Mode — HA Clusters (v1.2+)
 
@@ -172,11 +172,13 @@ krb5_realm            = CORP.EXAMPLE.COM
 
 **Scrubbed:**
 ```
-domains = domain_0.obf
-ldap_search_base      = DC=domain_0,DC=obf
-ad_access_filter      = (&(memberOf=CN=SupportGroup,OU=Groups,DC=domain_0,DC=obf))
-krb5_realm            = domain_0.obf
+domains = domain_0.aaa
+ldap_search_base      = DC=domain_0,DC=aaa
+ad_access_filter      = (&(memberOf=CN=SupportGroup,OU=Groups,DC=domain_0,DC=aaa))
+krb5_realm            = domain_0.aaa
 ```
+
+Each real TLD (`.com`, `.net`, `.de`, ...) is mapped to a unique 3-letter sequence (`aaa`, `aab`, `aac`, ...) that is consistent across runs when reusing a mapping file.
 
 ### PCAP Obfuscation with tcprewrite
 
@@ -247,13 +249,19 @@ IPv4 subnet rewrite rules (most-specific first):
 Default: `/etc/supportutils-scrub/supportutils-scrub.conf`
 
 ```ini
-obfuscate_private_ip = no     # Set 'yes' to obfuscate private IPs
+# Obfuscation controls
+obfuscate_private_ip = no     # Set 'yes' to obfuscate private IPs (10.x, 172.16.x, 192.168.x)
 obfuscate_public_ip = yes
 obfuscate_domain = yes
 obfuscate_username = yes
 obfuscate_hostname = yes
 obfuscate_mac = yes
 obfuscate_ipv6 = yes
+obfuscate_serial = yes
+
+# Security controls
+secure_tmp = no               # Set 'yes' to extract to /dev/shm (RAM only)
+encrypt_mappings = no         # Set 'yes' to encrypt the mapping file with a passphrase
 ```
 
 **Note:** Private IP addresses are not obfuscated by default.
@@ -270,8 +278,9 @@ The mapping file (`/var/tmp/obfuscation_mappings_*.json`) records every translat
         "192.168.100.128": "100.112.0.128"
     },
     "domain": {
-        "corp.example.com": "domain_0.obf",
-        "sub.corp.example.com": "sub_0.domain_0.obf"
+        "corp.example.com": "domain_0.aaa",
+        "sub.corp.example.com": "sub_0.domain_0.aaa",
+        "suse.net": "domain_1.aab"
     },
     "user": {
         "ron": "user_0",
@@ -289,11 +298,20 @@ The mapping file (`/var/tmp/obfuscation_mappings_*.json`) records every translat
         "2a07:de40:a102:6::": "2001:db8::",
         "2a07:de40:a102:6:1618:77ff:fe43:a6bb": "2001:db8::1618:77ff:fe43:a6bb"
     },
+    "serial": {
+        "ABC123XYZ456": "SERIAL_0",
+        "12345678-abcd-ef12-3456-789012345678": "00000000-0000-0000-0000-000000000001"
+    },
     "keyword": {},
     "subnet": {
         "10.168.196.0/24": "100.80.0.0/24",
         "148.251.5.0/24": "198.18.0.0/24",
         "192.168.100.0/24": "100.112.0.0/24"
+    },
+    "tld_map": {
+        "com": "aaa",
+        "net": "aab",
+        "de":  "aac"
     },
     "state": {
         "pool_cursor_public": 1792,
@@ -317,7 +335,7 @@ After every run, an audit log is written to `/var/tmp/obfuscation_audit_TIMESTAM
 ```json
 {
     "tool":         "supportutils-scrub",
-    "version":      "1.2",
+    "version":      "1.3",
     "timestamp":    "2026-03-09T14:22:01Z",
     "operator":     "root",
     "hostname":     "myserver",
@@ -339,7 +357,7 @@ This provides chain of custody: proof of who ran the tool, on which files, produ
 
 ## Security Hardening
 
-For use in sensitive environments, four optional security controls are available:
+For use in sensitive environments, the following optional security controls are available:
 
 ### Encrypted Mapping File
 
@@ -368,6 +386,8 @@ Passphrase for ...:
 { ... JSON output ... }
 ```
 
+Settable in config: `encrypt_mappings = yes`
+
 ### RAM-Only Temporary Extraction
 
 By default, archives are extracted to disk. Use `--secure-tmp` to extract to `/dev/shm` (tmpfs) so sensitive data stays in RAM only and is guaranteed cleaned up:
@@ -375,6 +395,8 @@ By default, archives are extracted to disk. Use `--secure-tmp` to extract to `/d
 ```bash
 supportutils-scrub /var/log/scc_node1.txz --secure-tmp
 ```
+
+Settable in config: `secure_tmp = yes`
 
 ### No Mapping File
 
@@ -384,11 +406,24 @@ When a one-shot scrub is sufficient and no mapping file should exist on disk:
 supportutils-scrub /var/log/scc_node1.txz --no-mappings
 ```
 
-These options are also available in the configuration file:
+### Post-Scrub Verification (v1.3+)
 
-```ini
-secure_tmp = yes
-encrypt_mappings = yes
+After scrubbing, re-scan the output for any remaining real values from the mapping. Exits with code 3 if leaks are detected, 0 if clean:
+
+```bash
+supportutils-scrub /var/log/scc_node1.txz --verify
+# [✓] VERIFY: No sensitive data found in scrubbed output.
+```
+
+If leaks are found, the tool reports the exact file, line number, category, and value.
+
+### Coverage Report (v1.3+)
+
+Write a JSON compliance report listing which files in the archive contained each data category:
+
+```bash
+supportutils-scrub /var/log/scc_node1.txz \
+    --report /var/tmp/scrub_report_$(date +%Y%m%d).json
 ```
 
 ## supportconfig Integration
