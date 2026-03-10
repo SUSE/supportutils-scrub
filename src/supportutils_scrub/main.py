@@ -667,16 +667,30 @@ def run_stdin_mode(args, logger):
     if keyword_scrubber is None and (args.keywords or args.keyword_file):
         print("[!] Keyword obfuscation disabled (no keywords loaded)", file=err)
 
-    _STREAM_BOOTSTRAP = 500  # lines to buffer before scrubbing begins in --stream mode
+    _STREAM_BOOTSTRAP      = 500  # max lines to collect during bootstrap
+    _STREAM_BOOTSTRAP_SECS = 3.0  # max seconds to wait for bootstrap lines
 
     if getattr(args, 'stream', False):
-        # --- Streaming mode: buffer first N lines, build entity maps, then flush line by line ---
-        print("[i] Stream mode: buffering bootstrap window...", file=err)
+        # --- Streaming mode ---
+        # Collect up to _STREAM_BOOTSTRAP lines OR _STREAM_BOOTSTRAP_SECS seconds,
+        # whichever comes first, to build entity maps.  Then scrub and flush each
+        # subsequent line immediately so live pipes (journalctl -f) work correctly.
+        import select
+        print(f"[i] Stream mode: collecting bootstrap (up to {_STREAM_BOOTSTRAP} lines "
+              f"or {_STREAM_BOOTSTRAP_SECS:.0f}s)...", file=err)
         bootstrap_lines = []
-        for line in sys.stdin:
-            bootstrap_lines.append(line)
-            if len(bootstrap_lines) >= _STREAM_BOOTSTRAP:
+        deadline = time.time() + _STREAM_BOOTSTRAP_SECS
+        while len(bootstrap_lines) < _STREAM_BOOTSTRAP:
+            remaining = deadline - time.time()
+            if remaining <= 0:
                 break
+            ready, _, _ = select.select([sys.stdin], [], [], remaining)
+            if not ready:
+                break
+            line = sys.stdin.readline()
+            if not line:   # EOF
+                break
+            bootstrap_lines.append(line)
         bootstrap_text = ''.join(bootstrap_lines)
 
         additional_domains   = list(re.split(r'[,\s;]+', args.domain)    if args.domain    else [])
@@ -707,8 +721,11 @@ def run_stdin_mode(args, logger):
         sys.stdout.write(scrubbed_bootstrap)
         sys.stdout.flush()
 
-        # Stream remaining lines one by one
-        for line in sys.stdin:
+        # Stream remaining lines one by one, flushing immediately
+        while True:
+            line = sys.stdin.readline()
+            if not line:   # EOF
+                break
             scrubbed_line, _ip, _dom, _usr, _host, _kw, _mac, _ipv6, _ser = \
                 file_processor.process_text(line, logger, False)
             sys.stdout.write(scrubbed_line)
