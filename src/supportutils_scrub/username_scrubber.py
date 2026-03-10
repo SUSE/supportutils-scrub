@@ -59,6 +59,12 @@ class UsernameScrubber:
                         parts = stripped_line.split(':')
                         if parts:
                             username = parts[0]
+                            # Skip system/service accounts (UID < 1000 on Linux)
+                            try:
+                                if int(parts[2]) < 1000:
+                                    continue
+                            except (IndexError, ValueError):
+                                pass
                             if not UsernameScrubber._is_excluded(username):
                                 usernames.add(username)
         except IOError:
