@@ -588,7 +588,12 @@ def run_folder_mode(args, logger):
     total_state = {}
     total_serial_dict = {}
 
-    logger.info("Scrubbing:")
+    if quiet:
+        file_names = [os.path.basename(f) for f in report_files
+                      if not re.match(r"^sa\d{8}(\.xz)?$", os.path.basename(f))]
+        print("Scrubbing: " + " ".join(file_names), file=err)
+    else:
+        logger.info("Scrubbing:")
     _devnull = open(os.devnull, 'w') if quiet else None
     for report_file in report_files:
         basename = os.path.basename(report_file)
