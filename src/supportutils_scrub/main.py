@@ -219,10 +219,10 @@ def _scrub_name(name: str, hostname_dict: dict) -> str:
     return name
 
 
-def _rename_extraction_paths(clean_folder_path: str, hostname_dict: dict) -> str:
+def _rename_extraction_paths(clean_folder_path: str, hostname_dict: dict, rename_top: bool = True) -> str:
     """
     Rename any subdirectories inside clean_folder_path whose names contain a real
-    hostname, then rename clean_folder_path itself.
+    hostname, then (optionally) rename clean_folder_path itself.
     Returns the (possibly new) clean_folder_path.
     """
     if not hostname_dict:
@@ -236,6 +236,8 @@ def _rename_extraction_paths(clean_folder_path: str, hostname_dict: dict) -> str
                     os.rename(os.path.join(root, d), os.path.join(root, scrubbed))
                 except Exception as e:
                     print(f"[!] Could not rename directory '{d}': {e}")
+    if not rename_top:
+        return clean_folder_path
     # Rename the top-level extraction folder
     parent   = os.path.dirname(clean_folder_path)
     basename = os.path.basename(clean_folder_path)
@@ -486,10 +488,18 @@ def _init_scrubbers(args, config, logger):
     return mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber
 
 
+def _is_supportconfig_folder(file_list):
+    """Detect whether a folder looks like a supportconfig collection."""
+    basenames = {os.path.basename(f) for f in file_list}
+    # A supportconfig always has basic-environment.txt
+    return 'basic-environment.txt' in basenames
+
+
 def run_folder_mode(args, logger):
     """
     Process a directory: copy to {dir}_scrubbed/, scrub files in-place, no repack.
-    No supportconfig-specific pre-scan; additional --domain/--hostname/--username args still apply.
+    If the folder looks like a supportconfig collection, the full pre-scan is
+    performed (domains, hostnames, usernames, serials) just like archive mode.
     """
     verbose_flag = args.verbose
 
@@ -498,47 +508,70 @@ def run_folder_mode(args, logger):
     dataset_path = os.path.join(dataset_dir, f"obfuscation_mappings_{timestamp}.json")
     audit_path   = os.path.join(dataset_dir, f"obfuscation_audit_{timestamp}.json")
 
+    quiet = getattr(args, 'quiet', False)
+    err = sys.stderr  # when --quiet, informational output goes to stderr
+
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
-    _warn_private_ip(config)
+
+    if quiet:
+        print(f"supportutils-scrub v{SCRIPT_VERSION} — scrubbing IPs, hostnames, domains, "
+              f"usernames, MACs, IPv6, serials", file=err)
+        _warn_private_ip(config, file=err)
+    else:
+        _warn_private_ip(config)
 
     mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber = \
         _init_scrubbers(args, config, logger)
-
-    if args.mappings:
+    if not quiet and args.mappings:
         print(f"[✓] Dataset mapping loaded from: {args.mappings} ")
-    if keyword_scrubber is None and (args.keywords or args.keyword_file):
+    if not quiet and keyword_scrubber is None and (args.keywords or args.keyword_file):
         print("[!] Keyword obfuscation disabled (no keywords loaded)")
 
     try:
         report_files, scrubbed_path = copy_folder_to_scrubbed(args.supportconfig_path[0])
-        print(f"[✓] Folder copied to: {scrubbed_path}")
+        if not quiet:
+            print(f"[✓] Folder copied to: {scrubbed_path}")
     except Exception as e:
         print(f"[!] Error copying folder: {e}")
         raise
 
-    # Build dicts from args only (no supportconfig-specific pre-scan)
+    is_sc = _is_supportconfig_folder(report_files)
+
+    # Pre-scan: pass report_files for supportconfig folders, [] for generic folders
+    scan_files = report_files if is_sc else []
+
     additional_domains = []
     if args.domain:
         additional_domains = re.split(r'[,\s;]+', args.domain)
-    domain_dict, tld_map = extract_and_map_domains([], additional_domains, mappings)
+    domain_dict, tld_map = extract_and_map_domains(scan_files, additional_domains, mappings)
     domain_scrubber = DomainScrubber(domain_dict)
 
     additional_usernames = []
     if args.username:
         additional_usernames = re.split(r'[,\s;]+', args.username)
-    username_dict = extract_usernames([], additional_usernames, mappings)
+    username_dict = extract_usernames(scan_files, additional_usernames, mappings)
     username_scrubber = UsernameScrubber(username_dict)
 
     additional_hostnames = []
     if args.hostname:
         additional_hostnames = re.split(r'[,\s;]+', args.hostname)
-    hostname_dict = extract_hostnames([], additional_hostnames, mappings)
+    hostname_dict = extract_hostnames(scan_files, additional_hostnames, mappings)
     hostname_scrubber = HostnameScrubber(hostname_dict)
+
+    # For supportconfig folders: rename paths containing real hostnames, extract serials
+    serial_scrubber = None
+    if is_sc:
+        scrubbed_path = _rename_extraction_paths(scrubbed_path, hostname_dict)
+        report_files = walk_supportconfig(scrubbed_path)
+        serial_dict = extract_serials(report_files, mappings)
+        serial_scrubber = SerialScrubber(mappings=mappings)
+        serial_scrubber.serial_dict = serial_dict
 
     try:
         file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
-                                       hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
+                                       hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
+                                       serial_scrubber=serial_scrubber)
     except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
@@ -556,13 +589,22 @@ def run_folder_mode(args, logger):
     total_serial_dict = {}
 
     logger.info("Scrubbing:")
+    _devnull = open(os.devnull, 'w') if quiet else None
     for report_file in report_files:
         basename = os.path.basename(report_file)
-        if not re.match(r"^sa\d{8}(\.xz)?$", basename):
+        if not quiet and not re.match(r"^sa\d{8}(\.xz)?$", basename):
             print(f"        {basename}")
 
-        ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict_file = \
-            file_processor.process_file(report_file, logger, verbose_flag)
+        # Suppress processor stdout (e.g. binary removal messages) when --quiet
+        if quiet:
+            _saved_stdout = sys.stdout
+            sys.stdout = _devnull
+        try:
+            ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict_file = \
+                file_processor.process_file(report_file, logger, verbose_flag)
+        finally:
+            if quiet:
+                sys.stdout = _saved_stdout
 
         total_ip_dict.update(ip_dict)
         total_domain_dict.update(domain_dict)
@@ -608,31 +650,41 @@ def run_folder_mode(args, logger):
         + len(total_serial_dict)
     )
 
-    print("\n------------------------------------------------------------")
-    print(" Obfuscation Summary")
-    print("------------------------------------------------------------")
-    print(f"| Files obfuscated          : {total_files_scrubbed}")
-    print(f"| Usernames obfuscated      : {len(total_user_dict)}")
-    print(f"| IP addresses obfuscated   : {len(total_ip_dict)}")
-    print(f"| IPv4 subnets obfuscated   : {len(total_ipv4_subnet_dict)}")
-    print(f"| MAC addresses obfuscated  : {len(total_mac_dict)}")
-    print(f"| Domains obfuscated        : {len(total_domain_dict)}")
-    print(f"| Hostnames obfuscated      : {len(total_hostname_dict)}")
-    print(f"| IPv6 addresses obfuscated : {len(total_ipv6_dict)}")
-    print(f"| IPv6 subnets obfuscated   : {len(total_ipv6_subnet_dict)}")
+    # With --quiet: summary goes to stderr (visible on terminal),
+    # only the output path goes to stdout (captured by callers like supportconfig -j).
+    quiet = getattr(args, 'quiet', False)
+    out = sys.stderr if quiet else sys.stdout
+
+    print("\n------------------------------------------------------------", file=out)
+    print(" Obfuscation Summary", file=out)
+    print("------------------------------------------------------------", file=out)
+    print(f"| Files obfuscated          : {total_files_scrubbed}", file=out)
+    print(f"| Usernames obfuscated      : {len(total_user_dict)}", file=out)
+    print(f"| IP addresses obfuscated   : {len(total_ip_dict)}", file=out)
+    print(f"| IPv4 subnets obfuscated   : {len(total_ipv4_subnet_dict)}", file=out)
+    print(f"| MAC addresses obfuscated  : {len(total_mac_dict)}", file=out)
+    print(f"| Domains obfuscated        : {len(total_domain_dict)}", file=out)
+    print(f"| Hostnames obfuscated      : {len(total_hostname_dict)}", file=out)
+    print(f"| IPv6 addresses obfuscated : {len(total_ipv6_dict)}", file=out)
+    print(f"| IPv6 subnets obfuscated   : {len(total_ipv6_subnet_dict)}", file=out)
     if keyword_scrubber:
-        print(f"| Keywords obfuscated       : {len(total_keyword_dict)}")
-    print(f"| Serials/UUIDs obfuscated  : {len(total_serial_dict)}")
-    print(f"| Total obfuscation entries : {total_obfuscations}")
-    print(f"| Output folder             : {scrubbed_path}")
+        print(f"| Keywords obfuscated       : {len(total_keyword_dict)}", file=out)
+    print(f"| Serials/UUIDs obfuscated  : {len(total_serial_dict)}", file=out)
+    print(f"| Total obfuscation entries : {total_obfuscations}", file=out)
+    if not quiet:
+        print(f"| Output folder             : {scrubbed_path}", file=out)
     if saved_mapping_path:
-        print(f"| Mapping file              : {saved_mapping_path}")
+        print(f"| Mapping file              : {saved_mapping_path}", file=out)
         if getattr(args, '_enc_passphrase', None):
             _print_enc_note(saved_mapping_path)
     if args.keyword_file and keyword_scrubber:
-        print(f"| Keyword file              : {args.keyword_file}")
-    print(f"| Audit log                 : {audit_path}")
-    print("------------------------------------------------------------\n")
+        print(f"| Keyword file              : {args.keyword_file}", file=out)
+    print(f"| Audit log                 : {audit_path}", file=out)
+    print("------------------------------------------------------------\n", file=out)
+
+    if quiet:
+        # Machine-readable: only the output path on stdout
+        print(scrubbed_path)
 
     record = _audit_record('folder',
         inputs  = [{'path': os.path.abspath(args.supportconfig_path[0]), 'sha256': 'n/a (directory)'}],
@@ -1246,7 +1298,8 @@ def main():
         if not getattr(args, 'quiet', False):
             print_header()
         run_folder_mode(args, logger)
-        print_footer()
+        if not getattr(args, 'quiet', False):
+            print_footer()
         return
 
     if not getattr(args, 'quiet', False):

@@ -21,4 +21,6 @@ if __name__ == '__main__':
         print(f"An error occurred during execution: {e}")
         sys.exit(1)
     finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
         os._exit(0)
