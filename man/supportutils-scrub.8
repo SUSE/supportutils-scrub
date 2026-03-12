@@ -271,18 +271,19 @@ Coverage report written by \fB\-\-report\fR. Lists which files in the archive co
 .RE
 
 .SH EXIT STATUS
+These exit codes form the stable integration contract. Callers must only test for these values.
 .TP
 .B 0
-Success. All archives processed without error.
+Success. All files scrubbed without error.
 .TP
 .B 1
-Fatal error. Input not found, permission denied, or unrecoverable failure.
+Fatal error. Input not found, permission denied, or unrecoverable failure. Output must not be trusted.
 .TP
 .B 2
-Completed with warnings. Some files were skipped or non-critical errors occurred.
+Completed with warnings. Some files were skipped or non-critical errors occurred. Treat the same as 0 — output is valid.
 .TP
 .B 3
-Verify failed. \fB\-\-verify\fR detected remaining sensitive data in the scrubbed output.
+Verify failed. \fB\-\-verify\fR detected remaining sensitive data in the scrubbed output. Scrubbing is complete but residual data was found.
 
 .SH SECURITY CONSIDERATIONS
 .IP \(bu 2
@@ -302,18 +303,54 @@ An audit log is written automatically to \fI/var/tmp/obfuscation_audit_*.json\fR
 .IP \(bu 2
 All sensitive files (\fI*.json\fR, \fI*.json.enc\fR, \fI*_audit_*.json\fR) are written with mode \fB0600\fR.
 
-.SS Integration with supportconfig
-\fBsupportutils-scrub\fR is designed to be called directly from the \fBsupportconfig\fR(8) script. Use the following pattern:
+.SH INTEGRATION
+This section describes the stable interface for tools and scripts that call \fBsupportutils-scrub\fR programmatically.
 
+.SS stdout / stderr contract
+When called with \fB\-\-quiet\fR in folder mode, the tool follows a strict two-stream contract:
+.IP \(bu 2
+\fBstdout\fR — exactly one line: the absolute path of the scrubbed output directory. Nothing else.
+.IP \(bu 2
+\fBstderr\fR — human-readable output: version line, warnings (e.g. private IP obfuscation disabled), file list, and obfuscation summary. Callers can display it, log it, or discard it.
+
+This split allows the caller to capture the output path via command substitution while still showing progress to the operator on the terminal.
+
+.SS Canonical call pattern
 .nf
-SUPPORTUTILS_SCRUB_OPTS="--quiet --output-dir /var/log"
-export SUPPORTUTILS_SCRUB_OPTS
-supportutils-scrub "$archive"
-rc=$?
-# rc=0 success, rc=1 error, rc=2 warnings, rc=3 verify failed
+SCRUB_ERR=$(mktemp /tmp/scrub-XXXXXX.err)
+SCRUB_OUT=$(supportutils-scrub \\
+    --quiet \\
+    $VAR_OPTION_SCRUB_OPTS \\
+    "$INPUT_DIR" 2>"$SCRUB_ERR")
+RC=$?
+cat "$SCRUB_ERR"    # show summary on terminal
+rm -f "$SCRUB_ERR"
+if (( RC == 0 || RC == 2 )); then
+    # $SCRUB_OUT is the scrubbed folder path
+    # The folder name has hostnames replaced (e.g. scc_hostname_8_...)
+    # Strip _scrubbed suffix to get the clean base name:
+    NEW_BASE=$(basename "$SCRUB_OUT" | sed 's/_scrubbed$//')
+fi
 .fi
 
-The \fBSUPPORTUTILS_SCRUB_OPTS\fR environment variable lets \fBsupportconfig\fR pass default options without modifying the command line. Any CLI flags override it. Audit logs in \fI/var/tmp/obfuscation_audit_*.json\fR provide machine-readable results including SHA-256 checksums of inputs and outputs.
+.SS Output path convention
+The scrubbed output directory is always named \fI{scrubbed_input_name}_scrubbed\fR and placed alongside the input directory. Any hostname found in the input directory name is replaced with its obfuscated value. The \fI_scrubbed\fR suffix is a stable, versioned part of the interface.
+
+.SS Environment variable
+.TP
+.B SUPPORTUTILS_SCRUB_OPTS
+A space-separated list of additional options prepended to the command line before argument parsing. Useful for passing user options (e.g. \fB--verify\fR, \fB--keywords\fR, \fB--encrypt-mappings\fR) without modifying the caller's code.
+
+.SS Exit codes for callers
+.TP
+.B 0 or 2
+Scrubbing succeeded. Use the path returned on stdout.
+.TP
+.B 3
+Scrubbing succeeded but \fB\-\-verify\fR found residual data. Warn the operator; the output exists but may be incomplete.
+.TP
+.B 1
+Failure. Do not use the output.
 
 .SH AUTHOR
 Ronald Pina <ronald.pina@suse.com>
