@@ -536,6 +536,17 @@ def run_folder_mode(args, logger):
         print(f"[!] Error copying folder: {e}")
         raise
 
+    # Register cleanup so a Ctrl+C or SIGTERM removes the partial _scrubbed
+    # folder rather than leaving half-scrubbed data on disk.
+    import signal, shutil as _shutil
+    def _cleanup_on_signal(signum, frame):
+        print(f"\n[!] Interrupted — removing partial output {scrubbed_path}", file=sys.stderr)
+        if os.path.exists(scrubbed_path):
+            _shutil.rmtree(scrubbed_path, ignore_errors=True)
+        sys.exit(1)
+    signal.signal(signal.SIGINT,  _cleanup_on_signal)
+    signal.signal(signal.SIGTERM, _cleanup_on_signal)
+
     is_sc = _is_supportconfig_folder(report_files)
 
     # Pre-scan: pass report_files for supportconfig folders, [] for generic folders
