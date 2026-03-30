@@ -182,7 +182,8 @@ def _load_mappings_file(path: str) -> dict:
                 _hl.scrypt(passphrase, salt=b'supportutils-scrub-v1',
                            n=16384, r=8, p=1, dklen=32)
             )
-            return json.loads(Fernet(key).decrypt(open(path, 'rb').read()))
+            with open(path, 'rb') as f:
+                return json.loads(Fernet(key).decrypt(f.read()))
         except Exception:
             print(f"[!] Failed to decrypt {path}. Wrong passphrase or corrupted file.")
             sys.exit(1)
@@ -538,12 +539,19 @@ def run_folder_mode(args, logger):
 
     # Register cleanup so a Ctrl+C or SIGTERM removes the partial _scrubbed
     # folder rather than leaving half-scrubbed data on disk.
-    import signal, shutil as _shutil
+    # NOTE: use os._exit() instead of sys.exit() to avoid deadlocks — print()
+    # and shutil.rmtree() are not async-signal-safe but are acceptable here
+    # because the worst case is a partial cleanup, not data corruption.
+    import signal
     def _cleanup_on_signal(signum, frame):
-        print(f"\n[!] Interrupted — removing partial output {scrubbed_path}", file=sys.stderr)
-        if os.path.exists(scrubbed_path):
-            _shutil.rmtree(scrubbed_path, ignore_errors=True)
-        sys.exit(1)
+        try:
+            sys.stderr.write(f"\n[!] Interrupted — removing partial output {scrubbed_path}\n")
+            sys.stderr.flush()
+            if os.path.exists(scrubbed_path):
+                shutil.rmtree(scrubbed_path, ignore_errors=True)
+        except Exception:
+            pass
+        os._exit(1)
     signal.signal(signal.SIGINT,  _cleanup_on_signal)
     signal.signal(signal.SIGTERM, _cleanup_on_signal)
 
@@ -606,36 +614,40 @@ def run_folder_mode(args, logger):
     else:
         logger.info("Scrubbing:")
     _devnull = open(os.devnull, 'w') if quiet else None
-    for report_file in report_files:
-        basename = os.path.basename(report_file)
-        if not quiet and not re.match(r"^sa\d{8}(\.xz)?$", basename):
-            print(f"        {basename}")
+    try:
+        for report_file in report_files:
+            basename = os.path.basename(report_file)
+            if not quiet and not re.match(r"^sa\d{8}(\.xz)?$", basename):
+                print(f"        {basename}")
 
-        # Suppress processor stdout (e.g. binary removal messages) when --quiet
-        if quiet:
-            _saved_stdout = sys.stdout
-            sys.stdout = _devnull
-        try:
-            ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict_file = \
-                file_processor.process_file(report_file, logger, verbose_flag)
-        finally:
+            # Suppress processor stdout (e.g. binary removal messages) when --quiet
             if quiet:
-                sys.stdout = _saved_stdout
+                _saved_stdout = sys.stdout
+                sys.stdout = _devnull
+            try:
+                ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict_file = \
+                    file_processor.process_file(report_file, logger, verbose_flag)
+            finally:
+                if quiet:
+                    sys.stdout = _saved_stdout
 
-        total_ip_dict.update(ip_dict)
-        total_domain_dict.update(domain_dict)
-        total_user_dict.update(username_dict)
-        total_hostname_dict.update(hostname_dict)
-        total_keyword_dict.update(keyword_dict)
-        total_mac_dict.update(mac_dict)
-        total_ipv6_dict.update(ipv6_dict)
-        total_serial_dict.update(serial_dict_file)
-        if hasattr(file_processor, '_ipv4_subnet_map'):
-            total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
-        if hasattr(file_processor, '_ipv4_state'):
-            total_state = file_processor._ipv4_state
-        if hasattr(file_processor, '_ipv6_subnet_map'):
-            total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
+            total_ip_dict.update(ip_dict)
+            total_domain_dict.update(domain_dict)
+            total_user_dict.update(username_dict)
+            total_hostname_dict.update(hostname_dict)
+            total_keyword_dict.update(keyword_dict)
+            total_mac_dict.update(mac_dict)
+            total_ipv6_dict.update(ipv6_dict)
+            total_serial_dict.update(serial_dict_file)
+            if hasattr(file_processor, '_ipv4_subnet_map'):
+                total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
+            if hasattr(file_processor, '_ipv4_state'):
+                total_state = file_processor._ipv4_state
+            if hasattr(file_processor, '_ipv6_subnet_map'):
+                total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
+    finally:
+        if _devnull is not None:
+            _devnull.close()
 
     dataset_dict = {
         'ip': total_ip_dict,
@@ -668,7 +680,6 @@ def run_folder_mode(args, logger):
 
     # With --quiet: summary goes to stderr (visible on terminal),
     # only the output path goes to stdout (captured by callers like supportconfig -j).
-    quiet = getattr(args, 'quiet', False)
     out = sys.stderr if quiet else sys.stdout
 
     print("\n------------------------------------------------------------", file=out)
@@ -1047,7 +1058,7 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         ipv6_scrubber = IPv6Scrubber(config, mappings=current_mappings)
     except Exception as e:
         logger.error(f"Error initializing scrubbers for {archive_path}: {e}")
-        sys.exit(1)
+        raise
 
     extract_base = _get_secure_tmp_base() if getattr(args, 'secure_tmp', False) else None
 
@@ -1058,6 +1069,23 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
     total_serial_dict = {}
     tld_map = {}
     report_files = []
+
+    # Register cleanup so a Ctrl+C or SIGTERM removes the partial extraction
+    import signal as _sig
+    _prev_sigint  = _sig.getsignal(_sig.SIGINT)
+    _prev_sigterm = _sig.getsignal(_sig.SIGTERM)
+    def _archive_cleanup_on_signal(signum, frame):
+        try:
+            sys.stderr.write(f"\n[!] Interrupted — cleaning up {clean_folder_path}\n")
+            sys.stderr.flush()
+            if clean_folder_path and os.path.exists(clean_folder_path):
+                shutil.rmtree(clean_folder_path, ignore_errors=True)
+        except Exception:
+            pass
+        os._exit(1)
+    _sig.signal(_sig.SIGINT,  _archive_cleanup_on_signal)
+    _sig.signal(_sig.SIGTERM, _archive_cleanup_on_signal)
+
     try:
         try:
             report_files, clean_folder_path = extract_supportconfig(archive_path, logger, extract_base=extract_base)
@@ -1110,7 +1138,7 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
                                            serial_scrubber=serial_scrubber)
         except Exception as e:
             logger.error(f"Error initializing FileProcessor: {e}")
-            sys.exit(1)
+            raise
 
         total_ip_dict = {}
         total_domain_dict = {}
@@ -1183,6 +1211,9 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
                 print("[✓] VERIFY: No sensitive data found in scrubbed output.")
 
     finally:
+        # Restore previous signal handlers so batch mode works correctly
+        _sig.signal(_sig.SIGINT,  _prev_sigint)
+        _sig.signal(_sig.SIGTERM, _prev_sigterm)
         if clean_folder_path and os.path.exists(clean_folder_path):
             try:
                 shutil.rmtree(clean_folder_path)
@@ -1261,7 +1292,8 @@ def main():
                 hashlib.scrypt(passphrase, salt=b'supportutils-scrub-v1',
                                n=16384, r=8, p=1, dklen=32)
             )
-            data = json.loads(Fernet(key).decrypt(open(enc_file, 'rb').read()))
+            with open(enc_file, 'rb') as f:
+                data = json.loads(Fernet(key).decrypt(f.read()))
             print(json.dumps(data, indent=2))
         except Exception:
             print("[!] Decryption failed. Wrong passphrase or corrupted file.")
@@ -1347,7 +1379,7 @@ def main():
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
-    _warn_private_ip(config)
+    _warn_private_ip(config, file=sys.stderr if getattr(args, 'quiet', False) else None)
 
     if args.rewrite_pcap:
         if not args.pcap_in:
@@ -1395,13 +1427,20 @@ def main():
     current_mappings = initial_mappings
     all_stats = []
 
+    failed_archives = []
     for i, archive_path in enumerate(paths):
         if len(paths) > 1:
             print(f"\n[{i+1}/{len(paths)}] Processing: {os.path.basename(archive_path)}")
-        current_mappings, stats = _process_one_archive(
-            archive_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag
-        )
-        all_stats.append(stats)
+        try:
+            current_mappings, stats = _process_one_archive(
+                archive_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag
+            )
+            all_stats.append(stats)
+        except Exception as e:
+            print(f"[!] Failed to process {archive_path}: {e}", file=sys.stderr)
+            failed_archives.append(archive_path)
+            if len(paths) == 1:
+                sys.exit(EXIT_ERROR)
 
     # Collect verify findings across all archives
     all_verify_findings = []
@@ -1460,7 +1499,7 @@ def main():
         print(f"| Keywords obfuscated       : {len(current_mappings.get('keyword', {}))}")
     print(f"| Serials/UUIDs obfuscated  : {len(current_mappings.get('serial', {}))}")
     print(f"| Total obfuscation entries : {total_obfuscations}")
-    if len(paths) == 1:
+    if len(all_stats) == 1:
         stats = all_stats[0]
         print(f"| Size                      : {stats['size_mb']:.2f} MB")
         print(f"| Owner                     : {stats['owner']}")
@@ -1473,6 +1512,10 @@ def main():
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}")
     print(f"| Audit log                 : {audit_path}")
+    if failed_archives:
+        print(f"| FAILED archives           : {len(failed_archives)}")
+        for fa in failed_archives:
+            print(f"|   - {fa}")
     print("------------------------------------------------------------\n")
 
     record = _audit_record('archive',
@@ -1483,6 +1526,8 @@ def main():
 
     print_footer()
 
+    if failed_archives:
+        sys.exit(EXIT_ERROR)
     if verify_exit == EXIT_VERIFY_FAIL:
         sys.exit(EXIT_VERIFY_FAIL)
 
