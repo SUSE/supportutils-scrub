@@ -25,6 +25,7 @@ from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.processor import FileProcessor
+from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
 import shlex
 from supportutils_scrub.serial_scrubber import SerialScrubber
@@ -116,7 +117,10 @@ def parse_args():
     parser.add_argument("--report", metavar="FILE",
         help="Write a JSON coverage report to FILE (lists which files contained each data category).")
     parser.add_argument("--verify", action="store_true",
-        help="After scrubbing, re-scan the output for any remaining real values. Exit 3 if leaks found.")
+        help="After scrubbing, re-scan the output for remaining sensitive data. "
+             "Checks: mapping values, IP/MAC allowlists, emails, secrets/keys, "
+             "LDAP DNs, Kerberos principals, and (in folder mode) system identity "
+             "from the original. Exit 3 if leaks found.")
     parser.add_argument("--stream", action="store_true",
         help="Streaming stdin mode: buffer the first 500 lines to build entity maps, "
              "then scrub and flush each subsequent line immediately. "
@@ -433,7 +437,8 @@ def extract_serials(report_files, mappings):
     return serial_scrubber.serial_dict
 
 
-def _write_report(report_path: str, archives: list, version: str):
+def _write_report(report_path: str, archives: list, version: str,
+                   verify_findings=None):
     """Write a JSON coverage report showing which files contained each data category."""
     import socket as _sock
     data = {
@@ -443,6 +448,11 @@ def _write_report(report_path: str, archives: list, version: str):
         'hostname':  _sock.gethostname(),
         'archives':  archives,
     }
+    if verify_findings:
+        data['verify'] = {
+            'total_findings': len(verify_findings),
+            'findings': verify_findings,
+        }
     try:
         os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
         with open(report_path, 'w', encoding='utf-8') as f:
@@ -587,10 +597,12 @@ def run_folder_mode(args, logger):
         serial_scrubber = SerialScrubber(mappings=mappings)
         serial_scrubber.serial_dict = serial_dict
 
+    email_scrubber = EmailScrubber(mappings=mappings)
+
     try:
         file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
                                        hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
-                                       serial_scrubber=serial_scrubber)
+                                       serial_scrubber=serial_scrubber, email_scrubber=email_scrubber)
     except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
@@ -606,6 +618,7 @@ def run_folder_mode(args, logger):
     total_ipv6_subnet_dict = {}
     total_state = {}
     total_serial_dict = {}
+    total_email_dict = {}
 
     if quiet:
         file_names = [os.path.basename(f) for f in report_files
@@ -639,6 +652,8 @@ def run_folder_mode(args, logger):
             total_mac_dict.update(mac_dict)
             total_ipv6_dict.update(ipv6_dict)
             total_serial_dict.update(serial_dict_file)
+            if file_processor.email_scrubber:
+                total_email_dict.update(file_processor.email_scrubber.email_dict)
             if hasattr(file_processor, '_ipv4_subnet_map'):
                 total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
             if hasattr(file_processor, '_ipv4_state'):
@@ -662,6 +677,7 @@ def run_folder_mode(args, logger):
         'ipv6_subnet': total_ipv6_subnet_dict,
         'tld_map': tld_map,
         'serial': total_serial_dict,
+        'email': total_email_dict,
     }
 
     saved_mapping_path = _save_mappings(args, dataset_path, dataset_dict)
@@ -675,7 +691,7 @@ def run_folder_mode(args, logger):
         len(total_user_dict) + len(total_ip_dict) + len(total_mac_dict)
         + len(total_domain_dict) + len(total_hostname_dict) + len(total_ipv6_dict)
         + len(total_keyword_dict) + len(total_ipv4_subnet_dict) + len(total_ipv6_subnet_dict)
-        + len(total_serial_dict)
+        + len(total_serial_dict) + len(total_email_dict)
     )
 
     # With --quiet: summary goes to stderr (visible on terminal),
@@ -697,6 +713,7 @@ def run_folder_mode(args, logger):
     if keyword_scrubber:
         print(f"| Keywords obfuscated       : {len(total_keyword_dict)}", file=out)
     print(f"| Serials/UUIDs obfuscated  : {len(total_serial_dict)}", file=out)
+    print(f"| Emails obfuscated         : {len(total_email_dict)}", file=out)
     print(f"| Total obfuscation entries : {total_obfuscations}", file=out)
     if not quiet:
         print(f"| Output folder             : {scrubbed_path}", file=out)
@@ -709,15 +726,50 @@ def run_folder_mode(args, logger):
     print(f"| Audit log                 : {audit_path}", file=out)
     print("------------------------------------------------------------\n", file=out)
 
+    # Verify scrubbed output if requested
+    verify_findings = []
+    if getattr(args, 'verify', False):
+        original_path = args.supportconfig_path[0]
+        combined_mappings_for_verify = {
+            'ip': total_ip_dict, 'ipv6': total_ipv6_dict, 'mac': total_mac_dict,
+            'domain': total_domain_dict, 'hostname': total_hostname_dict,
+            'user': total_user_dict, 'keyword': total_keyword_dict,
+            'serial': total_serial_dict,
+        }
+        verify_findings = verify_scrubbed_folder(
+            scrubbed_path, combined_mappings_for_verify,
+            original_folder=original_path, config=config,
+            check_allowlist=True, check_patterns=True,
+            check_identity=True)
+        vout = out  # stderr if quiet, stdout otherwise
+        if verify_findings:
+            print(f"[!] VERIFY: {len(verify_findings)} potential leak(s) found in scrubbed output:", file=vout)
+            for f in verify_findings[:20]:
+                print(f"    {f['file']}:{f['line']}  [{f['category']}]  {f['value']!r}", file=vout)
+            if len(verify_findings) > 20:
+                print(f"    ... and {len(verify_findings)-20} more (see --report for full details)", file=vout)
+        else:
+            print("[✓] VERIFY: No sensitive data found in scrubbed output.", file=vout)
+
     if quiet:
         # Machine-readable: only the output path on stdout
         print(scrubbed_path)
+
+    if getattr(args, 'report', None):
+        folder_report = [{'input': os.path.abspath(args.supportconfig_path[0]),
+                          'output': os.path.abspath(scrubbed_path),
+                          'files_total': len(report_files)}]
+        _write_report(args.report, folder_report, SCRIPT_VERSION,
+                      verify_findings=verify_findings)
 
     record = _audit_record('folder',
         inputs  = [{'path': os.path.abspath(args.supportconfig_path[0]), 'sha256': 'n/a (directory)'}],
         outputs = [{'path': os.path.abspath(scrubbed_path), 'sha256': 'n/a (directory)'}],
         mapping_path = saved_mapping_path, args = args)
     _write_audit_log(audit_path, record)
+
+    if verify_findings:
+        sys.exit(EXIT_VERIFY_FAIL)
 
 
 def run_stdin_mode(args, logger):
@@ -788,7 +840,8 @@ def run_stdin_mode(args, logger):
                                            DomainScrubber(domain_dict),
                                            UsernameScrubber(username_dict),
                                            HostnameScrubber(hostname_dict),
-                                           mac_scrubber, ipv6_scrubber, keyword_scrubber)
+                                           mac_scrubber, ipv6_scrubber, keyword_scrubber,
+                                           email_scrubber=EmailScrubber(mappings=mappings))
         except Exception as e:
             logger.error(f"Error initializing FileProcessor: {e}")
             sys.exit(1)
@@ -832,7 +885,8 @@ def run_stdin_mode(args, logger):
                                            DomainScrubber(domain_dict),
                                            UsernameScrubber(username_dict),
                                            HostnameScrubber(hostname_dict),
-                                           mac_scrubber, ipv6_scrubber, keyword_scrubber)
+                                           mac_scrubber, ipv6_scrubber, keyword_scrubber,
+                                           email_scrubber=EmailScrubber(mappings=mappings))
         except Exception as e:
             logger.error(f"Error initializing FileProcessor: {e}")
             sys.exit(1)
@@ -954,9 +1008,12 @@ def run_file_mode(args, logger):
     hostname_dict = extract_hostnames([], additional_hostnames, mappings)
     hostname_scrubber = HostnameScrubber(hostname_dict)
 
+    email_scrubber = EmailScrubber(mappings=mappings)
+
     try:
         file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
-                                       hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber)
+                                       hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
+                                       email_scrubber=email_scrubber)
     except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
@@ -1132,10 +1189,12 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
             os.makedirs(out_dir, exist_ok=True)
         new_txz_file_path = os.path.join(out_dir, scrubbed_archive_name + "_scrubbed.txz")
 
+        email_scrubber = EmailScrubber(mappings=current_mappings)
+
         try:
             file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
                                            hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
-                                           serial_scrubber=serial_scrubber)
+                                           serial_scrubber=serial_scrubber, email_scrubber=email_scrubber)
         except Exception as e:
             logger.error(f"Error initializing FileProcessor: {e}")
             raise
@@ -1200,7 +1259,11 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
                 'user': total_user_dict, 'keyword': total_keyword_dict,
                 'serial': total_serial_dict,
             }
-            verify_findings = verify_scrubbed_folder(clean_folder_path, combined_mappings_for_verify)
+            verify_findings = verify_scrubbed_folder(
+                clean_folder_path, combined_mappings_for_verify,
+                config=config,
+                check_allowlist=True, check_patterns=True,
+                check_identity=False)
             if verify_findings:
                 print(f"[!] VERIFY: {len(verify_findings)} potential leak(s) found in scrubbed output:")
                 for f in verify_findings[:20]:
@@ -1241,6 +1304,7 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         'ipv6_subnet': total_ipv6_subnet_dict,
         'tld_map': tld_map,
         'serial': total_serial_dict,
+        'email': email_scrubber.email_dict,
     }
 
     stats = {
@@ -1455,7 +1519,8 @@ def main():
     # Write report if requested
     if getattr(args, 'report', None):
         archives_report = [s['report_data'] for s in all_stats]
-        _write_report(args.report, archives_report, SCRIPT_VERSION)
+        _write_report(args.report, archives_report, SCRIPT_VERSION,
+                      verify_findings=all_verify_findings)
 
     # Save final combined mappings (single file covering all archives)
     saved_mapping_path = _save_mappings(args, dataset_path, current_mappings)

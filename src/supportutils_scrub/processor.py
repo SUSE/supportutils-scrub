@@ -17,9 +17,10 @@ from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.serial_scrubber import SerialScrubber
+from supportutils_scrub.email_scrubber import EmailScrubber
 
 class FileProcessor:
-    def __init__(self, config, ip_scrubber: IPScrubber, domain_scrubber: DomainScrubber, username_scrubber: UsernameScrubber, hostname_scrubber: HostnameScrubber, mac_scrubber: MACScrubber, ipv6_scrubber: IPv6Scrubber, keyword_scrubber: KeywordScrubber = None, serial_scrubber: SerialScrubber = None):
+    def __init__(self, config, ip_scrubber: IPScrubber, domain_scrubber: DomainScrubber, username_scrubber: UsernameScrubber, hostname_scrubber: HostnameScrubber, mac_scrubber: MACScrubber, ipv6_scrubber: IPv6Scrubber, keyword_scrubber: KeywordScrubber = None, serial_scrubber: SerialScrubber = None, email_scrubber: EmailScrubber = None):
         self.config = config
         self.ip_scrubber = ip_scrubber
         self.domain_scrubber = domain_scrubber
@@ -29,6 +30,7 @@ class FileProcessor:
         self.mac_scrubber = mac_scrubber
         self.ipv6_scrubber = ipv6_scrubber
         self.serial_scrubber = serial_scrubber
+        self.email_scrubber = email_scrubber
         self.current_section = None
         self.current_interface = None
         self.in_network_config = False
@@ -203,6 +205,10 @@ class FileProcessor:
         if self.config.get("obfuscate_username") == 'yes':
             scrubbed_text = self.username_scrubber.scrub(scrubbed_text)
             username_dict.update(self.username_scrubber.username_dict)
+
+        # Scrub email addresses
+        if self.email_scrubber:
+            scrubbed_text = self.email_scrubber.scrub(scrubbed_text)
 
         # Scrub serial numbers and UUIDs
         if self.serial_scrubber:
