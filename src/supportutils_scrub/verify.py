@@ -219,7 +219,9 @@ def _extract_identity_from_original(original_folder):
         'not specified', 'to be filled', 'not available',
     }
     identity = {t for t in identity
-                if len(t) >= 8 and t.lower() not in _generic_words}
+                if len(t) >= 8
+                and t.lower() not in _generic_words
+                and not t.isdigit()}
     return identity
 
 
