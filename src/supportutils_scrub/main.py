@@ -226,18 +226,22 @@ def _scrub_name(name: str, hostname_dict: dict) -> str:
     return name
 
 
-def _dataset_paths(dataset_dir, timestamp, hostname_dict=None, report=False):
+def _dataset_paths(dataset_dir, timestamp, hostname_dict=None, input_name=None, report=False):
     """
     Compute paths for mapping, audit, and (optionally) report files.
-    If hostname_dict is provided, the scrubbed hostname is embedded in the filenames.
+    If hostname_dict and input_name are provided, the scrubbed hostname from
+    the input path is embedded in the filenames (matching the archive naming).
     """
-    # Find the primary scrubbed hostname (first value in dict, typically the system hostname)
     host_tag = ''
-    if hostname_dict:
-        # Use the first mapping value — this is typically the system hostname
-        for fake in hostname_dict.values():
-            host_tag = f"_{fake}"
-            break
+    if hostname_dict and input_name:
+        # Apply the same _scrub_name logic used for archive/folder naming
+        scrubbed = _scrub_name(input_name, hostname_dict)
+        if scrubbed != input_name:
+            # Extract the fake hostname that replaced the real one
+            for real, fake in sorted(hostname_dict.items(), key=lambda x: len(x[0]), reverse=True):
+                if real in input_name:
+                    host_tag = f"_{fake}"
+                    break
     base = f"obfuscation{host_tag}_{timestamp}"
     mapping_path = os.path.join(dataset_dir, f"{base}_mappings.json")
     audit_path   = os.path.join(dataset_dir, f"{base}_audit.json")
@@ -609,8 +613,9 @@ def run_folder_mode(args, logger):
 
     # Now that hostname_dict is known, compute output paths with scrubbed hostname
     want_report = getattr(args, 'report', None) is not None
+    input_basename = os.path.basename(args.supportconfig_path[0])
     dataset_path, audit_path, report_path = _dataset_paths(
-        dataset_dir, timestamp, hostname_dict, report=want_report)
+        dataset_dir, timestamp, hostname_dict, input_name=input_basename, report=want_report)
     if want_report and isinstance(args.report, str):
         report_path = args.report  # user gave an explicit path
 
@@ -1584,8 +1589,9 @@ def main():
     # Compute output paths now that hostname_dict is known from processing
     hostname_dict_final = current_mappings.get('hostname', {})
     want_report = getattr(args, 'report', None) is not None
+    input_basename = os.path.basename(paths[0]) if paths else ''
     dataset_path, audit_path, report_path = _dataset_paths(
-        dataset_dir, timestamp, hostname_dict_final, report=want_report)
+        dataset_dir, timestamp, hostname_dict_final, input_name=input_basename, report=want_report)
     if want_report and isinstance(args.report, str):
         report_path = args.report  # user gave an explicit path
 
