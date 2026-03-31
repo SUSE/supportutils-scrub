@@ -959,6 +959,12 @@ def run_stdin_mode(args, logger):
     print(f"| IPv6 subnets obfuscated   : {len(ipv6_subnet_dict)}", file=err)
     if keyword_scrubber:
         print(f"| Keywords obfuscated       : {len(keyword_dict)}", file=err)
+    if file_processor.email_scrubber:
+        print(f"| Emails obfuscated         : {len(file_processor.email_scrubber.email_dict)}", file=err)
+    if file_processor.password_scrubber:
+        print(f"| Passwords obfuscated      : {len(file_processor.password_scrubber.password_dict)}", file=err)
+    if file_processor.cloud_token_scrubber:
+        print(f"| Cloud tokens obfuscated   : {len(file_processor.cloud_token_scrubber.token_dict)}", file=err)
     print(f"| Total obfuscation entries : {total_obfuscations}", file=err)
     if saved_mapping_path:
         print(f"| Mapping file              : {saved_mapping_path}", file=err)
@@ -1105,6 +1111,12 @@ def run_file_mode(args, logger):
     print(f"| IPv6 subnets obfuscated   : {len(ipv6_subnet_dict)}")
     if keyword_scrubber:
         print(f"| Keywords obfuscated       : {len(keyword_dict)}")
+    if file_processor.email_scrubber:
+        print(f"| Emails obfuscated         : {len(file_processor.email_scrubber.email_dict)}")
+    if file_processor.password_scrubber:
+        print(f"| Passwords obfuscated      : {len(file_processor.password_scrubber.password_dict)}")
+    if file_processor.cloud_token_scrubber:
+        print(f"| Cloud tokens obfuscated   : {len(file_processor.cloud_token_scrubber.token_dict)}")
     print(f"| Total obfuscation entries : {total_obfuscations}")
     print(f"| Output file               : {output_path}")
     if saved_mapping_path:
@@ -1570,6 +1582,9 @@ def main():
         + len(current_mappings.get('subnet', {}))
         + len(current_mappings.get('ipv6_subnet', {}))
         + len(current_mappings.get('serial', {}))
+        + len(current_mappings.get('email', {}))
+        + len(current_mappings.get('password', {}))
+        + len(current_mappings.get('cloud_token', {}))
     )
 
     print("\n------------------------------------------------------------")
@@ -1590,6 +1605,9 @@ def main():
     if keyword_scrubber:
         print(f"| Keywords obfuscated       : {len(current_mappings.get('keyword', {}))}")
     print(f"| Serials/UUIDs obfuscated  : {len(current_mappings.get('serial', {}))}")
+    print(f"| Emails obfuscated         : {len(current_mappings.get('email', {}))}")
+    print(f"| Passwords obfuscated      : {len(current_mappings.get('password', {}))}")
+    print(f"| Cloud tokens obfuscated   : {len(current_mappings.get('cloud_token', {}))}")
     print(f"| Total obfuscation entries : {total_obfuscations}")
     if len(all_stats) == 1:
         stats = all_stats[0]
