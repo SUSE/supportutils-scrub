@@ -63,6 +63,10 @@ All obfuscations are performed consistently, ensuring that sensitive information
 .IP \(bu 2
 \fBAutomatic entity detection:\fR In pipe/file/stdin modes the tool pre-scans the text to auto-detect usernames (PAM log patterns, logname= fields), hostnames (NFS server lines, RFC\~5424 syslog), and domains (FQDN extraction with TLD validation).
 .IP \(bu 2
+\fBEmail address obfuscation:\fR Detects and replaces email addresses consistently. Systemd template units (e.g., user@1000.service) and vendor/upstream addresses are preserved.
+.IP \(bu 2
+\fBPassword value obfuscation:\fR Replaces password values in configuration lines (e.g., password=secret) while preserving the key prefix. Values already redacted by supportconfig are skipped.
+.IP \(bu 2
 \fBConsistent multi-archive obfuscation:\fR Shared mappings across all archives in one run.
 .IP \(bu 2
 \fBtcprewrite Integration:\fR Exports mappings compatible with tcprewrite for pcap file obfuscation.
@@ -96,10 +100,10 @@ Decrypt and print the contents of an encrypted mapping file (\fI*.json.enc\fR) t
 .SS Obfuscation Options
 .TP
 \fB\-\-verify\fR
-After scrubbing, re-scan the output for any remaining real values from the mapping. Prints a list of leaks if found. Exits with code 3 if any sensitive data remains; exits 0 if clean.
+After scrubbing, perform a multi-layer verification scan of the output. Checks include: (1) mapping-based — known real values from the obfuscation mapping; (2) IP allowlist — every IPv4 must be in a known-safe range (fake pools, loopback, multicast); (3) MAC allowlist — every MAC must use the fake OUI prefix; (4) pattern scan — detects email addresses, private keys, certificates, API tokens, JWT tokens, passwords, LDAP DNs, and Kerberos principals independent of the mapping; (5) identity check (folder mode) — extracts hostname, IPs, MACs, DNS servers, serials, and UUIDs from the original supportconfig and verifies none survive in the scrubbed output. Prints a list of findings if any are detected. Exits with code 3 if sensitive data remains; exits 0 if clean.
 .TP
 \fB\-\-report\fR \fIFILE\fR
-Write a JSON coverage report to FILE. Records which files in the archive contained each data category (IPv4, domain, hostname, serial, etc.). Useful for compliance evidence.
+Write a JSON report to FILE. Includes the coverage report (which files contained each data category) and, when \fB\-\-verify\fR is used, the full list of verification findings. Useful for compliance evidence and auditing.
 .TP
 \fB\-\-quiet\fR
 Suppress the startup banner and per-file listing. In folder mode, standard output prints only the scrubbed output path (one line); the obfuscation summary, warnings, and version info are printed to standard error. This allows callers to capture the output path via command substitution while still displaying progress on the terminal. Useful when called from scripts or \fBsupportconfig\fR(8).

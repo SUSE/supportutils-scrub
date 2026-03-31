@@ -8,12 +8,14 @@
 - **Subnet-Aware IP Mapping**: Maps whole subnets to fake subnets while preserving host offsets (e.g., gateway `.1` remains `.1`), maintaining meaningful routing and topology for troubleshooting.
 - **LDAP / SSSD DN Obfuscation** (v1.2+): Obfuscates LDAP distinguished names in `DC=` format (e.g. `DC=example,DC=com`) found in SSSD configurations. Fake domains preserve the DC= component count so the structure remains readable for support analysis.
 - **Hardware Serial Number / UUID Obfuscation** (v1.3+): Detects and replaces hardware serial numbers and system UUIDs from `dmidecode` output (`Serial Number:`, `UUID:`, `Asset Tag:`). Placeholder values like `Not Specified` are not touched.
+- **Email Address Obfuscation** (v1.3+): Detects and replaces email addresses consistently across all files. Systemd template units (e.g., `user@1000.service`) and vendor/upstream addresses (kernel.org, suse.com, etc.) are preserved.
+- **Password Value Obfuscation** (v1.3+): Replaces password values in configuration lines (e.g., `password=secret123`) while preserving the key prefix. Values already redacted by supportconfig (`*REMOVED BY SUPPORTCONFIG*`) are skipped.
 - **Flexible Input Modes** (v1.2+): Accepts `.txz`/`.tgz` supportconfigs, `crm_report`/`hb_report` `.tar.gz` archives, plain directories, single files, and stdin — making it easy to obfuscate the output of commands like `journalctl` directly in a pipeline.
 - **Multi-Archive / Cluster Support** (v1.2+): Process multiple supportconfigs in one run with shared mappings, keeping values consistent across all HA cluster nodes.
 - **PCAP Obfuscation**: Rewrites tcpdump captures using the same subnet-aware IP mappings via `tcprewrite`, ensuring logs and packet captures tell a consistent story.
 - **Consistency Across Runs**: Mapping files (plain or encrypted) can be saved and reloaded to guarantee the same fake values are reused across different runs or supportconfigs.
-- **Post-Scrub Verification** (v1.3+): `--verify` re-scans the scrubbed output for any remaining real values and exits with code 3 if leaks are found.
-- **Coverage Report** (v1.3+): `--report` writes a JSON file listing which files in the archive contained each data category — useful for compliance evidence.
+- **Multi-Layer Post-Scrub Verification** (v1.3+): `--verify` performs a deep scan of the scrubbed output using five verification layers: (1) mapping-based checks, (2) IPv4 allowlist — flags any IP not in the fake pools, (3) MAC allowlist — flags any MAC not using the fake OUI, (4) pattern scan — detects emails, private keys, API tokens, JWTs, passwords, LDAP DNs, and Kerberos principals independent of the mapping, (5) identity extraction (folder mode) — parses the original supportconfig for hostname, IPs, MACs, DNS servers, and serials, then verifies none survive in the scrubbed output. Exits with code 3 if leaks are found.
+- **Coverage & Verification Report** (v1.3+): `--report` writes a JSON file listing which files contained each data category and, when combined with `--verify`, includes the full list of verification findings — useful for compliance evidence and auditing.
 
 ## Installation
 
@@ -231,8 +233,8 @@ IPv4 subnet rewrite rules (most-specific first):
 - `--keywords KEYWORDS`: Additional keywords to obfuscate
 - `--keyword-file FILE`: File containing keywords to obfuscate (one per line)
 - `--output-dir DIR`: Write the scrubbed archive to DIR instead of alongside the input file.
-- `--report FILE`: Write a JSON coverage report to FILE listing which files contained each data category (IPv4, domain, hostname, serial, etc.).
-- `--verify`: After scrubbing, re-scan the output for any remaining real values. Exits with code 3 if leaks are found; exits 0 if clean.
+- `--report FILE`: Write a JSON report to FILE. Includes coverage data and, with `--verify`, the full list of verification findings.
+- `--verify`: Multi-layer post-scrub verification: mapping checks, IP/MAC allowlists, pattern scan (emails, secrets, keys), and identity extraction. Exits with code 3 if leaks found.
 - `--stream`: Streaming stdin mode. Buffers the first 500 lines to build entity maps, then scrubs and flushes each subsequent line immediately. Required for live pipes such as `journalctl -f`. Without this flag, stdin mode waits for EOF before producing any output.
 
 ### PCAP Processing
@@ -309,6 +311,13 @@ The mapping file (`/var/tmp/obfuscation_mappings_*.json`) records every translat
         "12345678-abcd-ef12-3456-789012345678": "00000000-0000-0000-0000-000000000001"
     },
     "keyword": {},
+    "email": {
+        "admin@company.com": "email_1@scrubbed.local",
+        "user@corp.example.com": "email_2@scrubbed.local"
+    },
+    "password": {
+        "ce99185f0ff046d3": "scrubbed_pass_1"
+    },
     "subnet": {
         "10.168.196.0/24": "100.80.0.0/24",
         "148.251.5.0/24": "198.18.0.0/24",
@@ -414,22 +423,28 @@ supportutils-scrub /var/log/scc_node1.txz --no-mappings
 
 ### Post-Scrub Verification (v1.3+)
 
-After scrubbing, re-scan the output for any remaining real values from the mapping. Exits with code 3 if leaks are detected, 0 if clean:
+After scrubbing, `--verify` performs a multi-layer scan of the output to detect remaining sensitive data:
+
+1. **Mapping-based** — checks that all known real values were replaced
+2. **IPv4 allowlist** — every IP in the output must be in a known-safe range (fake pools, loopback, multicast, documentation nets). Private IPs are safe when `obfuscate_private_ip = no`.
+3. **MAC allowlist** — every MAC must use the fake OUI prefix (`00:1A:2B`). Broadcast (`ff:ff:ff:ff:ff:ff`) and null MACs are safe.
+4. **Pattern scan** — detects emails, private keys, certificates, API tokens, JWTs, passwords, LDAP DNs, and Kerberos principals — independent of the mapping.
+5. **Identity extraction** (folder mode) — parses `basic-environment.txt`, `network.txt`, and `hardware.txt` from the original to extract hostname, IPs, MACs, DNS servers, serial numbers, and UUIDs, then verifies none survive in the scrubbed output.
 
 ```bash
 supportutils-scrub /var/log/scc_node1.txz --verify
 # [✓] VERIFY: No sensitive data found in scrubbed output.
 ```
 
-If leaks are found, the tool reports the exact file, line number, category, and value.
+If leaks are found, the tool reports the exact file, line number, category, and value. Use `--report` to save the full findings list.
 
-### Coverage Report (v1.3+)
+### Coverage & Verification Report (v1.3+)
 
-Write a JSON compliance report listing which files in the archive contained each data category:
+Write a JSON report including coverage data and (with `--verify`) the full list of verification findings:
 
 ```bash
 supportutils-scrub /var/log/scc_node1.txz \
-    --report /var/tmp/scrub_report_$(date +%Y%m%d).json
+    --verify --report /var/tmp/scrub_report_$(date +%Y%m%d).json
 ```
 
 ## supportconfig Integration
