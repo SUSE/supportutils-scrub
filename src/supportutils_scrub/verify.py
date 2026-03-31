@@ -29,6 +29,10 @@ _MIN_VALUE_LEN = 6
 # Domains to never flag as leaks (vendor/infrastructure, not customer data)
 _SAFE_DOMAIN_VALUES = {
     'susecloud.net',
+    'suse.org',
+    'suse.com',
+    'suse.de',
+    'opensuse.org',
 }
 
 # Mirrors the lookbehind/lookahead in ip_scrubber.CIDR_RE so that IPs embedded
@@ -139,6 +143,7 @@ _SAFE_EMAIL_DOMAINS = {
     'sourceforge.net', 'github.com', 'gitlab.com',
     'googlegroups.com', 'lists.sf.net',
     'opensuse.org', 'opensuse.com',              # community
+    'suse.org',                                   # vendor community
 }
 
 # Short pseudo-TLDs from locale/gettext data (e.g. en@quot.mo)
@@ -204,8 +209,17 @@ def _extract_identity_from_original(original_folder):
     # hardware.txt: serial numbers
     _parse_hardware_txt(original_folder, identity)
 
-    # Filter out very short tokens that would cause false positives
-    identity = {t for t in identity if len(t) >= 4}
+    # Filter out tokens that would cause false positives
+    # - Must be 8+ chars to avoid generic words (Name, Domain, Service, etc.)
+    # - Must not be a common English word or field label
+    _generic_words = {
+        'name', 'domain', 'service', 'server', 'system', 'network', 'default',
+        'address', 'version', 'type', 'none', 'true', 'false', 'enabled',
+        'disabled', 'unknown', 'localhost', 'specified', 'available',
+        'not specified', 'to be filled', 'not available',
+    }
+    identity = {t for t in identity
+                if len(t) >= 8 and t.lower() not in _generic_words}
     return identity
 
 
@@ -283,14 +297,32 @@ def _parse_hardware_txt(folder, identity):
 # Core: build terms from mappings (original approach)
 # ---------------------------------------------------------------------------
 
+# Skip our own fake replacement values in mapping keys
+_FAKE_VALUE_RE = re.compile(
+    r'^(?:hostname_\d+|user_\d+|domain_\d+|email_\d+@scrubbed\.local'
+    r'|scrubbed_pass_\d+|SCRUBBED_\w+_\d+|SERIAL_\d+'
+    r'|00:1[Aa]:2[Bb]:[0-9A-Fa-f:]+|00000000-0000-)'
+)
+
+
 def _build_terms(mappings: dict) -> list:
     """Return [(real_value, category_label, compiled_pattern | None), ...]."""
+    # Collect all fake values so we skip them if they appear as keys
+    all_fake_values = set()
+    for cat_key in ('ip', 'ipv6', 'mac', 'domain', 'hostname', 'user',
+                    'keyword', 'serial', 'email', 'password', 'cloud_token'):
+        for fake_val in mappings.get(cat_key, {}).values():
+            all_fake_values.add(fake_val)
+
     terms = []
     for key, label, mode in _CATEGORIES:
         for real_val in mappings.get(key, {}):
             if len(real_val) < _MIN_VALUE_LEN:
                 continue
             if real_val.lower() in _SAFE_DOMAIN_VALUES:
+                continue
+            # Skip fake values that ended up as keys (e.g. from chained mappings)
+            if real_val in all_fake_values or _FAKE_VALUE_RE.match(real_val):
                 continue
             if mode == 'boundary':
                 pat = re.compile(r'\b' + re.escape(real_val) + r'\b')
