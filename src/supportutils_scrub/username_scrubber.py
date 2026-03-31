@@ -37,6 +37,8 @@ class UsernameScrubber:
     @staticmethod
     def _is_excluded(username):
         """Checks if a username should be excluded from obfuscation."""
+        if len(username) < 3:
+            return True
         if username in UsernameScrubber.EXCLUDED_USERS:
             return True
         if len(username) == 6 and username.endswith("adm"):

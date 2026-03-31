@@ -22,9 +22,12 @@ class HostnameScrubber:
     def extract_hostnames_from_hosts(file_path):
         hostnames = []
         excluded_hostnames = {
-            "localhost", "ipv6-localhost", "ipv6-loopback", 
-            "ipv6-localnet", "ipv6-mcastprefix", "ipv6-allnodes", 
-            "ipv6-allrouters", "ipv6-allhosts"
+            "localhost", "ipv6-localhost", "ipv6-loopback",
+            "ipv6-localnet", "ipv6-mcastprefix", "ipv6-allnodes",
+            "ipv6-allrouters", "ipv6-allhosts",
+            "ip6-localhost", "ip6-loopback",
+            "ip6-localnet", "ip6-mcastprefix", "ip6-allnodes",
+            "ip6-allrouters", "ip6-allhosts",
         }
         with open(file_path, 'r') as file:
             in_hosts_section = False
@@ -54,9 +57,12 @@ class HostnameScrubber:
     def extract_hostnames_from_hostname_section(file_path):
         hostnames = []
         excluded_hostnames = {
-            "localhost", "ipv6-localhost", "ipv6-loopback", 
-            "ipv6-localnet", "ipv6-mcastprefix", "ipv6-allnodes", 
-            "ipv6-allrouters", "ipv6-allhosts"
+            "localhost", "ipv6-localhost", "ipv6-loopback",
+            "ipv6-localnet", "ipv6-mcastprefix", "ipv6-allnodes",
+            "ipv6-allrouters", "ipv6-allhosts",
+            "ip6-localhost", "ip6-loopback",
+            "ip6-localnet", "ip6-mcastprefix", "ip6-allnodes",
+            "ip6-allrouters", "ip6-allhosts",
         }
         with open(file_path, 'r') as file:
             in_hostname_section = False
