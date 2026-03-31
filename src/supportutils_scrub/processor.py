@@ -19,9 +19,10 @@ from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.serial_scrubber import SerialScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
+from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 
 class FileProcessor:
-    def __init__(self, config, ip_scrubber: IPScrubber, domain_scrubber: DomainScrubber, username_scrubber: UsernameScrubber, hostname_scrubber: HostnameScrubber, mac_scrubber: MACScrubber, ipv6_scrubber: IPv6Scrubber, keyword_scrubber: KeywordScrubber = None, serial_scrubber: SerialScrubber = None, email_scrubber: EmailScrubber = None, password_scrubber: PasswordScrubber = None):
+    def __init__(self, config, ip_scrubber: IPScrubber, domain_scrubber: DomainScrubber, username_scrubber: UsernameScrubber, hostname_scrubber: HostnameScrubber, mac_scrubber: MACScrubber, ipv6_scrubber: IPv6Scrubber, keyword_scrubber: KeywordScrubber = None, serial_scrubber: SerialScrubber = None, email_scrubber: EmailScrubber = None, password_scrubber: PasswordScrubber = None, cloud_token_scrubber: CloudTokenScrubber = None):
         self.config = config
         self.ip_scrubber = ip_scrubber
         self.domain_scrubber = domain_scrubber
@@ -33,6 +34,7 @@ class FileProcessor:
         self.serial_scrubber = serial_scrubber
         self.email_scrubber = email_scrubber
         self.password_scrubber = password_scrubber
+        self.cloud_token_scrubber = cloud_token_scrubber
         self.current_section = None
         self.current_interface = None
         self.in_network_config = False
@@ -215,6 +217,10 @@ class FileProcessor:
         # Scrub password values
         if self.password_scrubber:
             scrubbed_text = self.password_scrubber.scrub(scrubbed_text)
+
+        # Scrub cloud tokens (JWT, AWS keys, Azure keys, GCP keys, bearer tokens)
+        if self.cloud_token_scrubber:
+            scrubbed_text = self.cloud_token_scrubber.scrub(scrubbed_text)
 
         # Scrub serial numbers and UUIDs
         if self.serial_scrubber:

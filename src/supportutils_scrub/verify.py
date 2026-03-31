@@ -26,6 +26,11 @@ _CATEGORIES = [
 # Real values shorter than this are skipped to reduce noise
 _MIN_VALUE_LEN = 6
 
+# Domains to never flag as leaks (vendor/infrastructure, not customer data)
+_SAFE_DOMAIN_VALUES = {
+    'susecloud.net',
+}
+
 # Mirrors the lookbehind/lookahead in ip_scrubber.CIDR_RE so that IPs embedded
 # in version strings (e.g. "nftables-1.4.4.2") are not flagged as leaks.
 _IP_BOUNDARY = r'(?<![A-Za-z0-9.\-]){}(?![A-Za-z0-9.\-])'
@@ -163,7 +168,8 @@ _SECRET_PATTERNS = [
     (re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+'), 'JWT token'),
     # Generic password assignments (word boundary to avoid matching "bypass:", "compass:", etc.)
     # Skip values already redacted by supportconfig (*REMOVED BY SUPPORTCONFIG*)
-    (re.compile(r'(?i)\b(?:password|passwd|pass)\s*[:=]\s*["\']?(?!\*REMOVED)(\S{8,})'), 'password value'),
+    # Skip values already scrubbed by password_scrubber (scrubbed_pass_*)
+    (re.compile(r'(?i)\b(?:password|passwd|pass)\s*[:=]\s*["\']?(?!\*REMOVED)(?!scrubbed_pass_)(\S{8,})'), 'password value'),
 ]
 
 # LDAP / Kerberos patterns
@@ -283,6 +289,8 @@ def _build_terms(mappings: dict) -> list:
     for key, label, mode in _CATEGORIES:
         for real_val in mappings.get(key, {}):
             if len(real_val) < _MIN_VALUE_LEN:
+                continue
+            if real_val.lower() in _SAFE_DOMAIN_VALUES:
                 continue
             if mode == 'boundary':
                 pat = re.compile(r'\b' + re.escape(real_val) + r'\b')
@@ -435,19 +443,19 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
                                 })
 
                         # Secrets / keys / tokens — cheap hint check first
-                        line_lower_cached = None
-                        for hint in _secret_hints:
-                            if hint in line:
-                                # Run all secret patterns (only when hint matches)
-                                for pat, label in _SECRET_PATTERNS:
-                                    if pat.search(line):
-                                        snippet = line.strip()[:80]
-                                        findings.append({
-                                            'file': rel, 'line': lineno,
-                                            'category': label,
-                                            'value': snippet,
-                                        })
-                                break  # only need one hint to trigger
+                        # Skip lines containing already-scrubbed values
+                        if 'SCRUBBED_' not in line:
+                            for hint in _secret_hints:
+                                if hint in line:
+                                    for pat, label in _SECRET_PATTERNS:
+                                        if pat.search(line):
+                                            snippet = line.strip()[:80]
+                                            findings.append({
+                                                'file': rel, 'line': lineno,
+                                                'category': label,
+                                                'value': snippet,
+                                            })
+                                    break  # only need one hint to trigger
 
                         # LDAP DNs — cheap pre-check
                         if '=' in line and ('CN=' in line or 'DC=' in line

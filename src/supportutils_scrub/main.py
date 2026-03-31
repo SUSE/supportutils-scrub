@@ -27,6 +27,7 @@ from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.processor import FileProcessor
 from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
+from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
 import shlex
 from supportutils_scrub.serial_scrubber import SerialScrubber
@@ -604,7 +605,8 @@ def run_folder_mode(args, logger):
         file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
                                        hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
                                        serial_scrubber=serial_scrubber, email_scrubber=email_scrubber,
-                                       password_scrubber=PasswordScrubber(mappings=mappings))
+                                       password_scrubber=PasswordScrubber(mappings=mappings),
+                                       cloud_token_scrubber=CloudTokenScrubber(mappings=mappings))
     except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
@@ -622,6 +624,7 @@ def run_folder_mode(args, logger):
     total_serial_dict = {}
     total_email_dict = {}
     total_password_dict = {}
+    total_cloud_token_dict = {}
 
     if quiet:
         file_names = [os.path.basename(f) for f in report_files
@@ -659,6 +662,8 @@ def run_folder_mode(args, logger):
                 total_email_dict.update(file_processor.email_scrubber.email_dict)
             if file_processor.password_scrubber:
                 total_password_dict.update(file_processor.password_scrubber.password_dict)
+            if file_processor.cloud_token_scrubber:
+                total_cloud_token_dict.update(file_processor.cloud_token_scrubber.token_dict)
             if hasattr(file_processor, '_ipv4_subnet_map'):
                 total_ipv4_subnet_dict = file_processor._ipv4_subnet_map
             if hasattr(file_processor, '_ipv4_state'):
@@ -684,6 +689,7 @@ def run_folder_mode(args, logger):
         'serial': total_serial_dict,
         'email': total_email_dict,
         'password': total_password_dict,
+        'cloud_token': total_cloud_token_dict,
     }
 
     saved_mapping_path = _save_mappings(args, dataset_path, dataset_dict)
@@ -698,6 +704,7 @@ def run_folder_mode(args, logger):
         + len(total_domain_dict) + len(total_hostname_dict) + len(total_ipv6_dict)
         + len(total_keyword_dict) + len(total_ipv4_subnet_dict) + len(total_ipv6_subnet_dict)
         + len(total_serial_dict) + len(total_email_dict) + len(total_password_dict)
+        + len(total_cloud_token_dict)
     )
 
     # With --quiet: summary goes to stderr (visible on terminal),
@@ -721,6 +728,7 @@ def run_folder_mode(args, logger):
     print(f"| Serials/UUIDs obfuscated  : {len(total_serial_dict)}", file=out)
     print(f"| Emails obfuscated         : {len(total_email_dict)}", file=out)
     print(f"| Passwords obfuscated      : {len(total_password_dict)}", file=out)
+    print(f"| Cloud tokens obfuscated   : {len(total_cloud_token_dict)}", file=out)
     print(f"| Total obfuscation entries : {total_obfuscations}", file=out)
     if not quiet:
         print(f"| Output folder             : {scrubbed_path}", file=out)
@@ -849,7 +857,8 @@ def run_stdin_mode(args, logger):
                                            HostnameScrubber(hostname_dict),
                                            mac_scrubber, ipv6_scrubber, keyword_scrubber,
                                            email_scrubber=EmailScrubber(mappings=mappings),
-                                           password_scrubber=PasswordScrubber(mappings=mappings))
+                                           password_scrubber=PasswordScrubber(mappings=mappings),
+                                       cloud_token_scrubber=CloudTokenScrubber(mappings=mappings))
         except Exception as e:
             logger.error(f"Error initializing FileProcessor: {e}")
             sys.exit(1)
@@ -895,7 +904,8 @@ def run_stdin_mode(args, logger):
                                            HostnameScrubber(hostname_dict),
                                            mac_scrubber, ipv6_scrubber, keyword_scrubber,
                                            email_scrubber=EmailScrubber(mappings=mappings),
-                                           password_scrubber=PasswordScrubber(mappings=mappings))
+                                           password_scrubber=PasswordScrubber(mappings=mappings),
+                                       cloud_token_scrubber=CloudTokenScrubber(mappings=mappings))
         except Exception as e:
             logger.error(f"Error initializing FileProcessor: {e}")
             sys.exit(1)
@@ -1023,7 +1033,8 @@ def run_file_mode(args, logger):
         file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
                                        hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
                                        email_scrubber=email_scrubber,
-                                       password_scrubber=PasswordScrubber(mappings=mappings))
+                                       password_scrubber=PasswordScrubber(mappings=mappings),
+                                       cloud_token_scrubber=CloudTokenScrubber(mappings=mappings))
     except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
@@ -1201,12 +1212,14 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
 
         email_scrubber = EmailScrubber(mappings=current_mappings)
         password_scrubber = PasswordScrubber(mappings=current_mappings)
+        cloud_token_scrubber = CloudTokenScrubber(mappings=current_mappings)
 
         try:
             file_processor = FileProcessor(config, ip_scrubber, domain_scrubber, username_scrubber,
                                            hostname_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
                                            serial_scrubber=serial_scrubber, email_scrubber=email_scrubber,
-                                           password_scrubber=password_scrubber)
+                                           password_scrubber=password_scrubber,
+                                           cloud_token_scrubber=cloud_token_scrubber)
         except Exception as e:
             logger.error(f"Error initializing FileProcessor: {e}")
             raise
@@ -1318,6 +1331,7 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         'serial': total_serial_dict,
         'email': email_scrubber.email_dict,
         'password': password_scrubber.password_dict,
+        'cloud_token': cloud_token_scrubber.token_dict,
     }
 
     stats = {
