@@ -18,9 +18,10 @@ from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.serial_scrubber import SerialScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
+from supportutils_scrub.password_scrubber import PasswordScrubber
 
 class FileProcessor:
-    def __init__(self, config, ip_scrubber: IPScrubber, domain_scrubber: DomainScrubber, username_scrubber: UsernameScrubber, hostname_scrubber: HostnameScrubber, mac_scrubber: MACScrubber, ipv6_scrubber: IPv6Scrubber, keyword_scrubber: KeywordScrubber = None, serial_scrubber: SerialScrubber = None, email_scrubber: EmailScrubber = None):
+    def __init__(self, config, ip_scrubber: IPScrubber, domain_scrubber: DomainScrubber, username_scrubber: UsernameScrubber, hostname_scrubber: HostnameScrubber, mac_scrubber: MACScrubber, ipv6_scrubber: IPv6Scrubber, keyword_scrubber: KeywordScrubber = None, serial_scrubber: SerialScrubber = None, email_scrubber: EmailScrubber = None, password_scrubber: PasswordScrubber = None):
         self.config = config
         self.ip_scrubber = ip_scrubber
         self.domain_scrubber = domain_scrubber
@@ -31,6 +32,7 @@ class FileProcessor:
         self.ipv6_scrubber = ipv6_scrubber
         self.serial_scrubber = serial_scrubber
         self.email_scrubber = email_scrubber
+        self.password_scrubber = password_scrubber
         self.current_section = None
         self.current_interface = None
         self.in_network_config = False
@@ -209,6 +211,10 @@ class FileProcessor:
         # Scrub email addresses
         if self.email_scrubber:
             scrubbed_text = self.email_scrubber.scrub(scrubbed_text)
+
+        # Scrub password values
+        if self.password_scrubber:
+            scrubbed_text = self.password_scrubber.scrub(scrubbed_text)
 
         # Scrub serial numbers and UUIDs
         if self.serial_scrubber:

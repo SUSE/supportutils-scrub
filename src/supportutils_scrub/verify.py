@@ -102,9 +102,13 @@ _MAC_RE = re.compile(
 _FAKE_MAC_OUI = '00:1a:2b'  # fake OUI used by mac_scrubber
 
 
+_SAFE_MACS = {'00:00:00:00:00:00', 'ff:ff:ff:ff:ff:ff'}
+
+
 def _is_safe_mac(mac_str):
-    """Return True if the MAC uses the fake OUI prefix."""
-    return mac_str.lower().replace('-', ':').startswith(_FAKE_MAC_OUI)
+    """Return True if the MAC uses the fake OUI prefix or is a known safe value."""
+    normalized = mac_str.lower().replace('-', ':')
+    return normalized.startswith(_FAKE_MAC_OUI) or normalized in _SAFE_MACS
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +147,8 @@ _SYSTEMD_SUFFIXES = ('.service', '.socket', '.timer', '.target', '.mount',
 _SAFE_EMAIL_DOMAINS.update({
     'defaultv4iddomain.com',   # NFS idmapd default
     'localdomain',
+    'scrubbed.local',          # our own fake email domain
+    'susecloud.net',           # SUSE public cloud infrastructure
 })
 
 _SECRET_PATTERNS = [
@@ -156,12 +162,15 @@ _SECRET_PATTERNS = [
     # JWT tokens
     (re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+'), 'JWT token'),
     # Generic password assignments (word boundary to avoid matching "bypass:", "compass:", etc.)
-    (re.compile(r'(?i)\b(?:password|passwd|pass)\s*[:=]\s*["\']?(\S{8,})'), 'password value'),
+    # Skip values already redacted by supportconfig (*REMOVED BY SUPPORTCONFIG*)
+    (re.compile(r'(?i)\b(?:password|passwd|pass)\s*[:=]\s*["\']?(?!\*REMOVED)(\S{8,})'), 'password value'),
 ]
 
 # LDAP / Kerberos patterns
 _LDAP_DN_RE = re.compile(r'(?:CN|OU|DC|O|L|ST|C)=[^,\s]{2,}(?:,\s*(?:CN|OU|DC|O|L|ST|C)=[^,\s]{2,}){2,}', re.IGNORECASE)
-_KERBEROS_RE = re.compile(r'[A-Za-z0-9._-]+@[A-Z][A-Z0-9._-]{2,}', re.ASCII)
+# Require local part >= 3 alphanumeric chars (no dots/special), realm all-uppercase
+# letters/digits only. Avoids binary garbage and shell completion patterns.
+_KERBEROS_RE = re.compile(r'(?<![A-Za-z0-9@])([A-Za-z][A-Za-z0-9]{2,})@([A-Z][A-Z0-9]{3,}(?:\.[A-Z][A-Z0-9]{1,})*)', re.ASCII)
 
 # URL with potentially real hostnames
 _URL_RE = re.compile(r'https?://([A-Za-z0-9.-]+)')
@@ -419,14 +428,11 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
 
                             # Kerberos principals — also requires '@'
                             for m in _KERBEROS_RE.finditer(line):
-                                principal = m.group(0)
-                                realm = principal.split('@')[1]
-                                if realm == realm.upper() and len(realm) >= 4:
-                                    findings.append({
-                                        'file': rel, 'line': lineno,
-                                        'category': 'Kerberos principal',
-                                        'value': principal,
-                                    })
+                                findings.append({
+                                    'file': rel, 'line': lineno,
+                                    'category': 'Kerberos principal',
+                                    'value': m.group(0),
+                                })
 
                         # Secrets / keys / tokens — cheap hint check first
                         line_lower_cached = None
@@ -448,10 +454,14 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
                                             or 'OU=' in line or 'cn=' in line
                                             or 'dc=' in line or 'ou=' in line):
                             for m in _LDAP_DN_RE.finditer(line):
+                                dn_val = m.group(0)
+                                # Skip example/placeholder DNs
+                                if 'example' in dn_val.lower():
+                                    continue
                                 findings.append({
                                     'file': rel, 'line': lineno,
                                     'category': 'LDAP DN',
-                                    'value': m.group(0)[:80],
+                                    'value': dn_val[:80],
                                 })
 
                     # Layer 5: identity tokens from original
