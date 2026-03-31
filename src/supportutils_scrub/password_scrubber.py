@@ -2,13 +2,16 @@
 """Obfuscate password values in config files (e.g. password=secret123)."""
 
 import re
-import hashlib
 
-# Matches: password=value, passwd=value, pass=value (with optional quotes/spaces)
+# Only match full keywords "password" and "passwd" — NOT "pass" (too many false positives).
+# Require = as delimiter (not :) to avoid matching PAM log lines like
+# "pam_unix(sshd:auth): authentication failure" or "password: required".
+# Value must be alphanumeric/hex-like (no shell commands, no punctuation-heavy strings).
 _PASSWORD_RE = re.compile(
-    r'(?i)(\b(?:password|passwd|pass)\s*[:=]\s*["\']?)'  # keyword + delimiter (captured)
-    r'(?!\*REMOVED)'                                       # skip supportconfig-redacted
-    r'(\S{4,})'                                            # the actual secret value (captured)
+    r'(?i)(\b(?:password|passwd)\s*=\s*["\']?)'     # keyword + = delimiter
+    r'(?!\*REMOVED)'                                  # skip supportconfig-redacted
+    r'(?!scrubbed_pass_)'                             # skip already-scrubbed
+    r'([A-Za-z0-9+/=_.-]{8,})'                       # credential-like value (8+ chars, no spaces)
 )
 
 
