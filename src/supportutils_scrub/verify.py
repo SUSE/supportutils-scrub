@@ -359,8 +359,14 @@ _FAKE_VALUE_RE = re.compile(
 )
 
 
-def _build_terms(mappings: dict) -> list:
-    """Return [(real_value, category_label, compiled_pattern | None), ...]."""
+def _build_terms(mappings: dict):
+    """
+    Build optimized lookup structures for mapping-based verification.
+    Returns (combined_re, match_labels, substring_set).
+      - combined_re: single compiled regex matching all boundary/ip terms
+      - match_labels: dict mapping matched string → category label
+      - substring_set: set of (real_val, label) for substring checks
+    """
     # Collect all fake values so we skip them if they appear as keys
     all_fake_values = set()
     for cat_key in ('ip', 'ipv6', 'mac', 'domain', 'hostname', 'user',
@@ -368,24 +374,29 @@ def _build_terms(mappings: dict) -> list:
         for fake_val in mappings.get(cat_key, {}).values():
             all_fake_values.add(fake_val)
 
-    terms = []
+    regex_parts = []
+    match_labels = {}
+    substring_terms = []
+
     for key, label, mode in _CATEGORIES:
         for real_val in mappings.get(key, {}):
             if len(real_val) < _MIN_VALUE_LEN:
                 continue
             if real_val.lower() in _SAFE_DOMAIN_VALUES:
                 continue
-            # Skip fake values that ended up as keys (e.g. from chained mappings)
             if real_val in all_fake_values or _FAKE_VALUE_RE.match(real_val):
                 continue
             if mode == 'boundary':
-                pat = re.compile(r'\b' + re.escape(real_val) + r'\b')
+                regex_parts.append(r'\b' + re.escape(real_val) + r'\b')
+                match_labels[real_val] = label
             elif mode == 'ip':
-                pat = re.compile(_IP_BOUNDARY.format(re.escape(real_val)))
+                regex_parts.append(_IP_BOUNDARY.format(re.escape(real_val)))
+                match_labels[real_val] = label
             else:
-                pat = None   # substring – checked with 'in'
-            terms.append((real_val, label, pat))
-    return terms
+                substring_terms.append((real_val, label))
+
+    combined_re = re.compile('|'.join(regex_parts)) if regex_parts else None
+    return combined_re, match_labels, substring_terms
 
 
 # ---------------------------------------------------------------------------
@@ -422,8 +433,8 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
         obfuscate_private = config.get('obfuscate_private_ip', 'no').lower() == 'yes'
     safe_nets = _build_safe_ipv4_nets(obfuscate_private_ip=obfuscate_private)
 
-    # --- Layer 1: mapping-based (original approach) ---
-    terms = _build_terms(mappings)
+    # --- Layer 1: mapping-based (optimized single-regex) ---
+    combined_re, match_labels, substring_terms = _build_terms(mappings)
 
     # --- Layer 5: identity tokens from original ---
     identity_tokens = set()
@@ -466,18 +477,22 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
             with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
                 for lineno, line in enumerate(f, 1):
 
-                    # Layer 1: mapping-based
-                    if terms:
-                        for real_val, category, pat in terms:
-                            if pat is not None:
-                                found = bool(pat.search(line))
-                            else:
-                                found = real_val in line
-                            if found:
+                    # Layer 1: mapping-based (single combined regex + substring set)
+                    if combined_re:
+                        for m in combined_re.finditer(line):
+                            val = m.group(0)
+                            label = match_labels.get(val)
+                            if label:
                                 findings.append({
                                     'file': rel, 'line': lineno,
-                                    'category': category, 'value': real_val,
+                                    'category': label, 'value': val,
                                 })
+                    for real_val, label in substring_terms:
+                        if real_val in line:
+                            findings.append({
+                                'file': rel, 'line': lineno,
+                                'category': label, 'value': real_val,
+                            })
 
                     # Layer 2: IP allowlist — cheap pre-check: line must contain a digit
                     if check_allowlist and '.' in line:
