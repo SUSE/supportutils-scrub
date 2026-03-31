@@ -30,6 +30,7 @@ class ConfigReader:
             'key_words_file': '/var/lib/supportutils-scrub-keywords.txt',
             'secure_tmp': 'no',
             'encrypt_mappings': 'no',
+            'dataset_dir': '/var/tmp',
         }
 
 

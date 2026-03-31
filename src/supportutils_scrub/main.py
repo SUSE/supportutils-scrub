@@ -116,8 +116,8 @@ def parse_args():
         help="Suppress banner and per-file listing. Errors still go to stderr.")
     parser.add_argument("--output-dir", metavar="DIR",
         help="Directory for scrubbed output archives. Default: same directory as input.")
-    parser.add_argument("--report", metavar="FILE",
-        help="Write a JSON coverage report to FILE (lists which files contained each data category).")
+    parser.add_argument("--report", nargs='?', const=True, default=None, metavar="FILE",
+        help="Write a JSON report. If FILE is given, write there; otherwise auto-generate a path alongside the mapping file.")
     parser.add_argument("--verify", action="store_true",
         help="After scrubbing, re-scan the output for remaining sensitive data. "
              "Checks: mapping values, IP/MAC allowlists, emails, secrets/keys, "
@@ -224,6 +224,25 @@ def _scrub_name(name: str, hostname_dict: dict) -> str:
     for real, fake in sorted(hostname_dict.items(), key=lambda x: len(x[0]), reverse=True):
         name = name.replace(real, fake)
     return name
+
+
+def _dataset_paths(dataset_dir, timestamp, hostname_dict=None, report=False):
+    """
+    Compute paths for mapping, audit, and (optionally) report files.
+    If hostname_dict is provided, the scrubbed hostname is embedded in the filenames.
+    """
+    # Find the primary scrubbed hostname (first value in dict, typically the system hostname)
+    host_tag = ''
+    if hostname_dict:
+        # Use the first mapping value — this is typically the system hostname
+        for fake in hostname_dict.values():
+            host_tag = f"_{fake}"
+            break
+    base = f"obfuscation{host_tag}_{timestamp}"
+    mapping_path = os.path.join(dataset_dir, f"{base}_mappings.json")
+    audit_path   = os.path.join(dataset_dir, f"{base}_audit.json")
+    report_path  = os.path.join(dataset_dir, f"{base}_report.json") if report else None
+    return mapping_path, audit_path, report_path
 
 
 def _rename_extraction_paths(clean_folder_path: str, hostname_dict: dict, rename_top: bool = True) -> str:
@@ -516,16 +535,14 @@ def run_folder_mode(args, logger):
     """
     verbose_flag = args.verbose
 
-    dataset_dir = '/var/tmp'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dataset_path = os.path.join(dataset_dir, f"obfuscation_mappings_{timestamp}.json")
-    audit_path   = os.path.join(dataset_dir, f"obfuscation_audit_{timestamp}.json")
 
     quiet = getattr(args, 'quiet', False)
     err = sys.stderr  # when --quiet, informational output goes to stderr
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
+    dataset_dir = config.get('dataset_dir', '/var/tmp')
 
     if quiet:
         print(f"supportutils-scrub v{SCRIPT_VERSION} — scrubbing IPs, hostnames, domains, "
@@ -589,6 +606,13 @@ def run_folder_mode(args, logger):
         additional_hostnames = re.split(r'[,\s;]+', args.hostname)
     hostname_dict = extract_hostnames(scan_files, additional_hostnames, mappings)
     hostname_scrubber = HostnameScrubber(hostname_dict)
+
+    # Now that hostname_dict is known, compute output paths with scrubbed hostname
+    want_report = getattr(args, 'report', None) is not None
+    dataset_path, audit_path, report_path = _dataset_paths(
+        dataset_dir, timestamp, hostname_dict, report=want_report)
+    if want_report and isinstance(args.report, str):
+        report_path = args.report  # user gave an explicit path
 
     # For supportconfig folders: rename paths containing real hostnames, extract serials
     serial_scrubber = None
@@ -770,11 +794,11 @@ def run_folder_mode(args, logger):
         # Machine-readable: only the output path on stdout
         print(scrubbed_path)
 
-    if getattr(args, 'report', None):
+    if report_path:
         folder_report = [{'input': os.path.abspath(args.supportconfig_path[0]),
                           'output': os.path.abspath(scrubbed_path),
                           'files_total': len(report_files)}]
-        _write_report(args.report, folder_report, SCRIPT_VERSION,
+        _write_report(report_path, folder_report, SCRIPT_VERSION,
                       verify_findings=verify_findings)
 
     record = _audit_record('folder',
@@ -796,13 +820,12 @@ def run_stdin_mode(args, logger):
 
     print_header(file=err)
 
-    dataset_dir = '/var/tmp'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dataset_path = os.path.join(dataset_dir, f"obfuscation_mappings_{timestamp}.json")
-    audit_path   = os.path.join(dataset_dir, f"obfuscation_audit_{timestamp}.json")
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
+    dataset_dir = config.get('dataset_dir', '/var/tmp')
+    dataset_path, audit_path, _ = _dataset_paths(dataset_dir, timestamp)
     _warn_private_ip(config, file=err)
 
     mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber = \
@@ -992,10 +1015,11 @@ def run_file_mode(args, logger):
     input_path = args.supportconfig_path[0]
     output_path = input_path + '_scrubbed'
 
-    dataset_dir = '/var/tmp'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dataset_path = os.path.join(dataset_dir, f"obfuscation_mappings_{timestamp}.json")
-    audit_path   = os.path.join(dataset_dir, f"obfuscation_audit_{timestamp}.json")
+    config_reader_f = ConfigReader(DEFAULT_CONFIG_PATH)
+    config_f = config_reader_f.read_config(args.config)
+    dataset_dir = config_f.get('dataset_dir', '/var/tmp')
+    dataset_path, audit_path, _ = _dataset_paths(dataset_dir, timestamp)
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
@@ -1475,20 +1499,22 @@ def main():
         print("[!] No input specified. Provide a .txz/.tgz archive, folder, plain file, or '-' for stdin.")
         sys.exit(2)
 
-    dataset_dir = '/var/tmp'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dataset_path = os.path.join(dataset_dir, f"obfuscation_mappings_{timestamp}.json")
-    audit_path   = os.path.join(dataset_dir, f"obfuscation_audit_{timestamp}.json")
 
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
+    dataset_dir = config.get('dataset_dir', '/var/tmp')
+    # Paths computed after processing, once hostname_dict is known
     _warn_private_ip(config, file=sys.stderr if getattr(args, 'quiet', False) else None)
 
     if args.rewrite_pcap:
         if not args.pcap_in:
             print("[!] --rewrite-pcap needs --pcap-in PCAP(s)")
             sys.exit(2)
-        mapping_src_path = args.mappings or dataset_path
+        if not args.mappings:
+            print("[!] --rewrite-pcap requires --mappings to provide subnet data")
+            sys.exit(2)
+        mapping_src_path = args.mappings
         try:
             mappings_for_pcap = _load_mappings_file(mapping_src_path)
         except SystemExit:
@@ -1555,10 +1581,18 @@ def main():
     else:
         verify_exit = EXIT_OK
 
+    # Compute output paths now that hostname_dict is known from processing
+    hostname_dict_final = current_mappings.get('hostname', {})
+    want_report = getattr(args, 'report', None) is not None
+    dataset_path, audit_path, report_path = _dataset_paths(
+        dataset_dir, timestamp, hostname_dict_final, report=want_report)
+    if want_report and isinstance(args.report, str):
+        report_path = args.report  # user gave an explicit path
+
     # Write report if requested
-    if getattr(args, 'report', None):
+    if report_path:
         archives_report = [s['report_data'] for s in all_stats]
-        _write_report(args.report, archives_report, SCRIPT_VERSION,
+        _write_report(report_path, archives_report, SCRIPT_VERSION,
                       verify_findings=all_verify_findings)
 
     # Save final combined mappings (single file covering all archives)
