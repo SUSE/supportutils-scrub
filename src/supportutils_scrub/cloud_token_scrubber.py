@@ -23,9 +23,9 @@ _AWS_SECRET_RE = re.compile(
 _AZURE_CONNSTR_RE = re.compile(
     r'(AccountKey\s*=\s*)([A-Za-z0-9+/=]{20,})'
 )
-# SharedAccessSignature / sig= in SAS tokens
+# SharedAccessSignature / sig= in SAS tokens — require URL query context (?/& prefix)
 _AZURE_SAS_RE = re.compile(
-    r'((?:sig|sv|se|sp|spr|srt|ss)\s*=\s*)([A-Za-z0-9%+/=]{16,})'
+    r'([?&](?:sig|sv|se|sp|spr|srt|ss)=)([A-Za-z0-9%+/=]{20,})'
 )
 
 # --- GCE / GCP ---

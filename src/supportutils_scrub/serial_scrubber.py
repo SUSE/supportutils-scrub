@@ -9,6 +9,8 @@ _SKIP_VALUES = frozenset({
     '0000000000', '00000000000000000000',
     'chassis serial number', 'system serial number',
     'base board serial number', 'not applicable',
+    'not available', 'no asset information', '"not available"',
+    '"no asset information"', '"none"',
 })
 
 _NULL_UUID_RE = re.compile(r'^0{8}-0{4}-0{4}-0{4}-0{12}$')

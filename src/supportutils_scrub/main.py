@@ -234,14 +234,13 @@ def _dataset_paths(dataset_dir, timestamp, hostname_dict=None, input_name=None, 
     """
     host_tag = ''
     if hostname_dict and input_name:
-        # Apply the same _scrub_name logic used for archive/folder naming
-        scrubbed = _scrub_name(input_name, hostname_dict)
-        if scrubbed != input_name:
-            # Extract the fake hostname that replaced the real one
-            for real, fake in sorted(hostname_dict.items(), key=lambda x: len(x[0]), reverse=True):
-                if real in input_name:
-                    host_tag = f"_{fake}"
-                    break
+        # Find which real hostname appears in the input name
+        # Check both the full hostname and the short name (before first dot)
+        for real, fake in sorted(hostname_dict.items(), key=lambda x: len(x[0]), reverse=True):
+            short = real.split('.')[0]
+            if real in input_name or short in input_name:
+                host_tag = f"_{fake}"
+                break
     base = f"obfuscation{host_tag}_{timestamp}"
     mapping_path = os.path.join(dataset_dir, f"{base}_mappings.json")
     audit_path   = os.path.join(dataset_dir, f"{base}_audit.json")
@@ -544,8 +543,9 @@ def run_folder_mode(args, logger):
     quiet = getattr(args, 'quiet', False)
     err = sys.stderr  # when --quiet, informational output goes to stderr
 
-    config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
-    config = config_reader.read_config(args.config)
+    config = getattr(args, '_preloaded_config', None)
+    if config is None:
+        config = ConfigReader(DEFAULT_CONFIG_PATH).read_config(args.config)
     dataset_dir = config.get('dataset_dir', '/var/tmp')
 
     if quiet:
@@ -613,7 +613,7 @@ def run_folder_mode(args, logger):
 
     # Now that hostname_dict is known, compute output paths with scrubbed hostname
     want_report = getattr(args, 'report', None) is not None
-    input_basename = os.path.basename(args.supportconfig_path[0])
+    input_basename = os.path.basename(args.supportconfig_path[0].rstrip('/'))
     dataset_path, audit_path, report_path = _dataset_paths(
         dataset_dir, timestamp, hostname_dict, input_name=input_basename, report=want_report)
     if want_report and isinstance(args.report, str):
@@ -1440,6 +1440,7 @@ def main():
     _early_config = _early_config_reader.read_config(args.config)
     args.secure_tmp       = args.secure_tmp       or _early_config.get('secure_tmp',       'no').lower() == 'yes'
     args.encrypt_mappings = args.encrypt_mappings or _early_config.get('encrypt_mappings', 'no').lower() == 'yes'
+    args._preloaded_config = _early_config  # reuse in sub-modes to avoid double read
 
     if args.encrypt_mappings and args.no_mappings:
         print("[!] --encrypt-mappings and --no-mappings are mutually exclusive.")
@@ -1589,7 +1590,7 @@ def main():
     # Compute output paths now that hostname_dict is known from processing
     hostname_dict_final = current_mappings.get('hostname', {})
     want_report = getattr(args, 'report', None) is not None
-    input_basename = os.path.basename(paths[0]) if paths else ''
+    input_basename = os.path.basename(paths[0].rstrip('/')) if paths else ''
     dataset_path, audit_path, report_path = _dataset_paths(
         dataset_dir, timestamp, hostname_dict_final, input_name=input_basename, report=want_report)
     if want_report and isinstance(args.report, str):

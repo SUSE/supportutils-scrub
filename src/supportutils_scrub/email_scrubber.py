@@ -3,9 +3,10 @@
 
 import re
 
+# Require local part starts with alnum, at least 2 alnum chars, domain has alnum start
 EMAIL_RE = re.compile(
     r'(?<![A-Za-z0-9._%+-])'
-    r'([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})'
+    r'([A-Za-z0-9][A-Za-z0-9._%+-]*[A-Za-z0-9]@[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,})'
     r'(?![A-Za-z0-9._%+-])'
 )
 

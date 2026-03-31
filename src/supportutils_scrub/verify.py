@@ -29,10 +29,12 @@ _MIN_VALUE_LEN = 6
 # Domains to never flag as leaks (vendor/infrastructure, not customer data)
 _SAFE_DOMAIN_VALUES = {
     'susecloud.net',
-    'suse.org',
-    'suse.com',
-    'suse.de',
+    'suse.org', 'suse.com', 'suse.de', 'suse.net',
     'opensuse.org',
+    'microsoft.com', 'microsoft.net',   # upstream vendor
+    'windowsupdate.com', 'windows.com',
+    'digicert.com', 'verisign.com',      # certificate authorities
+    'globalsign.com', 'comodo.com',
 }
 
 # Mirrors the lookbehind/lookahead in ip_scrubber.CIDR_RE so that IPs embedded
@@ -63,11 +65,10 @@ _SAFE_IPV4_ALWAYS = [
     ipaddress.IPv4Network('0.0.0.0/32'),          # unspecified
     ipaddress.IPv4Network('255.255.255.255/32'),  # broadcast
     ipaddress.IPv4Network('224.0.0.0/4'),         # multicast
-    # Common subnet masks (not real IPs)
-    ipaddress.IPv4Network('255.255.255.0/32'),
-    ipaddress.IPv4Network('255.255.0.0/32'),
-    ipaddress.IPv4Network('255.0.0.0/32'),
-    # Documentation/example ranges
+    # All subnet masks (255.x.x.x are never real host IPs)
+    ipaddress.IPv4Network('255.0.0.0/8'),
+    # IANA special-purpose / documentation ranges
+    ipaddress.IPv4Network('192.0.0.0/24'),        # IANA IPv4 special purpose
     ipaddress.IPv4Network('192.0.2.0/24'),        # TEST-NET-1
     ipaddress.IPv4Network('198.51.100.0/24'),     # TEST-NET-2
     ipaddress.IPv4Network('203.0.113.0/24'),      # TEST-NET-3
@@ -96,6 +97,10 @@ def _is_safe_ipv4(ip_str, safe_nets):
         addr = ipaddress.IPv4Address(ip_str)
     except ValueError:
         return True  # not a valid IP, ignore
+    # IPs with first octet <= 2 are almost never real network addresses —
+    # they are typically version strings (e.g. 2.12.0.4, 1.0.8.177)
+    if addr.packed[0] <= 2:
+        return True
     return any(addr in net for net in safe_nets)
 
 
@@ -123,9 +128,10 @@ def _is_safe_mac(mac_str):
 # ---------------------------------------------------------------------------
 # 3. Pattern scanning independent of mappings
 # ---------------------------------------------------------------------------
+# Require local part starts and ends with alnum (no leading dots/underscores)
 _EMAIL_RE = re.compile(
     r'(?<![A-Za-z0-9._%+-])'
-    r'([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})'
+    r'([A-Za-z0-9][A-Za-z0-9._%+-]*[A-Za-z0-9]@[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,})'
     r'(?![A-Za-z0-9._%+-])'
 )
 
@@ -133,7 +139,7 @@ _EMAIL_RE = re.compile(
 _SAFE_EMAIL_DOMAINS = {
     'example.com', 'example.org', 'example.net',
     'localhost', 'localhost.localdomain',
-    'suse.com', 'suse.de',                     # vendor
+    'suse.com', 'suse.de', 'suse.net',           # vendor
     'novell.com', 'microfocus.com',             # vendor legacy
     'kernel.org', 'linux.it', 'vger.kernel.org',# kernel upstream
     'gnu.org', 'fsf.org', 'gcc.gnu.org',        # GNU/FSF
@@ -171,10 +177,9 @@ _SECRET_PATTERNS = [
     (re.compile(r'AKIA[0-9A-Z]{16}'), 'AWS access key'),
     # JWT tokens
     (re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+'), 'JWT token'),
-    # Generic password assignments (word boundary to avoid matching "bypass:", "compass:", etc.)
-    # Skip values already redacted by supportconfig (*REMOVED BY SUPPORTCONFIG*)
-    # Skip values already scrubbed by password_scrubber (scrubbed_pass_*)
-    (re.compile(r'(?i)\b(?:password|passwd|pass)\s*[:=]\s*["\']?(?!\*REMOVED)(?!scrubbed_pass_)(\S{8,})'), 'password value'),
+    # Generic password assignments — only "password" and "passwd" with = delimiter
+    # Skip values already redacted by supportconfig or our scrubber
+    (re.compile(r'(?i)\b(?:password|passwd)\s*=\s*["\']?(?!\*REMOVED)(?!scrubbed_pass_)([A-Za-z0-9+/]{8,})'), 'password value'),
 ]
 
 # LDAP / Kerberos patterns
@@ -216,13 +221,45 @@ def _extract_identity_from_original(original_folder):
         'name', 'domain', 'service', 'server', 'system', 'network', 'default',
         'address', 'version', 'type', 'none', 'true', 'false', 'enabled',
         'disabled', 'unknown', 'localhost', 'specified', 'available',
-        'not specified', 'to be filled', 'not available',
+        'not specified', 'to be filled', 'not available', 'tracking',
+        'internet', 'ethernet', 'loopback', 'broadcast', 'multicast',
+        'protocol', 'interface', 'hardware', 'software', 'firmware',
+        'configuration', 'information', 'description', 'manufacturer',
+        'product name', 'serial number', 'asset tag',
     }
-    identity = {t for t in identity
-                if len(t) >= 8
-                and t.lower() not in _generic_words
-                and not t.isdigit()}
-    return identity
+    # IPs/MACs that are safe and should not be tracked as identity
+    _safe_identity_prefixes = (
+        '127.', '0.0.', '255.', '224.', '::1', 'fe80:', 'fd', 'ff0',  # loopback, broadcast, multicast, link-local, ULA, IPv6 multicast
+        '10.', '172.16.', '172.17.', '172.18.', '172.19.',
+        '172.20.', '172.21.', '172.22.', '172.23.', '172.24.',
+        '172.25.', '172.26.', '172.27.', '172.28.', '172.29.',
+        '172.30.', '172.31.',
+        '192.168.', '169.254.',  # private, link-local
+    )
+    # Local/mDNS domains that are not sensitive customer data
+    _safe_identity_suffixes = ('.box', '.local', '.localdomain', '.arpa')
+    filtered = set()
+    for t in identity:
+        # Strip surrounding quotes
+        t = t.strip("'\"")
+        if len(t) < 8:
+            continue
+        tl = t.lower()
+        if tl in _generic_words:
+            continue
+        if t.isdigit():
+            continue
+        # Skip safe/private IPs and link-local/ULA IPv6
+        if any(t.startswith(p) for p in _safe_identity_prefixes):
+            continue
+        # Skip local/mDNS/ARPA domains
+        if any(t.lower().endswith(s) for s in _safe_identity_suffixes):
+            continue
+        # Skip vendor/infrastructure domains
+        if t.lower() in _SAFE_DOMAIN_VALUES:
+            continue
+        filtered.add(t)
+    return filtered
 
 
 def _safe_read(filepath):
@@ -271,13 +308,28 @@ def _parse_network_txt(folder, identity):
     # Extract MACs from link/ether
     for m in re.finditer(r'link/ether\s+([0-9a-fA-F:]{17})', text):
         identity.add(m.group(1))
-    # DNS servers from /etc/resolv.conf
-    for m in re.finditer(r'nameserver\s+(\S+)', text):
-        identity.add(m.group(1))
-    # Search/domain directives
-    for m in re.finditer(r'(?:search|domain)\s+(.+)', text):
-        for domain in m.group(1).split():
-            identity.add(domain)
+    # DNS servers from /etc/resolv.conf (only in resolv.conf section)
+    in_resolv = False
+    for line in text.splitlines():
+        if '# /etc/resolv.conf' in line or '# resolv.conf' in line:
+            in_resolv = True
+            continue
+        if in_resolv and line.startswith('#') and line.strip() != '#':
+            in_resolv = False
+        if in_resolv:
+            m = re.match(r'^\s*nameserver\s+(\S+)', line)
+            if m:
+                identity.add(m.group(1))
+            # search/domain only at line start (not inside /etc/services entries)
+            m = re.match(r'^\s*(?:search|domain)\s+(.+)', line)
+            if m:
+                for domain in m.group(1).split():
+                    # skip port/protocol patterns and bracketed names
+                    if re.match(r'^\d+/(tcp|udp)$', domain):
+                        continue
+                    if domain.startswith('[') or domain.startswith('#'):
+                        continue
+                    identity.add(domain)
 
 
 def _parse_hardware_txt(folder, identity):

@@ -202,6 +202,11 @@ class IPScrubber:
         for real_net, fake_net in self._sorted_subnets:
             if ip in real_net:
                 off = int(ip) - int(real_net.network_address)
+                # Clamp offset to fake subnet size to prevent overflow when
+                # real subnet is larger than fake (e.g. real /8 → fake /15)
+                fake_size = fake_net.num_addresses
+                if fake_size > 0:
+                    off = off % fake_size
                 return str(IPv4Address(int(fake_net.network_address) + off))
         return None
 
@@ -232,6 +237,7 @@ class IPScrubber:
         
         mapped = self._map_in_subnets(ip_str)
         if mapped:
+            self.ip_dict[ip_str] = mapped  # record in mapping file
             return mapped + (f"/{pfx_str}" if pfx_str else "")
 
         # If no known subnet yet then create logical subnet and map by offset
@@ -281,8 +287,10 @@ class IPScrubber:
 
             start = m.start()
             snippet = text[max(0, start-20):start].lower()
-            if 'version' in snippet or snippet.rstrip().endswith('ver'):
-                return m.group(0)  
+            # Skip version strings like "version 2.12.0.4" or "ver 1.0"
+            # but NOT "nameserver x.x.x.x" (nameserver ends with 'ver' accidentally)
+            if re.search(r'\bver(?:sion)?\s*$', snippet.rstrip()):
+                return m.group(0)
 
             return self._scrub_token(ip, pfx)
         

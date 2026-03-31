@@ -11,7 +11,7 @@ _PASSWORD_RE = re.compile(
     r'(?i)(\b(?:password|passwd)\s*=\s*["\']?)'     # keyword + = delimiter
     r'(?!\*REMOVED)'                                  # skip supportconfig-redacted
     r'(?!scrubbed_pass_)'                             # skip already-scrubbed
-    r'([A-Za-z0-9+/=_.-]{8,})'                       # credential-like value (8+ chars, no spaces)
+    r'([A-Za-z0-9+/]{8,})'                           # credential-like value (hex/base64, no = - . _)
 )
 
 
