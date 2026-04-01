@@ -16,7 +16,7 @@ _CATEGORIES = [
     ('ip',       'IPv4 address',  'ip'),
     ('ipv6',     'IPv6 address',  'substring'),
     ('mac',      'MAC address',   'substring'),
-    ('domain',   'domain',        'substring'),
+    ('domain',   'domain',        'domain'),
     ('hostname', 'hostname',      'boundary'),
     ('user',     'username',      'boundary'),
     ('keyword',  'keyword',       'substring'),
@@ -393,6 +393,10 @@ def _build_terms(mappings: dict):
             elif mode == 'ip':
                 regex_parts.append(_IP_BOUNDARY.format(re.escape(real_val)))
                 match_labels[real_val] = label
+            elif mode == 'domain':
+                # Match same boundary as domain_scrubber: not preceded/followed by \w or -
+                regex_parts.append(r'(?<![\w\-])' + re.escape(real_val) + r'(?![\w\-])')
+                match_labels[real_val] = label
             else:
                 substring_terms.append((real_val, label))
 
@@ -567,6 +571,10 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
                                 dn_val = m.group(0)
                                 # Skip example/placeholder DNs
                                 if 'example' in dn_val.lower():
+                                    continue
+                                # Skip DNs that already contain our fake domain values
+                                if _FAKE_VALUE_RE.search(dn_val) or \
+                                        re.search(r'DC=domain_\d+', dn_val, re.IGNORECASE):
                                     continue
                                 findings.append({
                                     'file': rel, 'line': lineno,
