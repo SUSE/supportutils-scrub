@@ -5,9 +5,9 @@ from ipaddress import IPv4Address, IPv4Network, ip_network
 
 OCTET = r'(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)'
 CIDR_RE = re.compile(
-    rf'(?<![A-Za-z0-9.\-])'             
+    rf'(?<![A-Za-z0-9.\-/])'
     rf'(?P<ip>{OCTET}\.{OCTET}\.{OCTET}\.{OCTET})'
-    rf'(?![A-Za-z0-9.\-])'              
+    rf'(?![A-Za-z0-9.\-])'
     r'(?:/(?P<pfx>\d{1,2}))?'
 )
 
