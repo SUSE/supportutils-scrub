@@ -5,8 +5,10 @@ import re
 import ipaddress
 from typing import Dict, Tuple, List, Iterable, Match, Optional
 
-# Dots allowed inside (for IPv4-mapped addresses) but must not end with a dot
-CANDIDATE_V6 = re.compile(r"(?<![A-Za-z0-9:_-])([0-9A-Fa-f:.]+[0-9A-Fa-f])(?:/(\d{1,3}))?(?![A-Za-z0-9:_-])")
+# Dots allowed inside (for IPv4-mapped addresses) but must not end with a dot.
+# Lookahead: reject alnum/_/- continuation, and reject : only if followed by hex
+# (more IPv6 content). Allow ": " (end of address before log message text).
+CANDIDATE_V6 = re.compile(r"(?<![A-Za-z0-9:_-])([0-9A-Fa-f:.]+[0-9A-Fa-f])(?:/(\d{1,3}))?(?![A-Za-z0-9_-])(?!:[0-9A-Fa-f])")
 
 UNSPECIFIED = ipaddress.IPv6Network("::/128")
 LOOPBACK    = ipaddress.IPv6Network("::1/128")
