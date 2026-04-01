@@ -14,6 +14,7 @@ EMAIL_RE = re.compile(
 _SKIP_SUFFIXES = (
     '.service', '.socket', '.timer', '.target', '.mount',
     '.slice', '.scope', '.path', '.device', '.conf', '.tmp',
+    '.catalog',  # gettext/locale catalog files (e.g. systemd.be@latin.catalog)
 )
 
 # Domains that are vendor/upstream — not customer data, safe to keep

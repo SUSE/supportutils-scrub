@@ -158,7 +158,8 @@ _FAKE_EMAIL_TLDS = {'mo', 'po', 'gmo'}
 
 # Systemd unit suffixes — name@instance.service is not an email
 _SYSTEMD_SUFFIXES = ('.service', '.socket', '.timer', '.target', '.mount',
-                     '.slice', '.scope', '.path', '.device', '.conf', '.tmp')
+                     '.slice', '.scope', '.path', '.device', '.conf', '.tmp',
+                     '.catalog')
 
 # NFS/system default pseudo-domains
 _SAFE_EMAIL_DOMAINS.update({
