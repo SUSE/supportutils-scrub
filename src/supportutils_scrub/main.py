@@ -33,8 +33,8 @@ import shlex
 from supportutils_scrub.serial_scrubber import SerialScrubber
 from supportutils_scrub.verify import verify_scrubbed_folder
 
-SCRIPT_VERSION = "1.3"
-SCRIPT_DATE = "2026-03-09"
+SCRIPT_VERSION = "1.4"
+SCRIPT_DATE = "2026-04-01"
 
 EXIT_OK           = 0   # success
 EXIT_ERROR        = 1   # fatal error
@@ -49,12 +49,12 @@ def print_header(file=None):
     print("                      Version : {:<12}".format(SCRIPT_VERSION), file=file)
     print("                 Release Date : {:<12}".format(SCRIPT_DATE), file=file)
     print(file=file)
-    print(" supportutils-scrub is a python based tool that masks sensitive", file=file)
-    print(" information from SUSE supportconfig tarballs. It replaces data such as", file=file)
-    print(" IPv4, IPv6, domain names, usernames, hostnames, MAC addresses,", file=file)
-    print(" hardware serial numbers, system UUIDs, and custom keywords in a", file=file)
-    print(" consistent way throughout the archive.", file=file)
-    print(" Mappings are saved to /var/tmp/obfuscation_mappings_TIMESTAMP.json", file=file)
+    print(" supportutils-scrub masks sensitive information from SUSE supportconfig", file=file)
+    print(" tarballs, directories, plain files, and network captures. It replaces", file=file)
+    print(" IPv4/IPv6 addresses, MAC addresses, domain names, hostnames, usernames,", file=file)
+    print(" hardware serials, UUIDs, email addresses, passwords, and cloud tokens", file=file)
+    print(" (AWS/Azure/GCE) consistently across all files in the archive.", file=file)
+    print(" Mappings are saved to /var/tmp/obfuscation_HOSTNAME_TIMESTAMP_mappings.json", file=file)
     print(" (or .json.enc with --encrypt-mappings) and can be reused across runs", file=file)
     print(" with --mappings to keep values consistent across multiple archives.", file=file)
     print("=" * 77 + "\n", file=file)
@@ -74,8 +74,9 @@ def print_footer(file=None):
         file = sys.stdout
     print(" The obfuscated supportconfig has been successfully created. Please review", file=file)
     print(" its contents to ensure that all sensitive information has been properly", file=file)
-    print(" obfuscated. If some values or keywords were not obfuscated automatically,", file=file)
-    print(" you can manually add them using the keyword obfuscation option.", file=file)
+    print(" obfuscated. Use --verify to perform a multi-layer post-scrub scan for", file=file)
+    print(" remaining sensitive data. If some values were not obfuscated automatically,", file=file)
+    print(" use --keywords or --keyword-file to add them manually.", file=file)
     print("=" * 77 + "\n", file=file)
 
 def parse_args():

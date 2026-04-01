@@ -74,9 +74,10 @@ class FileProcessor:
         obfuscation_occurred = False
 
         BINARY_SA_PATTERN = re.compile(r"^sa\d{8}(\.xz)?$")
+        BINARY_OBJ_PATTERN = re.compile(r"^.*\.obj$", re.IGNORECASE)
         base_name = os.path.basename(file_path)
 
-        if BINARY_SA_PATTERN.match(base_name):
+        if BINARY_SA_PATTERN.match(base_name) or BINARY_OBJ_PATTERN.match(base_name):
             print(f"        {base_name} [binary] (removed)")
             try:
                 os.remove(file_path)

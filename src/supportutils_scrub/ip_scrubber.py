@@ -287,9 +287,11 @@ class IPScrubber:
 
             start = m.start()
             snippet = text[max(0, start-20):start].lower()
-            # Skip version strings like "version 2.12.0.4", "Version: 2.12.0.4", "ver 1.0"
+            # Skip version strings like "version 2.12.0.4", "Version: 2.12.0.4",
+            # 'EXTENSION_VERSION": "2.0.0.7"', "ver 1.0"
             # but NOT "nameserver x.x.x.x" (nameserver ends with 'ver' accidentally)
-            if re.search(r'\bver(?:sion)?[\s:=]*$', snippet.rstrip()):
+            # (?:^|(?<=[\b_]))ver — match ver at word boundary OR after underscore
+            if re.search(r'(?:\b|_)ver(?:sion)?[\s:="\']*$', snippet.rstrip()):
                 return m.group(0)
 
             return self._scrub_token(ip, pfx)

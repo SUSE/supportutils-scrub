@@ -39,7 +39,8 @@ _SAFE_DOMAIN_VALUES = {
 
 # Mirrors the lookbehind/lookahead in ip_scrubber.CIDR_RE so that IPs embedded
 # in version strings (e.g. "nftables-1.4.4.2") are not flagged as leaks.
-_IP_BOUNDARY = r'(?<![A-Za-z0-9.\-]){}(?![A-Za-z0-9.\-])'
+# Must match CIDR_RE boundaries in ip_scrubber.py (includes / to skip paths)
+_IP_BOUNDARY = r'(?<![A-Za-z0-9.\-/]){}(?![A-Za-z0-9.\-])'
 
 # ---------------------------------------------------------------------------
 # 1. IP allowlist — structural guarantee
@@ -48,7 +49,7 @@ _IP_BOUNDARY = r'(?<![A-Za-z0-9.\-]){}(?![A-Za-z0-9.\-])'
 # Anything else is flagged as a potential leak.
 _OCTET = r'(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)'
 _IP_RE = re.compile(
-    rf'(?<![A-Za-z0-9.\-])'
+    rf'(?<![A-Za-z0-9.\-/])'
     rf'({_OCTET}\.{_OCTET}\.{_OCTET}\.{_OCTET})'
     rf'(?![A-Za-z0-9.\-])'
 )
