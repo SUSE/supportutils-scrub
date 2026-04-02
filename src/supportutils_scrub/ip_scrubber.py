@@ -5,7 +5,7 @@ from ipaddress import IPv4Address, IPv4Network, ip_network
 
 OCTET = r'(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)'
 CIDR_RE = re.compile(
-    rf'(?<![A-Za-z0-9.\-/])'
+    rf'(?<![A-Za-z0-9.\-])'
     rf'(?P<ip>{OCTET}\.{OCTET}\.{OCTET}\.{OCTET})'
     rf'(?![A-Za-z0-9.\-])'
     r'(?:/(?P<pfx>\d{1,2}))?'
@@ -25,7 +25,7 @@ class IPScrubber:
         self.config = config       
         self.subnet_dict = dict(mappings.get('subnet', {}))
         self.category_pools = {
-            'public':      IPv4Network(self.config.get('public_pool', '198.18.0.0/15')),   
+            'public':      IPv4Network(self.config.get('public_pool', '198.16.0.0/12')),   
             'priv10':      IPv4Network(self.config.get('pool_10',       '100.80.0.0/12')),  
             'priv172':     IPv4Network(self.config.get('pool_172',      '100.96.0.0/12')),  
             'priv192_168': IPv4Network(self.config.get('pool_192_168',  '100.112.0.0/12')), 
@@ -39,9 +39,23 @@ class IPScrubber:
         self._sanitize_ip_map()
         
         self._real_to_fake = {}
+        self._used_slots = set()  # /24-slot bitmap for fast overlap checking
         for k, v in self.subnet_dict.items():
             try:
-                self._real_to_fake[IPv4Network(k)] = IPv4Network(v)
+                real_net = IPv4Network(k)
+                fake_net = IPv4Network(v)
+                self._real_to_fake[real_net] = fake_net
+                # Mark fake slots as used
+                for cat_key, pool in self.category_pools.items():
+                    pool_start = int(pool.network_address)
+                    pool_end = int(pool.broadcast_address) + 1
+                    fake_start = int(fake_net.network_address)
+                    if pool_start <= fake_start < pool_end:
+                        slot_start = (fake_start - pool_start) // 256
+                        slot_count = max(1, fake_net.num_addresses // 256)
+                        for s in range(slot_start, slot_start + slot_count):
+                            self._used_slots.add(s)
+                        break
             except:
                 pass
         # Cache sorted by prefixlen desc; rebuilt whenever a new subnet is added
@@ -80,11 +94,22 @@ class IPScrubber:
         except:
             return 'public'
 
+    # RFC1918 + loopback + link-local only.
+    # Intentionally excludes 198.18.0.0/15 (IANA benchmarking / our fake pool)
+    # and other special-purpose ranges that Python's is_private includes.
+    _PRIVATE_NETS = [
+        IPv4Network('10.0.0.0/8'),
+        IPv4Network('172.16.0.0/12'),
+        IPv4Network('192.168.0.0/16'),
+        IPv4Network('127.0.0.0/8'),
+        IPv4Network('169.254.0.0/16'),
+    ]
+
     def _is_private(self, ip_str):
-        """Check if IP is private"""
+        """Check if IP is RFC1918 private, loopback, or link-local."""
         try:
             ip = IPv4Address(ip_str)
-            return ip.is_private or ip.is_loopback or ip.is_link_local
+            return any(ip in net for net in self._PRIVATE_NETS)
         except:
             return False
 
@@ -97,8 +122,7 @@ class IPScrubber:
         """
         Allocate a fake subnet from the specified pool.
         Maintains the same prefix length as the original subnet.
-        Only checks conflicts against same-size fake subnets so that a large
-        allocated fake (e.g. /16) does not block all /24 slots inside it.
+        Uses a /24-slot bitmap for O(1) overlap checking.
         """
         pool = self.category_pools[cat_key]
 
@@ -109,20 +133,21 @@ class IPScrubber:
         start = int(pool.network_address)
         end   = int(pool.broadcast_address) + 1
 
-        # Only compare against fake subnets of the same prefix length to avoid
-        # a single large fake subnet (e.g. /16) exhausting all smaller slots.
-        same_size_fakes = {n for n in self._real_to_fake.values() if n.prefixlen == prefixlen}
-
         cursor = self._pool_cursor.get(cat_key, 0)
         for _ in range((end - start) // step):
             base = start + ((cursor // step) * step)
             if base >= end:
                 cursor = 0
                 base = start
-            cand = IPv4Network((base, prefixlen))
-            if not any(cand.overlaps(n) for n in same_size_fakes):
+            # Check /24-slot bitmap for overlap
+            slot_start = (base - start) // 256
+            slot_count = max(1, step // 256)
+            if not any(s in self._used_slots for s in range(slot_start, slot_start + slot_count)):
+                # Mark slots as used
+                for s in range(slot_start, slot_start + slot_count):
+                    self._used_slots.add(s)
                 self._pool_cursor[cat_key] = (base - start) + step
-                return cand
+                return IPv4Network((base, prefixlen))
             cursor += step
 
         raise RuntimeError(f"Pool {pool} exhausted for /{prefixlen}")
@@ -202,11 +227,6 @@ class IPScrubber:
         for real_net, fake_net in self._sorted_subnets:
             if ip in real_net:
                 off = int(ip) - int(real_net.network_address)
-                # Clamp offset to fake subnet size to prevent overflow when
-                # real subnet is larger than fake (e.g. real /8 → fake /15)
-                fake_size = fake_net.num_addresses
-                if fake_size > 0:
-                    off = off % fake_size
                 return str(IPv4Address(int(fake_net.network_address) + off))
         return None
 
@@ -248,6 +268,10 @@ class IPScrubber:
             self.ip_dict[ip_str] = mapped_ip
             return mapped_ip + (f"/{pfx_str}" if pfx_str else "")
 
+        # Pool exhaustion fallback — ip_dict may have been set directly
+        if ip_str in self.ip_dict:
+            return self.ip_dict[ip_str] + (f"/{pfx_str}" if pfx_str else "")
+
         return ip_str + (f"/{pfx_str}" if pfx_str else "")
         
 
@@ -266,6 +290,17 @@ class IPScrubber:
         try:
             self._ensure_fake_subnet(real_net)
         except RuntimeError:
+            # Pool exhausted — hash the network part, preserve host byte
+            import hashlib
+            pool = self.category_pools.get(self._classify_ip(ip_str))
+            pool_start = int(pool.network_address)
+            pool_slots = pool.num_addresses // 256  # number of /24 slots
+            host_byte = int(ip_str.split('.')[-1])   # preserve last octet
+            net_part = ip_str.rsplit('.', 1)[0]
+            h = int(hashlib.md5(net_part.encode()).hexdigest()[:8], 16)
+            fake_base = pool_start + ((h % pool_slots) * 256)
+            fake_ip = str(IPv4Address(fake_base + host_byte))
+            self.ip_dict[ip_str] = fake_ip
             return None, None
         return real_net, self._real_to_fake.get(real_net)
 
@@ -292,6 +327,10 @@ class IPScrubber:
             # but NOT "nameserver x.x.x.x" (nameserver ends with 'ver' accidentally)
             # (?:^|(?<=[\b_]))ver — match ver at word boundary OR after underscore
             if re.search(r'(?:\b|_)ver(?:sion)?[\s:="\']*$', snippet.rstrip()):
+                return m.group(0)
+            # Skip version numbers in file paths: /4.0.14.41/ir_agent
+            # but NOT URLs: ldaps://147.204.152.42 (preceded by ://)
+            if snippet.endswith('/') and not snippet.endswith('://'):
                 return m.group(0)
 
             return self._scrub_token(ip, pfx)

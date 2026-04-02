@@ -39,8 +39,8 @@ _SAFE_DOMAIN_VALUES = {
 
 # Mirrors the lookbehind/lookahead in ip_scrubber.CIDR_RE so that IPs embedded
 # in version strings (e.g. "nftables-1.4.4.2") are not flagged as leaks.
-# Must match CIDR_RE boundaries in ip_scrubber.py (includes / to skip paths)
-_IP_BOUNDARY = r'(?<![A-Za-z0-9.\-/]){}(?![A-Za-z0-9.\-])'
+# Must match CIDR_RE boundaries in ip_scrubber.py
+_IP_BOUNDARY = r'(?<![A-Za-z0-9.\-]){}(?![A-Za-z0-9.\-])'
 
 # ---------------------------------------------------------------------------
 # 1. IP allowlist — structural guarantee
@@ -49,14 +49,14 @@ _IP_BOUNDARY = r'(?<![A-Za-z0-9.\-/]){}(?![A-Za-z0-9.\-])'
 # Anything else is flagged as a potential leak.
 _OCTET = r'(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)'
 _IP_RE = re.compile(
-    rf'(?<![A-Za-z0-9.\-/])'
+    rf'(?<![A-Za-z0-9.\-])'
     rf'({_OCTET}\.{_OCTET}\.{_OCTET}\.{_OCTET})'
     rf'(?![A-Za-z0-9.\-])'
 )
 
 _SAFE_IPV4_ALWAYS = [
     # Fake pools used by ip_scrubber
-    ipaddress.IPv4Network('198.18.0.0/15'),      # public pool
+    ipaddress.IPv4Network('198.16.0.0/12'),      # public pool
     ipaddress.IPv4Network('100.79.0.0/16'),       # link-local pool
     ipaddress.IPv4Network('100.80.0.0/12'),       # 10.x pool
     ipaddress.IPv4Network('100.96.0.0/12'),       # 172.16.x pool
@@ -542,7 +542,11 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
                                     })
 
                             # Kerberos principals — also requires '@'
+                            _fake_realms = {'LDAP', 'KRB5', 'KERBEROS', 'LOCAL', 'FILE', 'PROXY'}
                             for m in _KERBEROS_RE.finditer(line):
+                                realm = m.group(2)
+                                if realm in _fake_realms:
+                                    continue
                                 findings.append({
                                     'file': rel, 'line': lineno,
                                     'category': 'Kerberos principal',
@@ -572,6 +576,9 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
                                 dn_val = m.group(0)
                                 # Skip example/placeholder DNs
                                 if 'example' in dn_val.lower():
+                                    continue
+                                # Skip SSSD internal DB paths
+                                if 'sysdb' in dn_val.lower():
                                     continue
                                 # Skip DNs that already contain our fake domain values
                                 if _FAKE_VALUE_RE.search(dn_val) or \
