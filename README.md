@@ -10,6 +10,7 @@
 - **Hardware Serial Number / UUID Obfuscation** (v1.3+): Detects and replaces hardware serial numbers and system UUIDs from `dmidecode` output (`Serial Number:`, `UUID:`, `Asset Tag:`). Placeholder values like `Not Specified` are not touched.
 - **Email Address Obfuscation** (v1.3+): Detects and replaces email addresses consistently across all files. Systemd template units (e.g., `user@1000.service`) and vendor/upstream addresses (kernel.org, suse.com, etc.) are preserved.
 - **Password Value Obfuscation** (v1.3+): Replaces password values in configuration lines (e.g., `password=secret123`) while preserving the key prefix. Values already redacted by supportconfig (`*REMOVED BY SUPPORTCONFIG*`) are skipped.
+- **Cloud Token / Credential Obfuscation** (v1.4+): Detects and replaces AWS access keys (AKIA/ASIA), AWS secret keys, Azure connection strings and SAS tokens, GCP private keys, JWTs, and bearer tokens.
 - **Flexible Input Modes** (v1.2+): Accepts `.txz`/`.tgz` supportconfigs, `crm_report`/`hb_report` `.tar.gz` archives, plain directories, single files, and stdin — making it easy to obfuscate the output of commands like `journalctl` directly in a pipeline.
 - **Multi-Archive / Cluster Support** (v1.2+): Process multiple supportconfigs in one run with shared mappings, keeping values consistent across all HA cluster nodes.
 - **PCAP Obfuscation**: Rewrites tcpdump captures using the same subnet-aware IP mappings via `tcprewrite`, ensuring logs and packet captures tell a consistent story.
@@ -45,7 +46,7 @@ For direct RPM downloads or other distributions, visit the Open Build Service pa
 ### 2. Install with pip
 
 ```bash
-git clone https://github.com/SUSE/supportutils-scrub
+git clone https://github.com/openSUSE/supportutils-scrub
 cd supportutils-scrub
 pip install .
 ```
@@ -53,7 +54,7 @@ pip install .
 ### 3. Using the Git folder
 
 ```bash
-git clone https://github.com/SUSE/supportutils-scrub
+git clone https://github.com/openSUSE/supportutils-scrub
 cd supportutils-scrub
 export PYTHONPATH=$PWD/src:$PYTHONPATH
 ./bin/supportutils-scrub /var/log/scc_terminus_250814_1549.txz --verbose
@@ -76,15 +77,15 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
 ```
 =============================================================================
           Obfuscation Utility - supportutils-scrub
-                      Version : 1.3
-                 Release Date : 2026-03-09
+                      Version : 1.4
+                 Release Date : 2026-04-01
 
- supportutils-scrub is a python based tool that masks sensitive
- information from SUSE supportconfig tarballs. It replaces data such as
- IPv4, IPv6, domain names, usernames, hostnames, MAC addresses,
- hardware serial numbers, system UUIDs, and custom keywords in a
- consistent way throughout the archive.
- Mappings are saved to /var/tmp/obfuscation_mappings_TIMESTAMP.json
+ supportutils-scrub masks sensitive information from SUSE supportconfig
+ tarballs, directories, plain files, and network captures. It replaces
+ IPv4/IPv6 addresses, MAC addresses, domain names, hostnames, usernames,
+ hardware serials, UUIDs, email addresses, passwords, and cloud tokens
+ (AWS/Azure/GCE) consistently across all files in the archive.
+ Mappings are saved to /var/tmp/obfuscation_HOSTNAME_TIMESTAMP_mappings.json
  (or .json.enc with --encrypt-mappings) and can be reused across runs
  with --mappings to keep values consistent across multiple archives.
 =============================================================================
@@ -110,8 +111,11 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
 | IPv6 addresses obfuscated : 44
 | IPv6 subnets obfuscated   : 2
 | Serials/UUIDs obfuscated  : 3
+| Emails obfuscated         : 2
+| Passwords obfuscated      : 1
+| Cloud tokens obfuscated   : 0
 | Keywords obfuscated       : 2
-| Total obfuscation entries : 175
+| Total obfuscation entries : 180
 | Size                      : 1.97 MB
 | Owner                     : root
 | Output archive            : /var/log/scc_hostname_1_250814_1549_scrubbed.txz
@@ -318,6 +322,9 @@ The mapping file (`/var/tmp/obfuscation_mappings_*.json`) records every translat
     "password": {
         "ce99185f0ff046d3": "scrubbed_pass_1"
     },
+    "cloud_token": {
+        "AKIA...EXAMPLE": "SCRUBBED_AWS_KEY_1"
+    },
     "subnet": {
         "10.168.196.0/24": "100.80.0.0/24",
         "148.251.5.0/24": "198.18.0.0/24",
@@ -350,8 +357,8 @@ After every run, an audit log is written to `/var/tmp/obfuscation_audit_TIMESTAM
 ```json
 {
     "tool":         "supportutils-scrub",
-    "version":      "1.3",
-    "timestamp":    "2026-03-09T14:22:01Z",
+    "version":      "1.4",
+    "timestamp":    "2026-04-04T14:22:01Z",
     "operator":     "root",
     "hostname":     "myserver",
     "mode":         "archive",
