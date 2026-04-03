@@ -11,6 +11,7 @@ _SKIP_SUFFIXES = (
     '.service', '.socket', '.timer', '.target', '.mount',
     '.slice', '.scope', '.path', '.device', '.conf', '.tmp',
     '.catalog',  
+)
 
 _SAFE_DOMAINS = {
     'example.com', 'example.org', 'example.net',
