@@ -454,23 +454,6 @@ supportutils-scrub /var/log/scc_node1.txz \
     --verify --report /var/tmp/scrub_report_$(date +%Y%m%d).json
 ```
 
-## supportconfig Integration
-
-`supportutils-scrub` is designed to be called directly from the `supportconfig` script. Set defaults via the environment variable so `supportconfig` can pass options without changing the call interface:
-
-```bash
-export SUPPORTUTILS_SCRUB_OPTS="--quiet --output-dir /var/log/scrubbed"
-supportutils-scrub /var/log/scc_node1.txz
-```
-
-Exit codes for programmatic use:
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | Fatal error |
-| 2 | Completed with warnings |
-| 3 | `--verify` found remaining sensitive data |
-
 ## License
 
 This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; version 2 of the License.
