@@ -6,7 +6,6 @@ from typing import Set, Dict, List, Optional, Tuple, Iterable, Match
 LABEL = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
 DOMAIN_RE = re.compile(rf"(?<![\w-])({LABEL}(?:\.{LABEL})+)(?![\w-])", re.IGNORECASE)
 
-# Matches LDAP DN DC components: DC=example,DC=com or dc=example,dc=com
 _DC_RE = re.compile(r'(DC=[A-Za-z0-9-]+(?:,DC=[A-Za-z0-9-]+)+)', re.IGNORECASE)
 
 _SINGLE_LABEL_BAN = {
@@ -14,21 +13,13 @@ _SINGLE_LABEL_BAN = {
     "net", "org", "com", "edu", "gov", "mil", "int", "arpa"
 }
 
-# Only strings whose rightmost label (TLD) is in this set are treated as real domains.
-# This prevents D-Bus names, container runtime interfaces, version strings, systemd
-# scopes, hardware IDs, etc. from being mistaken for domains.
 _VALID_TLDS = frozenset({
-    # Classic gTLDs
     "com", "org", "net", "edu", "gov", "mil", "int", "arpa",
-    # Widely-used infrastructure / tech gTLDs
     "io", "co", "biz", "info", "name", "mobi", "tel", "cat", "jobs", "pro",
     "aero", "coop", "museum", "travel",
-    # New gTLDs common in enterprise/cloud
     "cloud", "tech", "dev", "app", "ai", "online", "digital", "global",
     "email", "zone", "host", "data", "software",
-    # Regional
     "us", "eu",
-    # ccTLDs (ISO 3166-1 alpha-2)
     "ac", "ad", "ae", "af", "ag", "al", "am", "ao", "ar", "at", "au", "az",
     "ba", "bb", "bd", "be", "bf", "bg", "bh", "bi", "bj", "bm", "bn", "bo",
     "br", "bs", "bt", "bw", "by", "bz",
@@ -61,15 +52,12 @@ _VALID_TLDS = frozenset({
 })
 
 def _norm(d: str) -> str:
-    """Normalizes a domain by stripping whitespace, trailing dots, and converting to lowercase."""
     return d.strip().rstrip(".").lower()
 
 def _labels_count(d: str) -> int:
-    """Counts the number of labels in a domain."""
     return _norm(d).count(".") + 1
 
 def _is_valid_domain(d: str) -> bool:
-    """Performs basic validation on a domain string."""
     d = _norm(d)
     if "." not in d:
         return False
@@ -87,48 +75,38 @@ def _is_valid_domain(d: str) -> bool:
             return False
         if not re.fullmatch(r"[a-zA-Z0-9-]+", p):
             return False
-    # Reject anything whose TLD is not a known real TLD.
-    # This prevents D-Bus names, container runtime interfaces, version strings,
-    # systemd scopes, hardware IDs, etc. from being treated as domains.
     if parts[-1].lower() not in _VALID_TLDS:
         return False
     return True
 
 def _sort_specific_first(domains: Iterable[str]) -> List[str]:
-    """Sorts domains by the number of labels, then by length, to ensure most-specific comes first."""
+    """Sort domains most-specific first (by label count, then length)."""
     uniq = {_norm(d) for d in domains if _is_valid_domain(d)}
     return sorted(uniq, key=lambda s: (_labels_count(s), len(s)), reverse=True)
 
 def _dc_to_domain(dc_str: str) -> str:
-    """Converts 'DC=example,DC=com' to 'example.com'."""
     return '.'.join(re.findall(r'(?i)DC=([A-Za-z0-9-]+)', dc_str)).lower()
 
 def _domain_to_dc(domain: str) -> str:
-    """Converts 'example.com' to 'DC=example,DC=com'."""
     return ','.join(f'DC={label}' for label in domain.split('.'))
 
 class DomainScrubber:
 
 
     def __init__(self, domain_dict: Dict[str, str]):
-        # Normalize keys and filter out any invalid domain entries
         self.domain_dict: Dict[str, str] = {
             _norm(real): fake
             for real, fake in (domain_dict or {}).items()
             if _is_valid_domain(real)
         }
 
-        # Build one compiled regex alternation for all domains, ordered by specificity
         self._ordered_domains = _sort_specific_first(self.domain_dict.keys())
         if self._ordered_domains:
             alternates = "|".join(re.escape(d) for d in self._ordered_domains)
-            # Use a negative lookbehind/ahead for safer boundaries; ignore case
             self._re = re.compile(rf"(?<![\w-])(?:{alternates})(?![\w-])", re.IGNORECASE)
         else:
             self._re = None
 
-        # Build DC= (LDAP distinguished name) format mappings
-        # e.g. 'example.com' -> 'domain_0' becomes 'DC=example,DC=com' -> 'DC=domain_0'
         self._dc_dict: Dict[str, str] = {}
         for real, fake in self.domain_dict.items():
             self._dc_dict[_domain_to_dc(real).lower()] = _domain_to_dc(fake)
@@ -139,7 +117,6 @@ class DomainScrubber:
             self._dc_re = None
 
     def scrub(self, text: str) -> str:
-        """Replaces all known domains in a block of text using a single regex pass."""
         if self._re:
             def _replacer(match: Match) -> str:
                 found_domain = _norm(match.group(0))
@@ -157,11 +134,7 @@ class DomainScrubber:
 
     @staticmethod
     def extract_domains_from_text(text: str) -> List[str]:
-        """
-        Finds FQDNs in text and extracts only the valid, multi-label domain parts.
-        For example, from 'metadata.google.internal', it extracts 'google.internal'.
-        It also extracts parent domains (e.g., from 'a.b.c.com', it adds 'b.c.com' and 'c.com').
-        """
+        """Extract valid domains from text, including parent domains."""
         if not text:
             return []
 
@@ -179,7 +152,6 @@ class DomainScrubber:
                 if _is_valid_domain(parent_domain):
                     all_domain_parts.add(parent_domain)
 
-        # Also extract domains from LDAP DN DC= format (e.g. DC=example,DC=com)
         for m in _DC_RE.finditer(text):
             domain = _dc_to_domain(m.group(1))
             if _is_valid_domain(domain):
@@ -189,9 +161,7 @@ class DomainScrubber:
 
     @staticmethod
     def extract_domains_from_file_section(file_handle, section_start: str) -> List[str]:
-        """
-        Extracts domains from a specific section of a file, stopping at the next header.
-        """
+        """Extract domains from a specific section of a file, stopping at the next section header."""
         all_domains = set()
         in_section = False
         try:
@@ -214,11 +184,8 @@ class DomainScrubber:
         return _sort_specific_first(all_domains)
 
     @staticmethod
-    def _add_domain_and_parents(domain: str, out: Set[str]) -> None:       
-        """
-        Add the domain and all parent domains to 'out'.
-        e.g. 'lab.new.suse.org' -> {'lab.new.suse.org','new.suse.org','suse.org'}
-        """
+    def _add_domain_and_parents(domain: str, out: Set[str]) -> None:
+        """Add a domain and all its parent domains to out."""
         if not domain:
             return
         d = domain.strip().lower().strip(".")

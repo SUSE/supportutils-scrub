@@ -11,7 +11,6 @@ class KeywordScrubber:
         self.load_keywords()
 
     def load_keywords(self):
-        # Load from file
         if self.keyword_file:
             if not os.path.isfile(self.keyword_file):
                 print(f"[!] Keyword file not found: {self.keyword_file}")
@@ -20,7 +19,6 @@ class KeywordScrubber:
                     with open(self.keyword_file, 'r', encoding='utf-8') as f:
                         print(f"[✓] Loading keywords from file: {self.keyword_file}")
                         for line in f:
-                            # Strip comments and whitespace
                             kw = line.split('#', 1)[0].strip().lower()
                             if not kw:
                                 continue
@@ -29,7 +27,6 @@ class KeywordScrubber:
 
                 except Exception as e:
                     print(f"[!] Error reading keyword file: {e}")
-        # Load from command line arguments
         if self.cmd_keywords:
             for keyword in self.cmd_keywords:
                 if keyword.lower() not in self.keyword_dict:
@@ -43,7 +40,6 @@ class KeywordScrubber:
     def scrub(self, text):
         obfuscated_dict = {}
         for keyword, obfuscated in self.keyword_dict.items():
-            # Use regex for case-insensitive replacement
             text, count = re.subn(re.escape(keyword), obfuscated, text, flags=re.IGNORECASE)
             if count > 0:
                 obfuscated_dict[keyword] = obfuscated

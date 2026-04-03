@@ -7,7 +7,7 @@ import tarfile
 
 
 def _is_safe_path(target_dir: str, member_name: str) -> bool:
-    """Return True if member_name extracts safely within target_dir (blocks path traversal)."""
+    """Return True if member_name extracts safely within target_dir."""
     norm = os.path.normpath(member_name)
     if os.path.isabs(norm) or norm.startswith('..'):
         return False
@@ -16,9 +16,7 @@ def _is_safe_path(target_dir: str, member_name: str) -> bool:
     return dest.startswith(target + os.sep) or dest == target
 
 def extract_supportconfig(supportconfig_path, logger, extract_base=None):
-    """
-    Extract Supportconfig files and return a list of  files.
-    """
+    """Extract Supportconfig files and return a list of  file """
     report_files = []
 
     if os.path.isdir(supportconfig_path):
@@ -33,9 +31,7 @@ def extract_supportconfig(supportconfig_path, logger, extract_base=None):
     return report_files
 
 def walk_supportconfig(folder_path):
-    """
-    Walk through the Supportconfig folder and return a list of all files.
-    """
+    """ Walk through the Supportconfig folder and return a list of all files """
     report_files = []
     for root, dirs, files in os.walk(folder_path):
         for file in files:
@@ -57,13 +53,10 @@ def extract_xz_archive(archive_path, logger, extract_base=None):
     if os.path.exists(clean_folder_path):
         shutil.rmtree(clean_folder_path)
 
-    os.makedirs(clean_folder_path, exist_ok=True)  # Ensure destination folder exists
+    os.makedirs(clean_folder_path, exist_ok=True) 
 
     with tarfile.open(archive_path, 'r:xz') as tar:
         members = tar.getmembers()
-
-        # Find the top-level directory so we can strip it, putting files
-        # directly into clean_folder_path (avoids double-nested structure).
         top_level = None
         for member in members:
             top = member.name.split('/')[0]
@@ -122,10 +115,6 @@ def extract_tgz_archive(archive_path, logger, extract_base=None):
 
     with tarfile.open(archive_path, "r:gz") as tar:
         members = tar.getmembers()
-
-        # Identify the top-level directory inside the archive so we can strip
-        # it and replace it with clean_folder_name, preserving the rest of the
-        # path (e.g. hana-t1/ha-log.txt stays intact).
         top_level = None
         for member in members:
             top = member.name.split('/')[0]
@@ -169,10 +158,7 @@ def create_txz(source_dir, output_filename):
         tar.add(source_dir, arcname=os.path.basename(source_dir))
 
 def copy_folder_to_scrubbed(folder_path):
-    """
-    Copy folder_path to {folder_path}_scrubbed/ and return (file_list, scrubbed_path).
-    Any existing _scrubbed directory is removed first.
-    """
+    """copy folder_path to {folder_path}_scrubbed/ and return (file_list, scrubbed_path) """
     scrubbed_path = folder_path.rstrip('/') + '_scrubbed'
     if os.path.exists(scrubbed_path):
         shutil.rmtree(scrubbed_path)

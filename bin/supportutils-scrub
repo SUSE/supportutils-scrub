@@ -4,7 +4,6 @@ import sys
 import os
 
 try:
-    # Ensure the /usr/lib/supportutils-scrub/ directory is in the sys.path
     sys.path.insert(0, '/usr/lib/supportutils-scrub/')
     from supportutils_scrub.main import main
 except KeyboardInterrupt:

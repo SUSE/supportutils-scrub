@@ -56,12 +56,6 @@ class FileProcessor:
             self.keyword_scrubber.load_keywords()
     
     def process_file(self, file_path, logger: SupportutilsScrubLogger, verbose_flag):
-        """
-        Process a supportconfig file, obfuscating sensitive information.
-
-        Returns:
-        - Tuple of dictionaries (ip_dict, domain_dict, user_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict).
-        """
         ip_dict = {}
         domain_dict = {}
         username_dict = {}
@@ -98,8 +92,6 @@ class FileProcessor:
 
         try:
             if is_sar_xz_file:
-                # sar files only have sensitive data on the first line (hostname).
-                # Read only the first line - avoids decompressing the entire file.
                 with lzma.open(file_path, mode="rt", encoding="utf-8", errors="ignore") as f:
                     first_line = f.readline()
 
@@ -108,18 +100,17 @@ class FileProcessor:
 
                 if scrubbed_first_line != first_line:
                     obfuscation_occurred = True
-                    # Re-open to read the rest only now that we know a change is needed.
+                    # Re-open to read the rest now that we know a change is needed.
                     # Write as plain text to avoid expensive xz recompression.
                     with lzma.open(file_path, mode="rt", encoding="utf-8", errors="ignore") as f:
-                        f.readline()  # skip the already-scrubbed first line
+                        f.readline()  
                         rest = f.read()
-                    plain_path = file_path[:-3]  # strip .xz
+                    plain_path = file_path[:-3] 
                     with open(plain_path, mode="w", encoding="utf-8") as out_f:
                         out_f.write(_SCRUB_INFO_HEADER + scrubbed_first_line + rest)
                     os.remove(file_path)
 
             elif is_sar_plain_file:
-                # Plain (uncompressed) sar text files: same first-line-only approach.
                 with open(file_path, mode="r", encoding="utf-8", errors="ignore") as f:
                     first_line = f.readline()
                     rest = f.read()
@@ -150,12 +141,6 @@ class FileProcessor:
         return ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict
 
     def _scrub_content(self, text, basename, logger, verbose_flag):
-        """
-        Apply all configured scrubbers to text.
-
-        Returns:
-        - Tuple (scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict)
-        """
         ip_dict = {}
         domain_dict = {}
         username_dict = {}
@@ -167,7 +152,6 @@ class FileProcessor:
 
         scrubbed_text = text
 
-        # Scrub IPv4 addresses and subnets
         if self.config.get("obfuscate_public_ip") == 'yes' or self.config.get("obfuscate_private_ip") == 'yes':
             new_text, new_ip_map, new_subnet_map, state = self.ip_scrubber.scrub_text(scrubbed_text)
             ip_dict.update(new_ip_map)
@@ -175,7 +159,6 @@ class FileProcessor:
             self._ipv4_state = state
             scrubbed_text = new_text
 
-        # Scrub IPv6 addresses
         if self.config.get("obfuscate_ipv6") == 'yes':
             try:
                 scrubbed_text, new_ipv6_map, ipv6_subnet_map, state6 = self.ipv6_scrubber.scrub_text(scrubbed_text)
@@ -185,45 +168,36 @@ class FileProcessor:
             except Exception as e:
                 logger.error(f"IPv6 scrub failed for {basename}: {e}")
 
-        # Scrub MAC addresses
         files_to_skip_mac_scrub = ['modules.txt', 'security-apparmor.txt', 'drbd.txt', 'security-audit.txt', 'fs-btrfs.txt']
         if basename not in files_to_skip_mac_scrub and self.config.get("obfuscate_mac") == 'yes':
             scrubbed_text = self.mac_scrubber.scrub(scrubbed_text)
             mac_dict.update(self.mac_scrubber.mac_dict)
 
-        # Scrub keywords
         if self.keyword_scrubber:
             scrubbed_text, line_keyword_dict = self.keyword_scrubber.scrub(scrubbed_text)
             keyword_dict.update(line_keyword_dict)
 
-        # Scrub hostnames
         if self.config.get("obfuscate_hostname") == 'yes':
             scrubbed_text = self.hostname_scrubber.scrub(scrubbed_text)
             hostname_dict.update(self.hostname_scrubber.hostname_dict)
 
-        # Scrub domain names
         if self.config.get("obfuscate_domain") == 'yes':
             scrubbed_text = self.domain_scrubber.scrub(scrubbed_text)
             domain_dict.update(self.domain_scrubber.domain_dict)
 
-        # Scrub usernames
         if self.config.get("obfuscate_username") == 'yes':
             scrubbed_text = self.username_scrubber.scrub(scrubbed_text)
             username_dict.update(self.username_scrubber.username_dict)
 
-        # Scrub email addresses
         if self.email_scrubber:
             scrubbed_text = self.email_scrubber.scrub(scrubbed_text)
 
-        # Scrub password values
         if self.password_scrubber:
             scrubbed_text = self.password_scrubber.scrub(scrubbed_text)
 
-        # Scrub cloud tokens (JWT, AWS keys, Azure keys, GCP keys, bearer tokens)
         if self.cloud_token_scrubber:
             scrubbed_text = self.cloud_token_scrubber.scrub(scrubbed_text)
 
-        # Scrub serial numbers and UUIDs
         if self.serial_scrubber:
             scrubbed_text = self.serial_scrubber.scrub(scrubbed_text)
             serial_dict.update(self.serial_scrubber.serial_dict)
@@ -231,9 +205,4 @@ class FileProcessor:
         return scrubbed_text, ip_dict, domain_dict, username_dict, hostname_dict, keyword_dict, mac_dict, ipv6_dict, serial_dict
 
     def process_text(self, text, logger, verbose_flag):
-        """
-        Scrub a plain text string (e.g. from stdin).
-
-        Returns the same tuple as _scrub_content() (9-tuple).
-        """
         return self._scrub_content(text, "stdin", logger, verbose_flag)

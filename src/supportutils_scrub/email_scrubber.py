@@ -1,23 +1,17 @@
 # email_scrubber.py
-"""Obfuscate email addresses while preserving systemd units and config file references."""
-
 import re
 
-# Require local part starts with alnum, at least 2 alnum chars, domain has alnum start
 EMAIL_RE = re.compile(
     r'(?<![A-Za-z0-9._%+-])'
     r'([A-Za-z0-9][A-Za-z0-9._%+-]*[A-Za-z0-9]@[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,})'
     r'(?![A-Za-z0-9._%+-])'
 )
 
-# Suffixes that look like email but are systemd units, config files, etc.
 _SKIP_SUFFIXES = (
     '.service', '.socket', '.timer', '.target', '.mount',
     '.slice', '.scope', '.path', '.device', '.conf', '.tmp',
-    '.catalog',  # gettext/locale catalog files (e.g. systemd.be@latin.catalog)
-)
+    '.catalog',  
 
-# Domains that are vendor/upstream — not customer data, safe to keep
 _SAFE_DOMAINS = {
     'example.com', 'example.org', 'example.net',
     'localhost', 'localhost.localdomain', 'localdomain',
@@ -25,10 +19,7 @@ _SAFE_DOMAINS = {
 
 
 class EmailScrubber:
-    """
-    Finds and replaces email addresses consistently.
-    Skips systemd template instances (user@1000.service) and config references.
-    """
+    """Finds and replaces email addresses consistently """
 
     def __init__(self, mappings=None):
         self.email_dict = dict(mappings.get('email', {})) if mappings else {}
@@ -47,10 +38,8 @@ class EmailScrubber:
         """Replace all real email addresses in text. Returns scrubbed text."""
         def _replace(m):
             email = m.group(1)
-            # Skip systemd units and config file references
             if any(email.endswith(s) for s in _SKIP_SUFFIXES):
                 return email
-            # Skip safe/vendor domains
             domain = email.split('@')[1].lower()
             if domain in _SAFE_DOMAINS:
                 return email

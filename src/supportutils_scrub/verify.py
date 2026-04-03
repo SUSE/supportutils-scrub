@@ -1,17 +1,8 @@
 # verify.py
-"""Post-scrub verification: scan scrubbed files for any remaining real values."""
 import os
 import re
 import ipaddress
 
-# ---------------------------------------------------------------------------
-# Original mapping-based categories
-# ---------------------------------------------------------------------------
-# (category_key, display_label, match_mode)
-# match_mode:
-#   'boundary'  – \bVALUE\b  (username, hostname: same logic as their scrubbers)
-#   'ip'        – lookbehind/lookahead mirroring CIDR_RE  (avoids version-string false positives)
-#   'substring' – plain 'value in line'  (domain, mac, ipv6, serial, keyword)
 _CATEGORIES = [
     ('ip',       'IPv4 address',  'ip'),
     ('ipv6',     'IPv6 address',  'substring'),
@@ -23,10 +14,8 @@ _CATEGORIES = [
     ('serial',   'serial/UUID',   'substring'),
 ]
 
-# Real values shorter than this are skipped to reduce noise
 _MIN_VALUE_LEN = 6
 
-# Domains to never flag as leaks (vendor/infrastructure, not customer data)
 _SAFE_DOMAIN_VALUES = {
     'susecloud.net',
     'suse.org', 'suse.com', 'suse.de', 'suse.net',

@@ -20,7 +20,6 @@ SPECIALS = {
 class IPScrubber:
     def __init__(self, config, mappings=None):
 
-        # Load the existing mappings or initialize an empty dictionary
         self.ip_dict = mappings.get('ip', {}) if mappings else {}
         self.config = config       
         self.subnet_dict = dict(mappings.get('subnet', {}))
@@ -37,15 +36,14 @@ class IPScrubber:
             self._pool_cursor[key] = int(mappings.get('state', {}).get(cursor_key, 0))
         
         self._sanitize_ip_map()
-        
+
         self._real_to_fake = {}
-        self._used_slots = set()  # /24-slot bitmap for fast overlap checking
+        self._used_slots = set()  
         for k, v in self.subnet_dict.items():
             try:
                 real_net = IPv4Network(k)
                 fake_net = IPv4Network(v)
                 self._real_to_fake[real_net] = fake_net
-                # Mark fake slots as used
                 for cat_key, pool in self.category_pools.items():
                     pool_start = int(pool.network_address)
                     pool_end = int(pool.broadcast_address) + 1
@@ -58,23 +56,18 @@ class IPScrubber:
                         break
             except:
                 pass
-        # Cache sorted by prefixlen desc; rebuilt whenever a new subnet is added
         self._sorted_subnets = sorted(
             self._real_to_fake.items(), key=lambda kv: kv[0].prefixlen, reverse=True
         )
 
 
     def _sanitize_ip_map(self):
-        """Remove any bad mappings like 0.0.0.0 from previous runs"""
         for k in list(self.ip_dict.keys()):
             if k in SPECIALS:
                 del self.ip_dict[k]
 
     def _classify_ip(self, ip: str) -> str:
-        """
-        Classify an IP to determine which visual category it belongs to.
-        This is the key to visual pattern recognition!
-        """
+        """Classify an IP into a pool category."""
         try:
             parts = ip.split('.')
             a = int(parts[0])
@@ -94,9 +87,6 @@ class IPScrubber:
         except:
             return 'public'
 
-    # RFC1918 + loopback + link-local only.
-    # Intentionally excludes 198.18.0.0/15 (IANA benchmarking / our fake pool)
-    # and other special-purpose ranges that Python's is_private includes.
     _PRIVATE_NETS = [
         IPv4Network('10.0.0.0/8'),
         IPv4Network('172.16.0.0/12'),
@@ -106,7 +96,7 @@ class IPScrubber:
     ]
 
     def _is_private(self, ip_str):
-        """Check if IP is RFC1918 private, loopback, or link-local."""
+        """Return True if IP is RFC1918 private, loopback, or link-local."""
         try:
             ip = IPv4Address(ip_str)
             return any(ip in net for net in self._PRIVATE_NETS)
@@ -114,16 +104,11 @@ class IPScrubber:
             return False
 
     def _should_obfuscate_private(self):
-        """Determine if private IPs should be obfuscated"""
         mode = str(self.config.get('obfuscate_private_ip', 'no')).lower()
-        return mode == 'yes'  
+        return mode == 'yes'
 
     def _alloc_fake_subnet_from_pool(self, cat_key: str, prefixlen: int) -> IPv4Network:
-        """
-        Allocate a fake subnet from the specified pool.
-        Maintains the same prefix length as the original subnet.
-        Uses a /24-slot bitmap for O(1) overlap checking.
-        """
+        """Allocate a fake subnet from the specified pool, using a /24 slot for overlap checking."""
         pool = self.category_pools[cat_key]
 
         if prefixlen < pool.prefixlen:
@@ -143,7 +128,6 @@ class IPScrubber:
             slot_start = (base - start) // 256
             slot_count = max(1, step // 256)
             if not any(s in self._used_slots for s in range(slot_start, slot_start + slot_count)):
-                # Mark slots as used
                 for s in range(slot_start, slot_start + slot_count):
                     self._used_slots.add(s)
                 self._pool_cursor[cat_key] = (base - start) + step
@@ -154,7 +138,6 @@ class IPScrubber:
 
 
     def _ensure_fake_subnet(self, real_net: IPv4Network):
-        """Ensure we have a fake subnet allocated for this real subnet"""
         if real_net in self._real_to_fake:
             return
         cat = self._classify_ip(str(real_net.network_address))
@@ -167,20 +150,17 @@ class IPScrubber:
 
 
     def _prepare_subnets(self, text):
-        """
-        First pass: Learn all subnets from IP/prefix notations.
-        This enables subnet-aware mapping in the second pass.
-        """
+        """learn all CIDR subnets from text to enable subnet-aware mapping."""
         for m in CIDR_RE.finditer(text):
             ip = m.group('ip')
             pfx = m.group('pfx')
             
             if not pfx:
-                continue  
-            
+                continue
+
             pfx = int(pfx)
 
-            if pfx in (0, 32): 
+            if pfx in (0, 32):
                 continue
 
             try:
@@ -189,8 +169,8 @@ class IPScrubber:
                 continue
 
             if ip_obj.is_loopback or ip_obj.is_multicast or ip in SPECIALS:
-                continue  
-            
+                continue
+
             try:
                 real_net = ip_network(f"{ip}/{pfx}", strict=False)
 
@@ -201,24 +181,18 @@ class IPScrubber:
                 self._ensure_fake_subnet(real_net)
             except (ValueError, RuntimeError):
                 pass
-        # Rebuild sorted cache once after all subnets are learned
         self._sorted_subnets = sorted(
             self._real_to_fake.items(), key=lambda kv: kv[0].prefixlen, reverse=True
         )
 
     def _map_in_subnets(self, ip_str):
-        """
-        Map an IP by finding which subnet it belongs to
-        and using the same offset in the fake subnet.
-        This preserves network/broadcast addresses and relative positions!
-        """
+        """Map an IP to its fake equivalent by offset within its known subnet."""
         from ipaddress import IPv4Address
         try:
             ip = IPv4Address(ip_str)
         except:
             return None
 
-        # Rebuild cache only if invalidated by a new subnet addition
         if self._sorted_subnets is None:
             self._sorted_subnets = sorted(
                 self._real_to_fake.items(), key=lambda kv: kv[0].prefixlen, reverse=True
@@ -233,10 +207,6 @@ class IPScrubber:
 
     
     def _scrub_token(self, ip_str, pfx_str):
-        """
-        Scrub a single IP or IP/prefix token.
-        This is called for each regex match.
-        """
         try:
             ip_obj = IPv4Address(ip_str)
         except ValueError:
@@ -257,10 +227,9 @@ class IPScrubber:
         
         mapped = self._map_in_subnets(ip_str)
         if mapped:
-            self.ip_dict[ip_str] = mapped  # record in mapping file
+            self.ip_dict[ip_str] = mapped
             return mapped + (f"/{pfx_str}" if pfx_str else "")
 
-        # If no known subnet yet then create logical subnet and map by offset
         real_net, fake_net = self._ensure_logical_subnet_for_ip(ip_str)
         if real_net and fake_net:
             off = int(ip_obj) - int(real_net.network_address)
@@ -268,7 +237,6 @@ class IPScrubber:
             self.ip_dict[ip_str] = mapped_ip
             return mapped_ip + (f"/{pfx_str}" if pfx_str else "")
 
-        # Pool exhaustion fallback — ip_dict may have been set directly
         if ip_str in self.ip_dict:
             return self.ip_dict[ip_str] + (f"/{pfx_str}" if pfx_str else "")
 
@@ -290,12 +258,11 @@ class IPScrubber:
         try:
             self._ensure_fake_subnet(real_net)
         except RuntimeError:
-            # Pool exhausted — hash the network part, preserve host byte
             import hashlib
             pool = self.category_pools.get(self._classify_ip(ip_str))
             pool_start = int(pool.network_address)
-            pool_slots = pool.num_addresses // 256  # number of /24 slots
-            host_byte = int(ip_str.split('.')[-1])   # preserve last octet
+            pool_slots = pool.num_addresses // 256  
+            host_byte = int(ip_str.split('.')[-1])  
             net_part = ip_str.rsplit('.', 1)[0]
             h = int(hashlib.md5(net_part.encode()).hexdigest()[:8], 16)
             fake_base = pool_start + ((h % pool_slots) * 256)
@@ -308,12 +275,7 @@ class IPScrubber:
 
 
     def scrub_text(self, text):
-        """
-        Main entry point: scrub all IPs in a text.
-        Two-pass approach:
-        1. Learn subnets
-        2. Replace IPs with subnet awareness
-        """
+        """Two-pass scrub: learn subnets, then replace IPs subnet-aware."""
         self._prepare_subnets(text)
         
         def repl(m):
@@ -322,14 +284,8 @@ class IPScrubber:
 
             start = m.start()
             snippet = text[max(0, start-20):start].lower()
-            # Skip version strings like "version 2.12.0.4", "Version: 2.12.0.4",
-            # 'EXTENSION_VERSION": "2.0.0.7"', "ver 1.0"
-            # but NOT "nameserver x.x.x.x" (nameserver ends with 'ver' accidentally)
-            # (?:^|(?<=[\b_]))ver — match ver at word boundary OR after underscore
             if re.search(r'(?:\b|_)ver(?:sion)?[\s:="\']*$', snippet.rstrip()):
                 return m.group(0)
-            # Skip version numbers in file paths: /4.0.14.41/ir_agent
-            # but NOT URLs: ldaps://147.204.152.42 (preceded by ://)
             if snippet.endswith('/') and not snippet.endswith('://'):
                 return m.group(0)
 
@@ -342,10 +298,7 @@ class IPScrubber:
 
 
     def scrub_ip(self, ip):
-        """
-        Legacy method for backward compatibility.
-        Single IP scrubbing without subnet context.
-        """
+        """Legacy single-IP scrub without subnet."""
         if ip in SPECIALS:
             return ip
         
@@ -369,7 +322,6 @@ class IPScrubber:
 
     @staticmethod
     def extract_ips(text):
-        """Extract IP addresses from text (for compatibility)"""
         ip_pattern = r"(?<![\w\-\.])((?:\d{1,3}\.){3}\d{1,3})(?![\w\-\.])"
         return re.findall(ip_pattern, text)
     

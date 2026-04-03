@@ -5,9 +5,6 @@ import re
 import ipaddress
 from typing import Dict, Tuple, List, Iterable, Match, Optional
 
-# Dots allowed inside (for IPv4-mapped addresses) but must not end with a dot.
-# Lookahead: reject alnum/_/- continuation, and reject : only if followed by hex
-# (more IPv6 content). Allow ": " (end of address before log message text).
 CANDIDATE_V6 = re.compile(r"(?<![A-Za-z0-9:_-])([0-9A-Fa-f:.]+[0-9A-Fa-f])(?:/(\d{1,3}))?(?![A-Za-z0-9_-])(?!:[0-9A-Fa-f])")
 
 UNSPECIFIED = ipaddress.IPv6Network("::/128")
@@ -22,14 +19,6 @@ GLOBAL_UNICAST = ipaddress.IPv6Network("2000::/3")
 
 
 class IPv6Scrubber:
-    """
-    Subnet-aware IPv6 obfuscator.
-
-    Public methods:
-      - scrub_text(text) -> (new_text, ipv6_map, ipv6_subnet_map, state)
-      - extract_ipv6(text) -> List[str]
-      - scrub_ipv6(ip_str) -> str (legacy per-address)
-    """
 
     def __init__(self, config: Dict, mappings: Optional[Dict] = None) -> None:
         self.config = config or {}
@@ -109,16 +98,12 @@ class IPv6Scrubber:
         return fake
 
     def _choose_mapping_prefix(self, ip: ipaddress.IPv6Address, explicit_pfx: Optional[int]) -> int:
-        """
-        Prefer explicit prefix from the text, but never anchor broader than /48.
-        Otherwise default to /64 (typical host subnets).
-        """
+        """Prefer explicit prefix but never broader than /48; default to /64."""
         if explicit_pfx is not None and 0 <= explicit_pfx <= 128:
             return max(48, explicit_pfx) 
         return 64
 
     def _map_in_known_subnets(self, ip: ipaddress.IPv6Address) -> Optional[str]:
-        """If the IP sits inside any already-mapped real subnet, return mapped IP."""
         for real, fake in sorted(self._subnet_map.items(), key=lambda kv: kv[0].prefixlen, reverse=True):
             if ip in real:
                 offset = int(ip) - int(real.network_address)
@@ -126,16 +111,9 @@ class IPv6Scrubber:
         return None
 
     def scrub_text(self, text: str):
-        """
-        One-pass IPv6 obfuscation over free text.
-        Returns: (new_text, ipv6_map, ipv6_subnet_map, state)
-        - ipv6_map:        dict real->fake (strings)
-        - ipv6_subnet_map: dict real->fake (strings)
-        - state:           { 'ipv6_pool_cursor': int }
-        """
+        """Scrub all IPv6 addresses in text. Returns (new_text, ipv6_map, ipv6_subnet_map, state)."""
         if not self._should_obfuscate() or not text:
-            # Return existing maps asare for consistency
-            return text, dict(self.ipv6_map), {str(k): str(v) for k, v in self._subnet_map.items()}, { 'ipv6_pool_cursor': self._pool_cursor }
+            return text, dict(self.ipv6_map), {str(k): str(v) for k, v in self._subnet_map.items()}, {'ipv6_pool_cursor': self._pool_cursor}
 
         def repl(m: Match) -> str:
             token = m.group(0)
@@ -145,23 +123,20 @@ class IPv6Scrubber:
                 ip = iface.ip
                 explicit_pfx = iface.network.prefixlen if pfx_s else None
             except Exception:
-                return token  # not a valid IPv6 token
+                return token
 
             if self._skip_scope(ip):
                 return token
 
-            # If seen before, reuse mapping (preserving any /pfx shown in text)
             if str(ip) in self.ipv6_map:
                 fake_ip = self.ipv6_map[str(ip)]
                 return f"{fake_ip}/{explicit_pfx}" if explicit_pfx is not None else fake_ip
 
-            # Try mapped subnets first
             mapped = self._map_in_known_subnets(ip)
             if mapped:
                 self.ipv6_map[str(ip)] = mapped
                 return f"{mapped}/{explicit_pfx}" if explicit_pfx is not None else mapped
 
-            # Create or reuse subnet mapping placed at chosen prefix
             anchor_pfx = self._choose_mapping_prefix(ip, explicit_pfx)
             real_subnet = ipaddress.IPv6Network((int(ip) & ~((1 << (128 - anchor_pfx)) - 1), anchor_pfx))
             fake_subnet = self._get_or_create_fake_subnet(real_subnet)
@@ -180,7 +155,7 @@ class IPv6Scrubber:
 
     @staticmethod
     def extract_ipv6(text: str) -> List[str]:
-        """Extract valid IPv6 literals (without validation side-effects)."""
+        """Extract valid IPv6 literals from text."""
         if not text:
             return []
         found: List[str] = []
@@ -197,10 +172,7 @@ class IPv6Scrubber:
         return found
 
     def scrub_ipv6(self, token: str) -> str:
-        """
-        Scrub a single IPv6 token (with or without /prefix). Returns the obfuscated token.
-        Honors the same scope and config rules as scrub_text().
-        """
+        """Scrub a single IPv6 token (with or without /prefix)."""
         if not self._should_obfuscate() or not token:
             return token
         try:
@@ -232,11 +204,7 @@ class IPv6Scrubber:
         return f"{fake_s}/{explicit_pfx}" if explicit_pfx is not None else fake_s
 
     def ipv6_tcprewrite_rules(self) -> List[Tuple[str, str]]:
-        """
-        Return subnet mapping pairs suitable for tcprewrite-like tools.
-        (Note: tcprewrite's v6 options vary by version; this method simply
-        exposes real/fake subnet pairs.)
-        """
+        """Return real/fake subnet pairs for tcprewrite-like tools."""
         pairs: List[Tuple[str, str]] = []
         for real, fake in sorted(self._subnet_map.items(), key=lambda kv: kv[0].prefixlen, reverse=True):
             pairs.append((str(real), str(fake)))

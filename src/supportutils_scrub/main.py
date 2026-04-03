@@ -171,9 +171,7 @@ def _print_enc_note(mapping_path, file=None):
 
 
 def _load_mappings_file(path: str) -> dict:
-    """Load a mapping file — plain JSON or AES-encrypted *.json.enc.
-    Prompts for passphrase when the file is encrypted.
-    Returns the parsed dict, or {} on failure."""
+    """Load a mapping file, plain JSON or AES-encrypted *.json.enc """
     if path.endswith('.json.enc'):
         import getpass
         try:
@@ -221,22 +219,17 @@ def _save_mappings(args, dataset_path, dataset_dict):
 
 
 def _scrub_name(name: str, hostname_dict: dict) -> str:
-    """Replace real hostnames in a filename/dirname (plain replace, no word boundaries)."""
+    """Replace real hostnames in a filename/dirname """
     for real, fake in sorted(hostname_dict.items(), key=lambda x: len(x[0]), reverse=True):
         name = name.replace(real, fake)
     return name
 
 
 def _dataset_paths(dataset_dir, timestamp, hostname_dict=None, input_name=None, report=False):
-    """
-    Compute paths for mapping, audit, and (optionally) report files.
-    If hostname_dict and input_name are provided, the scrubbed hostname from
-    the input path is embedded in the filenames (matching the archive naming).
-    """
+    """ Compute paths for mapping, audit, and (optionally) report files """
     host_tag = ''
     if hostname_dict and input_name:
-        # Find which real hostname appears in the input name
-        # Check both the full hostname and the short name (before first dot)
+
         for real, fake in sorted(hostname_dict.items(), key=lambda x: len(x[0]), reverse=True):
             short = real.split('.')[0]
             if real in input_name or short in input_name:
@@ -250,14 +243,9 @@ def _dataset_paths(dataset_dir, timestamp, hostname_dict=None, input_name=None, 
 
 
 def _rename_extraction_paths(clean_folder_path: str, hostname_dict: dict, rename_top: bool = True) -> str:
-    """
-    Rename any subdirectories inside clean_folder_path whose names contain a real
-    hostname, then (optionally) rename clean_folder_path itself.
-    Returns the (possibly new) clean_folder_path.
-    """
+    """ Rename any subdirectories inside clean_folder_path whose names contain a real hostname"""
     if not hostname_dict:
         return clean_folder_path
-    # Bottom-up so deeper dirs are renamed before their parents
     for root, dirs, _ in os.walk(clean_folder_path, topdown=False):
         for d in dirs:
             scrubbed = _scrub_name(d, hostname_dict)
@@ -268,7 +256,6 @@ def _rename_extraction_paths(clean_folder_path: str, hostname_dict: dict, rename
                     print(f"[!] Could not rename directory '{d}': {e}")
     if not rename_top:
         return clean_folder_path
-    # Rename the top-level extraction folder
     parent   = os.path.dirname(clean_folder_path)
     basename = os.path.basename(clean_folder_path)
     scrubbed_basename = _scrub_name(basename, hostname_dict)
@@ -328,17 +315,13 @@ def _audit_record(mode: str, inputs: list, outputs: list, mapping_path, args) ->
 
 
 def build_hierarchical_domain_map(all_domains, existing_mappings):
-    """
-    Builds a domain mapping dictionary that preserves parent-child relationships.
-    Fake TLDs are derived from the real TLD family (e.g. .net → .dxa, .com → .dxb).
-    Returns (domain_dict, tld_map).
-    """
+    """ Builds a domain mapping dictionary that preserves parent-child relationship """
     valid_domains = {d for d in all_domains if '.' in d}
 
     sorted_domains = sorted(list(valid_domains), key=lambda d: len(d.split('.')))
 
     domain_dict = existing_mappings.get('domain', {})
-    tld_map = existing_mappings.get('tld_map', {})  # real_tld -> fake_tld
+    tld_map = existing_mappings.get('tld_map', {}) 
     base_domain_counter = len(domain_dict)
     sub_domain_counter = 0
 
@@ -464,7 +447,7 @@ def extract_serials(report_files, mappings):
 
 def _write_report(report_path: str, archives: list, version: str,
                    verify_findings=None):
-    """Write a JSON coverage report showing which files contained each data category."""
+    """Write a JSON report showing which files contained each data category."""
     import socket as _sock
     data = {
         'tool':      'supportutils-scrub',
@@ -489,11 +472,7 @@ def _write_report(report_path: str, archives: list, version: str,
 
 
 def _init_scrubbers(args, config, logger):
-    """
-    Shared scrubber initialisation used by folder mode and stdin mode.
-    Returns (mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber).
-    Prints informational messages to *out* (default sys.stdout) or *err* (default sys.stderr).
-    """
+    """ Shared scrubber initialisation used by folder mode and stdin mode """
     mappings = {}
     mapping_keywords = []
     if args.mappings:
@@ -527,22 +506,17 @@ def _init_scrubbers(args, config, logger):
 def _is_supportconfig_folder(file_list):
     """Detect whether a folder looks like a supportconfig collection."""
     basenames = {os.path.basename(f) for f in file_list}
-    # A supportconfig always has basic-environment.txt
     return 'basic-environment.txt' in basenames
 
 
 def run_folder_mode(args, logger):
-    """
-    Process a directory: copy to {dir}_scrubbed/, scrub files in-place, no repack.
-    If the folder looks like a supportconfig collection, the full pre-scan is
-    performed (domains, hostnames, usernames, serials) just like archive mode.
-    """
+    """ Process a directory: copy to {dir}_scrubbed/, scrub files in-place."""
     verbose_flag = args.verbose
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     quiet = getattr(args, 'quiet', False)
-    err = sys.stderr  # when --quiet, informational output goes to stderr
+    err = sys.stderr  
 
     config = getattr(args, '_preloaded_config', None)
     if config is None:
@@ -571,11 +545,7 @@ def run_folder_mode(args, logger):
         print(f"[!] Error copying folder: {e}")
         raise
 
-    # Register cleanup so a Ctrl+C or SIGTERM removes the partial _scrubbed
-    # folder rather than leaving half-scrubbed data on disk.
-    # NOTE: use os._exit() instead of sys.exit() to avoid deadlocks — print()
-    # and shutil.rmtree() are not async-signal-safe but are acceptable here
-    # because the worst case is a partial cleanup, not data corruption.
+    # When Ctrl+C removes the partial _scrubbed folder rather than leaving half-scrubbed folder available.
     import signal
     def _cleanup_on_signal(signum, frame):
         try:
@@ -591,7 +561,6 @@ def run_folder_mode(args, logger):
 
     is_sc = _is_supportconfig_folder(report_files)
 
-    # Pre-scan: pass report_files for supportconfig folders, [] for generic folders
     scan_files = report_files if is_sc else []
 
     additional_domains = []
@@ -612,7 +581,6 @@ def run_folder_mode(args, logger):
     hostname_dict = extract_hostnames(scan_files, additional_hostnames, mappings)
     hostname_scrubber = HostnameScrubber(hostname_dict)
 
-    # Now that hostname_dict is known, compute output paths with scrubbed hostname
     want_report = getattr(args, 'report', None) is not None
     input_basename = os.path.basename(args.supportconfig_path[0].rstrip('/'))
     dataset_path, audit_path, report_path = _dataset_paths(
@@ -620,7 +588,6 @@ def run_folder_mode(args, logger):
     if want_report and isinstance(args.report, str):
         report_path = args.report  # user gave an explicit path
 
-    # For supportconfig folders: rename paths containing real hostnames, extract serials
     serial_scrubber = None
     if is_sc:
         scrubbed_path = _rename_extraction_paths(scrubbed_path, hostname_dict)
@@ -668,8 +635,6 @@ def run_folder_mode(args, logger):
             basename = os.path.basename(report_file)
             if not quiet and not re.match(r"^sa\d{8}(\.xz)?$", basename):
                 print(f"        {basename}")
-
-            # Suppress processor stdout (e.g. binary removal messages) when --quiet
             if quiet:
                 _saved_stdout = sys.stdout
                 sys.stdout = _devnull
@@ -737,8 +702,7 @@ def run_folder_mode(args, logger):
         + len(total_cloud_token_dict)
     )
 
-    # With --quiet: summary goes to stderr (visible on terminal),
-    # only the output path goes to stdout (captured by callers like supportconfig -j).
+    # for --quiet summary goes to stderr, only the output path goes to stdout for supportconfig -j.
     out = sys.stderr if quiet else sys.stdout
 
     print("\n------------------------------------------------------------", file=out)
@@ -771,7 +735,6 @@ def run_folder_mode(args, logger):
     print(f"| Audit log                 : {audit_path}", file=out)
     print("------------------------------------------------------------\n", file=out)
 
-    # Verify scrubbed output if requested
     verify_findings = []
     if getattr(args, 'verify', False):
         original_path = args.supportconfig_path[0]
@@ -786,7 +749,7 @@ def run_folder_mode(args, logger):
             original_folder=original_path, config=config,
             check_allowlist=True, check_patterns=True,
             check_identity=True)
-        vout = out  # stderr if quiet, stdout otherwise
+        vout = out  
         if verify_findings:
             print(f"[!] VERIFY: {len(verify_findings)} potential leak(s) found in scrubbed output:", file=vout)
             for f in verify_findings[:20]:
@@ -797,7 +760,6 @@ def run_folder_mode(args, logger):
             print("[✓] VERIFY: No sensitive data found in scrubbed output.", file=vout)
 
     if quiet:
-        # Machine-readable: only the output path on stdout
         print(scrubbed_path)
 
     if report_path:
@@ -818,9 +780,7 @@ def run_folder_mode(args, logger):
 
 
 def run_stdin_mode(args, logger):
-    """
-    Read from stdin, write scrubbed text to stdout, header/summary to stderr.
-    """
+    """ Reads from stdin, write scrubbed text to stdout """
     verbose_flag = args.verbose
     err = sys.stderr
 
@@ -846,10 +806,6 @@ def run_stdin_mode(args, logger):
     _STREAM_BOOTSTRAP_SECS = 3.0  # max seconds to wait for bootstrap lines
 
     if getattr(args, 'stream', False):
-        # --- Streaming mode ---
-        # Collect up to _STREAM_BOOTSTRAP lines OR _STREAM_BOOTSTRAP_SECS seconds,
-        # whichever comes first, to build entity maps.  Then scrub and flush each
-        # subsequent line immediately so live pipes (journalctl -f) work correctly.
         import select
         print(f"[i] Stream mode: collecting bootstrap (up to {_STREAM_BOOTSTRAP} lines "
               f"or {_STREAM_BOOTSTRAP_SECS:.0f}s)...", file=err)
@@ -892,14 +848,12 @@ def run_stdin_mode(args, logger):
             logger.error(f"Error initializing FileProcessor: {e}")
             sys.exit(1)
 
-        # Process bootstrap and flush
         scrubbed_bootstrap, ip_dict, domain_dict, username_dict, hostname_dict, \
             keyword_dict, mac_dict, ipv6_dict, serial_dict = \
             file_processor.process_text(bootstrap_text, logger, verbose_flag)
         sys.stdout.write(scrubbed_bootstrap)
         sys.stdout.flush()
 
-        # Stream remaining lines one by one, flushing immediately
         while True:
             line = sys.stdin.readline()
             if not line:   # EOF
@@ -912,7 +866,7 @@ def run_stdin_mode(args, logger):
             keyword_dict.update(_kw);  serial_dict.update(_ser)
 
     else:
-        # --- Batch mode: read all stdin, then scrub ---
+        # Batch mode: read all stdin, then scrub ---
         text = sys.stdin.read()
 
         additional_domains   = list(re.split(r'[,\s;]+', args.domain)   if args.domain   else [])
@@ -1039,7 +993,6 @@ def run_file_mode(args, logger):
     if keyword_scrubber is None and (args.keywords or args.keyword_file):
         print("[!] Keyword obfuscation disabled (no keywords loaded)")
 
-    # Read input first so we can pre-scan before building scrubbers
     try:
         with open(input_path, 'r', encoding='utf-8', errors='ignore') as f:
             text = f.read()
@@ -1166,12 +1119,7 @@ def run_file_mode(args, logger):
 
 
 def _process_one_archive(archive_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
-    """
-    Process a single .txz/.tgz archive using current_mappings for consistency.
-    Returns (updated_mappings, stats_dict).
-    updated_mappings accumulates all known entities so subsequent archives reuse
-    the same fake values for any shared IPs, domains, hostnames, or usernames.
-    """
+    """ Process a single .txz/.tgz archive using current_mappings for consistency."""
     try:
         ip_scrubber = IPScrubber(config, mappings=current_mappings)
         mac_scrubber = MACScrubber(config, mappings=current_mappings)
@@ -1190,7 +1138,7 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
     tld_map = {}
     report_files = []
 
-    # Register cleanup so a Ctrl+C or SIGTERM removes the partial extraction
+
     import signal as _sig
     _prev_sigint  = _sig.getsignal(_sig.SIGINT)
     _prev_sigterm = _sig.getsignal(_sig.SIGTERM)
@@ -1231,7 +1179,6 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         hostname_dict = extract_hostnames(report_files, additional_hostnames, current_mappings)
         hostname_scrubber = HostnameScrubber(hostname_dict)
 
-        # Rename extraction folder and internal subdirs to replace real hostname
         clean_folder_path = _rename_extraction_paths(clean_folder_path, hostname_dict)
         report_files = walk_supportconfig(clean_folder_path)
 
@@ -1239,7 +1186,6 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
         serial_scrubber = SerialScrubber(mappings=current_mappings)
         serial_scrubber.serial_dict = serial_dict
 
-        # Compute obfuscated output archive name
         archive_dir = os.path.dirname(os.path.abspath(archive_path))
         archive_basename = os.path.basename(archive_path)
         if archive_path.endswith(".tar.gz"):
@@ -1302,7 +1248,6 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
             if hasattr(file_processor, '_ipv6_subnet_map'):
                 total_ipv6_subnet_dict.update(file_processor._ipv6_subnet_map)
 
-            # Track which categories this file had hits for
             file_hits = []
             if ip_dict:           file_hits.append('ip')
             if ipv6_dict:         file_hits.append('ipv6')
@@ -1341,7 +1286,6 @@ def _process_one_archive(archive_path, current_mappings, args, config, keyword_s
                 print("[✓] VERIFY: No sensitive data found in scrubbed output.")
 
     finally:
-        # Restore previous signal handlers so batch mode works correctly
         _sig.signal(_sig.SIGINT,  _prev_sigint)
         _sig.signal(_sig.SIGTERM, _prev_sigterm)
         if clean_folder_path and os.path.exists(clean_folder_path):
@@ -1404,12 +1348,11 @@ def main():
 
     args = parse_args()
 
-    # Auto-detect encrypted mapping file passed as positional argument
     if not args.decrypt_mappings and len(args.supportconfig_path) == 1 \
             and args.supportconfig_path[0].endswith('.json.enc'):
         args.decrypt_mappings = args.supportconfig_path[0]
 
-    # --decrypt-mappings: decrypt and print an encrypted mapping file, then exit
+    #decrypt and print an encrypted mapping file
     if args.decrypt_mappings:
         import getpass
         enc_file = args.decrypt_mappings
@@ -1436,13 +1379,11 @@ def main():
     verbose_flag = args.verbose
     logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
 
-    # Resolve security options early (CLI flag OR config file)
     _early_config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     _early_config = _early_config_reader.read_config(args.config)
     args.secure_tmp       = args.secure_tmp       or _early_config.get('secure_tmp',       'no').lower() == 'yes'
     args.encrypt_mappings = args.encrypt_mappings or _early_config.get('encrypt_mappings', 'no').lower() == 'yes'
-    args._preloaded_config = _early_config  # reuse in sub-modes to avoid double read
-
+    args._preloaded_config = _early_config  
     if args.encrypt_mappings and args.no_mappings:
         print("[!] --encrypt-mappings and --no-mappings are mutually exclusive.")
         sys.exit(1)
@@ -1456,7 +1397,7 @@ def main():
     else:
         args._enc_passphrase = None
 
-    paths = args.supportconfig_path  # list (nargs="*")
+    paths = args.supportconfig_path  
 
     is_stdin = (len(paths) == 0 and not sys.stdin.isatty()) \
                or (len(paths) == 1 and paths[0] == '-')
@@ -1487,7 +1428,6 @@ def main():
     if not getattr(args, 'quiet', False):
         print_header()
 
-    # pcap-only mode (no archives given)
     if args.rewrite_pcap and not paths:
         if not args.mappings or not args.pcap_in:
             print("[!] For --rewrite-pcap without a supportconfig, provide --mappings and --pcap-in")
@@ -1511,7 +1451,6 @@ def main():
     config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     config = config_reader.read_config(args.config)
     dataset_dir = config.get('dataset_dir', '/var/tmp')
-    # Paths computed after processing, once hostname_dict is known
     _warn_private_ip(config, file=sys.stderr if getattr(args, 'quiet', False) else None)
 
     if args.rewrite_pcap:
@@ -1536,7 +1475,6 @@ def main():
             logger=logger,
         )
 
-    # Load initial mappings (from --mappings if provided)
     initial_mappings = {}
     mapping_keywords = []
     if args.mappings:
@@ -1544,7 +1482,6 @@ def main():
         print(f"[✓] Dataset mapping loaded from: {args.mappings} ")
         mapping_keywords = list(initial_mappings.get('keyword', {}).keys())
 
-    # Keyword scrubber is initialized once and shared across all archives
     cmd_keywords = []
     if args.keywords:
         cmd_keywords = [kw.strip() for kw in re.split(r'[,\s;]+', args.keywords.strip()) if kw.strip()]
@@ -1559,7 +1496,6 @@ def main():
         logger.error(f"Failed to initialize KeywordScrubber: {e}")
         keyword_scrubber = None
 
-    # Process archives sequentially, chaining mappings for consistency
     current_mappings = initial_mappings
     all_stats = []
 
@@ -1578,7 +1514,6 @@ def main():
             if len(paths) == 1:
                 sys.exit(EXIT_ERROR)
 
-    # Collect verify findings across all archives
     all_verify_findings = []
     for s in all_stats:
         all_verify_findings.extend(s.get('verify_findings', []))
@@ -1588,22 +1523,19 @@ def main():
     else:
         verify_exit = EXIT_OK
 
-    # Compute output paths now that hostname_dict is known from processing
     hostname_dict_final = current_mappings.get('hostname', {})
     want_report = getattr(args, 'report', None) is not None
     input_basename = os.path.basename(paths[0].rstrip('/')) if paths else ''
     dataset_path, audit_path, report_path = _dataset_paths(
         dataset_dir, timestamp, hostname_dict_final, input_name=input_basename, report=want_report)
     if want_report and isinstance(args.report, str):
-        report_path = args.report  # user gave an explicit path
+        report_path = args.report  
 
-    # Write report if requested
     if report_path:
         archives_report = [s['report_data'] for s in all_stats]
         _write_report(report_path, archives_report, SCRIPT_VERSION,
                       verify_findings=all_verify_findings)
 
-    # Save final combined mappings (single file covering all archives)
     saved_mapping_path = _save_mappings(args, dataset_path, current_mappings)
     if saved_mapping_path:
         print(f"[✓] Mapping file saved to:       {saved_mapping_path}")

@@ -21,7 +21,6 @@ def _only_ipv4_pairs(subnet_dict):
     return pairs
 
 def _sort_most_specific_first(pairs):
-    """Sort by descending prefixlen, then lexicographically for stability."""
     def keyfn(item):
         net = ipaddress.ip_network(item[0], strict=False)
         return (net.prefixlen, item[0], item[1])
@@ -50,14 +49,8 @@ def _dest_paths(out_dir, fin):
     tmp  = f"{fout}.tmp"
     return tmp, fout
 
-def rewrite_pcaps_with_tcprewrite(mappings, pcap_inputs, out_dir, *,
-                                  tcprewrite="tcprewrite", print_cmd=False, logger=None):
-    """
-    Rewrite PCAPs using IPv4 subnet mappings (most-specific first).
-    - Shows a tidy table of translations to reassure users.
-    - One tcprewrite call per input file (originals untouched).
-    - Output: <name>_scrubbed.<ext> in out_dir, perms/mtime preserved.
-    """
+def rewrite_pcaps_with_tcprewrite(mappings, pcap_inputs, out_dir, *, tcprewrite="tcprewrite", print_cmd=False, logger=None):
+    """Rewrite PCAPs using IPv4 subnet mappings (most-specific first)"""
     os.makedirs(out_dir, exist_ok=True)
 
     v4_pairs = _only_ipv4_pairs(mappings.get("subnet") or {})
