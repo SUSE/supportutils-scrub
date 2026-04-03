@@ -1,8 +1,11 @@
 # username_scrubber.py
 
 import re
+from supportutils_scrub.scrubber import Scrubber
 
-class UsernameScrubber:
+class UsernameScrubber(Scrubber):
+    name = 'user'
+
     EXCLUDED_USERS = {
         "root", "bin", "daemon", "lp", "mail", "news", "uucp", "games", "man",
         "wwwrun", "ftp", "nobody", "messagebus", "systemd-timesync", "uuidd",
@@ -23,6 +26,10 @@ class UsernameScrubber:
             sorted_users = sorted(username_dict.keys(), key=len, reverse=True)
             alts = '|'.join(re.escape(u) for u in sorted_users)
             self._re = re.compile(r'\b(?:' + alts + r')\b')
+
+    @property
+    def mapping(self):
+        return self.username_dict
 
     def scrub(self, text):
         if not self._re:

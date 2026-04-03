@@ -1,4 +1,3 @@
-CLAUDE.md
 *.pyc
 *.pyo
 *.pyd
@@ -8,4 +7,5 @@ CLAUDE.md
 /.vscode/
 __pycache__/
 *.egg-info/
-.claude
+build/
+

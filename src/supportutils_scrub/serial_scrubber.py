@@ -1,5 +1,6 @@
 # serial_scrubber.py
 import re
+from supportutils_scrub.scrubber import Scrubber
 
 _SKIP_VALUES = frozenset({
     '', 'not specified', 'not present', 'unknown', 'n/a', 'none',
@@ -29,7 +30,8 @@ def _is_skip(value: str) -> bool:
     return False
 
 
-class SerialScrubber:
+class SerialScrubber(Scrubber):
+    name = 'serial'
     """Scrubs hardware serial numbers and system UUIDs from supportconfig files"""
 
     def __init__(self, mappings: dict = None):
@@ -37,6 +39,10 @@ class SerialScrubber:
         if mappings:
             self.serial_dict = dict(mappings.get('serial', {}))
         self._counter = len(self.serial_dict)
+
+    @property
+    def mapping(self):
+        return self.serial_dict
 
     def pre_scan(self, text: str) -> None:
         for m in _LABELED_RE.finditer(text):

@@ -1,5 +1,6 @@
 # email_scrubber.py
 import re
+from supportutils_scrub.scrubber import Scrubber
 
 EMAIL_RE = re.compile(
     r'(?<![A-Za-z0-9._%+-])'
@@ -19,12 +20,17 @@ _SAFE_DOMAINS = {
 }
 
 
-class EmailScrubber:
+class EmailScrubber(Scrubber):
+    name = 'email'
     """Finds and replaces email addresses consistently """
 
     def __init__(self, mappings=None):
         self.email_dict = dict(mappings.get('email', {})) if mappings else {}
         self._counter = len(self.email_dict)
+
+    @property
+    def mapping(self):
+        return self.email_dict
 
     def _get_fake_email(self, real_email):
         """Return a consistent fake email for a real one."""

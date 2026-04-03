@@ -2,8 +2,11 @@
 
 import re
 from typing import Match
+from supportutils_scrub.scrubber import Scrubber
 
-class MACScrubber:
+class MACScrubber(Scrubber):
+    name = 'mac'
+    skip_files = frozenset(['modules.txt', 'security-apparmor.txt', 'drbd.txt', 'security-audit.txt', 'fs-btrfs.txt'])
 
     MAC_PATTERN = re.compile(
         r'(?<![0-9A-Fa-f:])'  
@@ -18,6 +21,10 @@ class MACScrubber:
         self.mac_dict = {k.lower(): v for k, v in (mappings.get('mac', {}) if mappings else {}).items()}
         self.config = config
 
+    @property
+    def mapping(self):
+        return self.mac_dict
+
     def _generate_fake_mac(self):
         count = len(self.mac_dict)
 
@@ -27,7 +34,7 @@ class MACScrubber:
         return f"00:1A:2B:{b1:02X}:{b2:02X}:{b3:02X}"
 
     def scrub(self, text: str) -> str:
-        if self.config.get('obfuscate_mac', 'no') != 'yes':
+        if not self.config.obfuscate_mac:
             return text
 
         def replacer(match: Match) -> str:

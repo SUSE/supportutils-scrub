@@ -1,8 +1,11 @@
 # hostname_scrubber.py
 
 import re
+from supportutils_scrub.scrubber import Scrubber
 
-class HostnameScrubber:
+class HostnameScrubber(Scrubber):
+    name = 'hostname'
+
     def __init__(self, hostname_dict):
         self.hostname_dict = hostname_dict
         self._re = None
@@ -10,6 +13,10 @@ class HostnameScrubber:
             sorted_hosts = sorted(hostname_dict.keys(), key=len, reverse=True)
             alts = '|'.join(re.escape(h) for h in sorted_hosts)
             self._re = re.compile(r'\b(?:' + alts + r')\b')
+
+    @property
+    def mapping(self):
+        return self.hostname_dict
 
     def scrub(self, text):
         if not self._re:

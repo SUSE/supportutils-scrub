@@ -2,6 +2,7 @@
 
 import re
 from typing import Set, Dict, List, Optional, Tuple, Iterable, Match
+from supportutils_scrub.scrubber import Scrubber
 
 LABEL = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
 DOMAIN_RE = re.compile(rf"(?<![\w-])({LABEL}(?:\.{LABEL})+)(?![\w-])", re.IGNORECASE)
@@ -90,8 +91,8 @@ def _dc_to_domain(dc_str: str) -> str:
 def _domain_to_dc(domain: str) -> str:
     return ','.join(f'DC={label}' for label in domain.split('.'))
 
-class DomainScrubber:
-
+class DomainScrubber(Scrubber):
+    name = 'domain'
 
     def __init__(self, domain_dict: Dict[str, str]):
         self.domain_dict: Dict[str, str] = {
@@ -115,6 +116,10 @@ class DomainScrubber:
             self._dc_re = re.compile(rf'(?:{dc_alts})', re.IGNORECASE)
         else:
             self._dc_re = None
+
+    @property
+    def mapping(self):
+        return self.domain_dict
 
     def scrub(self, text: str) -> str:
         if self._re:

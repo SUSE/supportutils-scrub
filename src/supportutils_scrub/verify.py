@@ -425,7 +425,7 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
     # Build IP allowlist based on config
     obfuscate_private = False
     if config:
-        obfuscate_private = config.get('obfuscate_private_ip', 'no').lower() == 'yes'
+        obfuscate_private = config.obfuscate_private_ip
     safe_nets = _build_safe_ipv4_nets(obfuscate_private_ip=obfuscate_private)
 
     # --- Layer 1: mapping-based (optimized single-regex) ---

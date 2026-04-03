@@ -2,8 +2,11 @@ import random
 import logging
 import re
 import os
+from supportutils_scrub.scrubber import Scrubber
 
-class KeywordScrubber:
+class KeywordScrubber(Scrubber):
+    name = 'keyword'
+
     def __init__(self, keyword_file=None, cmd_keywords=None):
         self.keyword_file = keyword_file
         self.cmd_keywords = cmd_keywords or []
@@ -37,13 +40,14 @@ class KeywordScrubber:
         random_length = random.randint(7, 10)
         return 'x' * random_length
 
+    @property
+    def mapping(self):
+        return self.keyword_dict
+
     def scrub(self, text):
-        obfuscated_dict = {}
         for keyword, obfuscated in self.keyword_dict.items():
-            text, count = re.subn(re.escape(keyword), obfuscated, text, flags=re.IGNORECASE)
-            if count > 0:
-                obfuscated_dict[keyword] = obfuscated
-        return text, obfuscated_dict
+            text = re.sub(re.escape(keyword), obfuscated, text, flags=re.IGNORECASE)
+        return text
 
     def is_loaded(self):
         return bool(self.keyword_dict)

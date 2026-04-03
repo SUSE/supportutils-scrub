@@ -1,6 +1,7 @@
 # cloud_token_scrubber.py
 
 import re
+from supportutils_scrub.scrubber import Scrubber
 
 
 _JWT_RE = re.compile(
@@ -35,7 +36,8 @@ _IDENTITY_TAG_RE = re.compile(
 )
 
 
-class CloudTokenScrubber:
+class CloudTokenScrubber(Scrubber):
+    name = 'cloud_token'
     """
     Detects and replaces cloud provider tokens, keys, and credentials
     from AWS, Azure, and GCE/GCP.
@@ -44,6 +46,10 @@ class CloudTokenScrubber:
     def __init__(self, mappings=None):
         self.token_dict = dict(mappings.get('cloud_token', {})) if mappings else {}
         self._counter = len(self.token_dict)
+
+    @property
+    def mapping(self):
+        return self.token_dict
 
     def _get_fake(self, real_value, prefix='TOKEN'):
         """Return a consistent fake token for a real one."""

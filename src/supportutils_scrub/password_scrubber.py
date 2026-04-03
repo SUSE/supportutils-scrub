@@ -1,5 +1,6 @@
 # password_scrubber.py
 import re
+from supportutils_scrub.scrubber import Scrubber
 
 _PASSWORD_RE = re.compile(
     r'(?i)(\b(?:password|passwd)\s*=\s*["\']?)'     
@@ -9,12 +10,17 @@ _PASSWORD_RE = re.compile(
 )
 
 
-class PasswordScrubber:
+class PasswordScrubber(Scrubber):
+    name = 'password'
     """Finds and replaces password values """
 
     def __init__(self, mappings=None):
         self.password_dict = dict(mappings.get('password', {})) if mappings else {}
         self._counter = len(self.password_dict)
+
+    @property
+    def mapping(self):
+        return self.password_dict
 
     def _get_fake_password(self, real_value):
         """Returns fake password for a real one."""

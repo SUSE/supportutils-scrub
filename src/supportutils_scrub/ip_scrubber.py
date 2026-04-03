@@ -2,6 +2,7 @@
 
 import re
 from ipaddress import IPv4Address, IPv4Network, ip_network
+from supportutils_scrub.scrubber import Scrubber
 
 OCTET = r'(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)'
 CIDR_RE = re.compile(
@@ -17,18 +18,20 @@ SPECIALS = {
 }
 
 
-class IPScrubber:
+class IPScrubber(Scrubber):
+    name = 'ip'
+
     def __init__(self, config, mappings=None):
 
         self.ip_dict = mappings.get('ip', {}) if mappings else {}
         self.config = config       
         self.subnet_dict = dict(mappings.get('subnet', {}))
         self.category_pools = {
-            'public':      IPv4Network(self.config.get('public_pool', '198.16.0.0/12')),   
-            'priv10':      IPv4Network(self.config.get('pool_10',       '100.80.0.0/12')),  
-            'priv172':     IPv4Network(self.config.get('pool_172',      '100.96.0.0/12')),  
-            'priv192_168': IPv4Network(self.config.get('pool_192_168',  '100.112.0.0/12')), 
-            'linklocal':   IPv4Network(self.config.get('pool_169_254',  '100.79.0.0/16')),  
+            'public':      IPv4Network(self.config.public_pool),
+            'priv10':      IPv4Network(self.config.pool_10),
+            'priv172':     IPv4Network(self.config.pool_172),
+            'priv192_168': IPv4Network(self.config.pool_192_168),
+            'linklocal':   IPv4Network(self.config.pool_169_254),
         }
         self._pool_cursor = {}
         for key in self.category_pools:
@@ -37,6 +40,7 @@ class IPScrubber:
         
         self._sanitize_ip_map()
 
+        self._last_state = {}
         self._real_to_fake = {}
         self._used_slots = set()  
         for k, v in self.subnet_dict.items():
@@ -104,8 +108,7 @@ class IPScrubber:
             return False
 
     def _should_obfuscate_private(self):
-        mode = str(self.config.get('obfuscate_private_ip', 'no')).lower()
-        return mode == 'yes'
+        return self.config.obfuscate_private_ip
 
     def _alloc_fake_subnet_from_pool(self, cat_key: str, prefixlen: int) -> IPv4Network:
         """Allocate a fake subnet from the specified pool, using a /24 slot for overlap checking."""
@@ -168,6 +171,8 @@ class IPScrubber:
             except ValueError:
                 continue
 
+            if ip.startswith('0.'):
+                continue
             if ip_obj.is_loopback or ip_obj.is_multicast or ip in SPECIALS:
                 continue
 
@@ -249,7 +254,7 @@ class IPScrubber:
             if ip in real_net:
                 return real_net, self._real_to_fake[real_net]
 
-        default_pfx = int(self.config.get('default_infer_prefixlen', 24))
+        default_pfx = self.config.default_infer_prefixlen
         real_net = ip_network(f"{ip}/{default_pfx}", strict=False)
 
         if self._is_private(str(real_net.network_address)) and not self._should_obfuscate_private():
@@ -282,6 +287,9 @@ class IPScrubber:
             ip = m.group('ip')
             pfx = m.group('pfx')
 
+            if ip.startswith('0.'):
+                return m.group(0)
+
             start = m.start()
             snippet = text[max(0, start-20):start].lower()
             if re.search(r'(?:\b|_)ver(?:sion)?[\s:="\']*$', snippet.rstrip()):
@@ -292,14 +300,25 @@ class IPScrubber:
             return self._scrub_token(ip, pfx)
         
         new_text = CIDR_RE.sub(repl, text)
-        state = {f'pool_cursor_{k}': v for k, v in self._pool_cursor.items()}
-        
-        return new_text, self.ip_dict, self.subnet_dict, state
+        self._last_state = {f'pool_cursor_{k}': v for k, v in self._pool_cursor.items()}
 
+        return new_text, self.ip_dict, self.subnet_dict, self._last_state
+
+    @property
+    def mapping(self):
+        return self.ip_dict
+
+    @property
+    def state(self):
+        return self._last_state
+
+    def scrub(self, text):
+        new_text, _, _, _ = self.scrub_text(text)
+        return new_text
 
     def scrub_ip(self, ip):
         """Legacy single-IP scrub without subnet."""
-        if ip in SPECIALS:
+        if ip in SPECIALS or ip.startswith('0.'):
             return ip
         
         is_private = self._is_private(ip)

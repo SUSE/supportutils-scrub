@@ -1,5 +1,8 @@
 # config_reader.py
 
+from supportutils_scrub.scrub_config import ScrubConfig
+
+
 class ConfigReader:
     def __init__(self, default_config_path):
         self.default_config_path = default_config_path
@@ -9,26 +12,7 @@ class ConfigReader:
         if config_path is None:
             config_path = self.default_config_path
 
-        default_settings = {
-            'obfuscate_private_ip': 'no',
-            'obfuscate_public_ip': 'yes',
-            'obfuscate_domain': 'yes',
-            'obfuscate_username': 'yes',
-            'obfuscate_hostname': 'yes',
-            'obfuscate_mac': 'yes',
-            'obfuscate_ipv6': 'yes',
-            'obfuscate_serial': 'yes',
-            'verbose': 'true',
-            'log_level': 'verbose',
-            'use_key_words_file': 'yes',
-            'key_words_file': '/var/lib/supportutils-scrub-keywords.txt',
-            'secure_tmp': 'no',
-            'encrypt_mappings': 'no',
-            'dataset_dir': '/var/tmp',
-        }
-
-
-        config = default_settings.copy()
+        raw = {}
 
         try:
             with open(config_path, "r") as config_file:
@@ -37,18 +21,13 @@ class ConfigReader:
                     if not line or line.startswith('#'):
                         continue
                     key, value = line.split('=', 1)
-                    config[key.strip()] = value.strip()
-
-                    if key.strip() == 'use_key_words_file':
-                        config['use_key_words_file'] = value.strip().lower() == 'yes'
-                    if key.strip() == 'key_words_file':
-                        config['key_words_file'] = value.strip()
+                    raw[key.strip()] = value.strip()
 
         except FileNotFoundError:
-
             print(f"[!] Configuration file not found: {config_path}.")
             print(f"     → Using default settings")
         except Exception as e:
             print(f"[!] Error reading configuration file: {e}")
             print(f"     → Using default settings")
-        return config
+
+        return ScrubConfig.from_dict(raw)

@@ -4,6 +4,7 @@
 import re
 import ipaddress
 from typing import Dict, Tuple, List, Iterable, Match, Optional
+from supportutils_scrub.scrubber import Scrubber
 
 CANDIDATE_V6 = re.compile(r"(?<![A-Za-z0-9:_-])([0-9A-Fa-f:.]+[0-9A-Fa-f])(?:/(\d{1,3}))?(?![A-Za-z0-9_-])(?!:[0-9A-Fa-f])")
 
@@ -18,7 +19,8 @@ FAKE_POOL_ULA = ipaddress.IPv6Network("fd00::/8")
 GLOBAL_UNICAST = ipaddress.IPv6Network("2000::/3")
 
 
-class IPv6Scrubber:
+class IPv6Scrubber(Scrubber):
+    name = 'ipv6'
 
     def __init__(self, config: Dict, mappings: Optional[Dict] = None) -> None:
         self.config = config or {}
@@ -34,11 +36,8 @@ class IPv6Scrubber:
         state = (mappings or {}).get('state', {})
         self._pool_cursor: int = int(state.get('ipv6_pool_cursor', 0))
 
-    def _flag(self, key: str, default: str = 'yes') -> bool:
-        return str(self.config.get(key, default)).strip().lower() == 'yes'
-
     def _should_obfuscate(self) -> bool:
-        return self._flag('obfuscate_ipv6', 'yes')
+        return self.config.obfuscate_ipv6
 
     def _skip_scope(self, ip: ipaddress.IPv6Address) -> bool:
         if ip in UNSPECIFIED or ip in LOOPBACK or ip in MULTICAST:
@@ -152,6 +151,22 @@ class IPv6Scrubber:
         state = {'ipv6_pool_cursor': self._pool_cursor}
         subnet_map_str = {str(k): str(v) for k, v in self._subnet_map.items()}
         return new_text, dict(self.ipv6_map), subnet_map_str, state
+
+    @property
+    def mapping(self):
+        return dict(self.ipv6_map)
+
+    @property
+    def subnet_map(self):
+        return {str(k): str(v) for k, v in self._subnet_map.items()}
+
+    @property
+    def state(self):
+        return {'ipv6_pool_cursor': self._pool_cursor}
+
+    def scrub(self, text):
+        new_text, _, _, _ = self.scrub_text(text)
+        return new_text
 
     @staticmethod
     def extract_ipv6(text: str) -> List[str]:

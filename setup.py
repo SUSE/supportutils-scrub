@@ -1,19 +1,25 @@
 from setuptools import setup, find_packages
 import os
+import re
 
-# Helper function to read the README file.
 def read(fname):
     return open(os.path.join(os.path.dirname(__file__), fname)).read()
 
+def get_version():
+    main_py = os.path.join(os.path.dirname(__file__), 'src', 'supportutils_scrub', 'main.py')
+    with open(main_py) as f:
+        match = re.search(r'SCRIPT_VERSION\s*=\s*["\']([^"\']+)', f.read())
+    return match.group(1)
+
 setup(
     name='supportutils-scrub',
-    version='1.0',
+    version=get_version(),
     description='Utility to sanitize and remove sensitive data from supportconfig tarballs',
     long_description=read('README.md'),
     long_description_content_type='text/markdown',
     author='Ronald Pina',
-    author_email='ronald.pina@suse.com',
-    url='https://github.com/pinaronald/supportutils-scrub',
+    author_email='rpina@suse.com',
+    url='https://github.com/opensuse/supportutils-scrub',
     license='GPL-2.0',
     packages=find_packages(where='src'),
     package_dir={'': 'src'},
