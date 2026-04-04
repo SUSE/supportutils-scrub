@@ -8,6 +8,9 @@ from supportutils_scrub.scrubber import Scrubber
 
 CANDIDATE_V6 = re.compile(r"(?<![A-Za-z0-9:_-])([0-9A-Fa-f:.]+[0-9A-Fa-f])(?:/(\d{1,3}))?(?![A-Za-z0-9_-])(?!:[0-9A-Fa-f])")
 
+# Matches [AF_INET6]ipv6addr:port — OpenVPN/socket notation where port follows IPv6 with no brackets
+_AF_INET6_RE = re.compile(r'(\[AF_INET6\])([0-9A-Fa-f:]+):(\d{1,5})\b')
+
 UNSPECIFIED = ipaddress.IPv6Network("::/128")
 LOOPBACK    = ipaddress.IPv6Network("::1/128")
 MULTICAST   = ipaddress.IPv6Network("ff00::/8")
@@ -140,7 +143,30 @@ class IPv6Scrubber(Scrubber):
             self.ipv6_map[str(ip)] = fake_s
             return f"{fake_s}/{explicit_pfx}" if explicit_pfx is not None else fake_s
 
-        new_text = CANDIDATE_V6.sub(repl, text)
+        def repl_af_inet6(m: Match) -> str:
+            prefix, addr, port = m.group(1), m.group(2), m.group(3)
+            try:
+                ip = ipaddress.IPv6Address(addr)
+            except Exception:
+                return m.group(0)
+            if self._skip_scope(ip):
+                return m.group(0)
+            fake = self.ipv6_map.get(str(ip))
+            if not fake:
+                mapped = self._map_in_known_subnets(ip)
+                if mapped:
+                    fake = mapped
+                else:
+                    anchor_pfx = self._choose_mapping_prefix(ip, None)
+                    real_subnet = ipaddress.IPv6Network((int(ip) & ~((1 << (128 - anchor_pfx)) - 1), anchor_pfx))
+                    fake_subnet = self._get_or_create_fake_subnet(real_subnet)
+                    host_off = int(ip) - int(real_subnet.network_address)
+                    fake = str(ipaddress.IPv6Address(int(fake_subnet.network_address) + host_off))
+                self.ipv6_map[str(ip)] = fake
+            return f"{prefix}{fake}:{port}"
+
+        new_text = _AF_INET6_RE.sub(repl_af_inet6, text)
+        new_text = CANDIDATE_V6.sub(repl, new_text)
         state = {'ipv6_pool_cursor': self._pool_cursor}
         subnet_map_str = {str(k): str(v) for k, v in self._subnet_map.items()}
         return new_text, dict(self.ipv6_map), subnet_map_str, state

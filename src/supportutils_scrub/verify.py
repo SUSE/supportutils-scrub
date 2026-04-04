@@ -6,7 +6,7 @@ import ipaddress
 _CATEGORIES = [
     ('ip',       'IPv4 address',  'ip'),
     ('ipv6',     'IPv6 address',  'substring'),
-    ('mac',      'MAC address',   'substring'),
+    ('mac',      'MAC address',   'mac_re'),
     ('domain',   'domain',        'domain'),
     ('hostname', 'hostname',      'boundary'),
     ('user',     'username',      'boundary'),
@@ -382,6 +382,10 @@ def _build_terms(mappings: dict):
                 match_labels[real_val] = label
             elif mode == 'ip':
                 regex_parts.append(_IP_BOUNDARY.format(re.escape(real_val)))
+                match_labels[real_val] = label
+            elif mode == 'mac_re':
+                # Use same boundary as MAC_PATTERN to avoid matching inside longer hex strings
+                regex_parts.append(r'(?<![0-9A-Fa-f:])' + re.escape(real_val) + r'(?![0-9A-Fa-f:])')
                 match_labels[real_val] = label
             elif mode == 'domain':
                 # Match same boundary as domain_scrubber: not preceded/followed by \w or -

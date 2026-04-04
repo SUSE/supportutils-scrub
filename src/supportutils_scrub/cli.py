@@ -105,6 +105,14 @@ def main():
 
     args = parse_args()
 
+    # nargs='?' for --report can greedily consume the archive path when --report
+    # appears in SUPPORTUTILS_SCRUB_OPTS without a value. Recover it.
+    if not args.supportconfig_path and isinstance(getattr(args, 'report', None), str):
+        val = args.report
+        if not val.endswith('.json') and (val.endswith(('.txz', '.tgz', '.tar.gz')) or os.path.isdir(val) or os.path.isfile(val)):
+            args.supportconfig_path = [val]
+            args.report = True
+
     if not args.decrypt_mappings and len(args.supportconfig_path) == 1 \
             and args.supportconfig_path[0].endswith('.json.enc'):
         args.decrypt_mappings = args.supportconfig_path[0]
