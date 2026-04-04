@@ -8,7 +8,7 @@ OCTET = r'(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)'
 CIDR_RE = re.compile(
     rf'(?<![A-Za-z0-9.\-])'
     rf'(?P<ip>{OCTET}\.{OCTET}\.{OCTET}\.{OCTET})'
-    rf'(?![A-Za-z0-9.\-])'
+    rf'(?![A-Za-z0-9.\-+])'
     r'(?:/(?P<pfx>\d{1,2}))?'
 )
 
@@ -294,7 +294,7 @@ class IPScrubber(Scrubber):
             snippet = text[max(0, start-20):start].lower()
             if re.search(r'(?:\b|_)ver(?:sion)?[\s:="\']*$', snippet.rstrip()):
                 return m.group(0)
-            if snippet.endswith('/') and not snippet.endswith('://'):
+            if snippet.endswith('/') and not snippet.endswith('://') and (len(snippet) < 2 or not snippet[-2].isdigit()):
                 return m.group(0)
 
             return self._scrub_token(ip, pfx)
