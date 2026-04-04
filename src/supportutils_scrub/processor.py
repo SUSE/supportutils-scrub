@@ -50,7 +50,7 @@ class FileProcessor:
 
         _SCRUB_INFO_HEADER = (
             "#" + "-" * 93 + "\n"
-            "# INFO: Sensitive information in this file has been obfuscated by supportutils-scrub.\n"
+            "# INFO: This file was processed by supportutils-scrub to remove sensitive data. Review before sharing.\n"
             "#" + "-" * 93 + "\n\n"
         )
 

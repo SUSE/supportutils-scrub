@@ -1,0 +1,23 @@
+# /sbin/ip route show
+default via 192.168.1.1 dev eth0 proto dhcp metric 100
+10.0.0.0/8 via 10.0.0.1 dev eth1 proto static metric 200
+172.16.0.0/12 via 172.16.5.1 dev eth2 proto static
+192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.10
+192.168.2.0/24 via 192.168.1.254 dev eth0 proto static
+10.10.0.0/16 via 10.0.0.1 dev eth1
+10.10.5.0/24 via 10.10.0.1 dev eth1
+
+# /sbin/ip addr show
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
+    inet 127.0.0.1/8 scope host lo
+    inet6 ::1/128 scope host
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    link/ether 52:54:00:9a:c4:ad brd ff:ff:ff:ff:ff:ff
+    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0
+    inet6 fe80::5054:ff:fe9a:c4ad/64 scope link
+3: eth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    link/ether 52:54:00:ab:cd:ef brd ff:ff:ff:ff:ff:ff
+    inet 10.0.0.50/8 brd 10.255.255.255 scope global eth1
+4: eth2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    link/ether 52:54:00:11:22:33 brd ff:ff:ff:ff:ff:ff
+    inet 172.16.5.100/24 brd 172.16.5.255 scope global eth2

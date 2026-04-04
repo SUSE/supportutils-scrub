@@ -124,26 +124,28 @@ def run_folder_mode(args, logger):
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
 
-    if quiet:
-        file_names = [os.path.basename(f) for f in report_files
-                      if not re.match(r"^sa\d{8}(\.xz)?$", os.path.basename(f))]
-        print("Scrubbing: " + " ".join(file_names), file=err)
-    else:
+    total_files = len(report_files)
+    if not quiet:
         logger.info("Scrubbing:")
     _devnull = open(os.devnull, 'w') if quiet else None
     try:
-        for report_file in report_files:
+        for file_idx, report_file in enumerate(report_files, 1):
             basename = os.path.basename(report_file)
-            if not quiet and not re.match(r"^sa\d{8}(\.xz)?$", basename):
-                print(f"        {basename}")
             if quiet:
+                err.write(f"\r  Scrubbing {file_idx}/{total_files} {basename:<60}")
+                err.flush()
                 _saved_stdout = sys.stdout
                 sys.stdout = _devnull
+            elif not re.match(r"^sa\d{8}(\.xz)?$", basename):
+                print(f"        {basename}")
             try:
                 file_processor.process_file(report_file, logger, verbose_flag)
             finally:
                 if quiet:
                     sys.stdout = _saved_stdout
+        if quiet:
+            err.write(f"\r  Scrubbing {total_files}/{total_files} done.{' ' * 60}\n")
+            err.flush()
     finally:
         if _devnull is not None:
             _devnull.close()
@@ -159,7 +161,7 @@ def run_folder_mode(args, logger):
 
     saved_mapping_path = save_mappings(args, dataset_path, dataset_dict)
 
-    if verbose_flag:
+    if verbose_flag and not quiet:
         print("\n--- Obfuscated Mapping Preview ---")
         print(json.dumps(dataset_dict, indent=4))
 

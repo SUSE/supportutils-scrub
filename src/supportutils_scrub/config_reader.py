@@ -1,5 +1,6 @@
 # config_reader.py
 
+import sys
 from supportutils_scrub.scrub_config import ScrubConfig
 
 
@@ -24,10 +25,10 @@ class ConfigReader:
                     raw[key.strip()] = value.strip()
 
         except FileNotFoundError:
-            print(f"[!] Configuration file not found: {config_path}.")
-            print(f"     → Using default settings")
+            print(f"[!] Configuration file not found: {config_path}.", file=sys.stderr)
+            print(f"     → Using default settings", file=sys.stderr)
         except Exception as e:
-            print(f"[!] Error reading configuration file: {e}")
-            print(f"     → Using default settings")
+            print(f"[!] Error reading configuration file: {e}", file=sys.stderr)
+            print(f"     → Using default settings", file=sys.stderr)
 
         return ScrubConfig.from_dict(raw)

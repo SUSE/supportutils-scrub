@@ -8,7 +8,7 @@ def _yes(val) -> bool:
 
 @dataclass
 class ScrubConfig:
-    obfuscate_private_ip: bool = False
+    obfuscate_private_ip: bool = True
     obfuscate_public_ip: bool = True
     obfuscate_domain: bool = True
     obfuscate_username: bool = True

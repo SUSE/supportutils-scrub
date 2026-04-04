@@ -86,7 +86,7 @@ def run_file_mode(args, logger):
     if scrubbed_text != text:
         header = (
             "#" + "-" * 93 + "\n"
-            "# INFO: Sensitive information in this file has been obfuscated by supportutils-scrub.\n"
+            "# INFO: This file was processed by supportutils-scrub to remove sensitive data. Review before sharing.\n"
             "#" + "-" * 93 + "\n\n"
         )
         final_content = header + scrubbed_text

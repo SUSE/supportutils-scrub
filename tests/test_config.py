@@ -6,7 +6,7 @@ from supportutils_scrub.config_reader import ConfigReader
 class TestScrubConfig:
     def test_defaults(self):
         cfg = ScrubConfig()
-        assert cfg.obfuscate_private_ip is False
+        assert cfg.obfuscate_private_ip is True
         assert cfg.obfuscate_public_ip is True
         assert cfg.obfuscate_mac is True
         assert cfg.dataset_dir == '/var/tmp'

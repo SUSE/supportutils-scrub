@@ -1,0 +1,30 @@
+# /usr/sbin/iptables -t filter -nL
+Chain INPUT (policy DROP)
+target     prot opt source               destination
+ACCEPT     all  --  0.0.0.0/0            0.0.0.0/0            state RELATED,ESTABLISHED
+ACCEPT     all  --  127.0.0.0/8          127.0.0.0/8
+ACCEPT     tcp  --  192.168.1.0/24       192.168.1.10         tcp dpt:22
+ACCEPT     tcp  --  10.0.0.0/8           10.0.0.50            tcp dpt:5432
+ACCEPT     tcp  --  172.16.5.0/24        172.16.5.100         tcp dpts:80:443
+DROP       all  --  45.33.32.0/24        0.0.0.0/0
+ACCEPT     icmp --  192.168.1.0/24       192.168.1.10         icmp type 8
+
+Chain FORWARD (policy DROP)
+target     prot opt source               destination
+ACCEPT     all  --  192.168.1.0/24       10.0.0.0/8
+ACCEPT     all  --  10.0.0.0/8           192.168.1.0/24       state RELATED,ESTABLISHED
+DROP       all  --  0.0.0.0/0            0.0.0.0/0
+
+Chain OUTPUT (policy ACCEPT)
+target     prot opt source               destination
+
+# /usr/sbin/iptables -t nat -nL
+Chain PREROUTING (policy ACCEPT)
+target     prot opt source               destination
+DNAT       tcp  --  0.0.0.0/0            203.0.113.50         tcp dpt:8080 to:192.168.1.20:80
+DNAT       tcp  --  0.0.0.0/0            203.0.113.50         tcp dpt:8443 to:192.168.1.20:443
+
+Chain POSTROUTING (policy ACCEPT)
+target     prot opt source               destination
+MASQUERADE all  --  192.168.1.0/24       0.0.0.0/0
+SNAT       all  --  10.0.0.0/8           0.0.0.0/0            to:203.0.113.50

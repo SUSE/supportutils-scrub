@@ -1,4 +1,4 @@
-.TH SUPPORTUTILS-SCRUB 8 "09 Mar 2026" "supportutils-scrub 1.3" "Support Utilities Manual"
+.TH SUPPORTUTILS-SCRUB 8 "04 Apr 2026" "supportutils-scrub 1.4" "Support Utilities Manual"
 .SH NAME
 supportutils-scrub \- Obfuscate sensitive data from SUSE supportconfig tarballs and network packet captures
 .SH SYNOPSIS
@@ -356,6 +356,13 @@ Scrubbing succeeded but \fB\-\-verify\fR found residual data. Warn the operator;
 .B 1
 Failure. Do not use the output.
 
+.SH DISCLAIMER
+supportutils-scrub is a best-effort obfuscation tool. It does not guarantee
+that all sensitive data has been removed from the output. The operator is
+responsible for reviewing the scrubbed output before sharing it with any
+third party. Use \fB\-\-verify\fR to perform an automated post-scrub scan,
+but note that automated verification cannot detect all forms of sensitive data.
+SUSE accepts no liability for data disclosed in scrubbed archives.
 .SH AUTHOR
 Ronald Pina <ronald.pina@suse.com>
 .SH COPYRIGHT

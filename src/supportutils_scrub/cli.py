@@ -115,7 +115,7 @@ def main():
         try:
             from cryptography.fernet import Fernet
         except ImportError:
-            print("[!] Package 'cryptography' is required. Install with: pip install cryptography")
+            print("[!] Package 'cryptography' is required. Install with: pip install cryptography", file=sys.stderr)
             sys.exit(1)
         import base64, hashlib
         passphrase = getpass.getpass(f"Passphrase for {enc_file}: ").encode('utf-8')
@@ -128,7 +128,7 @@ def main():
                 data = json.loads(Fernet(key).decrypt(f.read()))
             print(json.dumps(data, indent=2))
         except Exception:
-            print("[!] Decryption failed. Wrong passphrase or corrupted file.")
+            print("[!] Decryption failed. Wrong passphrase or corrupted file.", file=sys.stderr)
             sys.exit(1)
         return
 
@@ -141,14 +141,14 @@ def main():
     args.encrypt_mappings = args.encrypt_mappings or _early_config.encrypt_mappings
     args._preloaded_config = _early_config
     if args.encrypt_mappings and args.no_mappings:
-        print("[!] --encrypt-mappings and --no-mappings are mutually exclusive.")
+        print("[!] --encrypt-mappings and --no-mappings are mutually exclusive.", file=sys.stderr)
         sys.exit(1)
 
     if args.encrypt_mappings and not args.no_mappings:
         try:
             args._enc_passphrase = get_encryption_passphrase()
         except RuntimeError as e:
-            print(f"[!] {e}")
+            print(f"[!] {e}", file=sys.stderr)
             sys.exit(1)
     else:
         args._enc_passphrase = None
@@ -191,7 +191,7 @@ def main():
 
     if args.rewrite_pcap and not paths:
         if not args.mappings or not args.pcap_in:
-            print("[!] For --rewrite-pcap without a supportconfig, provide --mappings and --pcap-in")
+            print("[!] For --rewrite-pcap without a supportconfig, provide --mappings and --pcap-in", file=sys.stderr)
             sys.exit(2)
         mappings = load_mappings_file(args.mappings)
         rewrite_pcaps_with_tcprewrite(
@@ -204,7 +204,7 @@ def main():
         return
 
     if not paths:
-        print("[!] No input specified. Provide a .txz/.tgz archive, folder, plain file, or '-' for stdin.")
+        print("[!] No input specified. Provide a .txz/.tgz archive, folder, plain file, or '-' for stdin.", file=sys.stderr)
         sys.exit(2)
 
     from supportutils_scrub.modes.archive import run_archive_mode

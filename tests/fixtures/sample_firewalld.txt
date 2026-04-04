@@ -1,0 +1,33 @@
+# /usr/bin/firewall-cmd --list-all-zones
+public (active)
+  target: default
+  icmp-block-inversion: no
+  interfaces: eth0
+  sources:
+  services: dhcpv6-client ssh
+  ports: 80/tcp 443/tcp
+  protocols:
+  forward: no
+  masquerade: no
+  forward-ports:
+  source-ports:
+  icmp-blocks:
+  rich rules:
+    rule family="ipv4" source address="192.168.1.0/24" service name="ssh" accept
+    rule family="ipv4" source address="10.0.0.0/8" service name="postgresql" accept
+    rule family="ipv4" source address="45.33.32.156" drop
+    rule family="ipv4" source address="172.16.5.0/24" port port="8080" protocol="tcp" accept
+
+internal (active)
+  target: default
+  interfaces: eth1 eth2
+  sources: 10.0.0.0/8 172.16.0.0/12
+  rich rules:
+    rule family="ipv4" source address="10.0.0.0/24" destination address="10.0.0.50" service name="nfs" accept
+    rule family="ipv4" source address="172.16.5.0/24" destination address="172.16.5.100" port port="3306" protocol="tcp" accept
+
+# /usr/bin/firewall-cmd --direct --get-all-rules
+ipv4 filter INPUT 0 -s 192.168.1.0/24 -d 192.168.1.10 -p tcp --dport 22 -j ACCEPT
+ipv4 filter INPUT 1 -s 10.0.0.0/8 -d 10.0.0.50 -p tcp --dport 5432 -j ACCEPT
+ipv4 filter FORWARD 0 -s 192.168.1.0/24 -d 10.0.0.0/8 -j ACCEPT
+ipv4 nat POSTROUTING 0 -s 192.168.1.0/24 -o eth0 -j MASQUERADE

@@ -1,0 +1,13 @@
+# dmidecode
+Handle 0x0001, DMI type 1, 27 bytes
+System Information
+	Manufacturer: QEMU
+	Product Name: Standard PC (Q35 + ICH9, 2009)
+	Serial Number: ABC123XYZ789
+	UUID: 550e8400-e29b-41d4-a716-446655440000
+	Asset Tag: ASSET-2024-001
+
+Handle 0x0002, DMI type 2, 15 bytes
+Base Board Information
+	Serial Number: BOARD-SN-99887766
+	Asset Tag: Not Specified

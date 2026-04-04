@@ -42,19 +42,12 @@ class IPv6Scrubber(Scrubber):
     def _skip_scope(self, ip: ipaddress.IPv6Address) -> bool:
         if ip in UNSPECIFIED or ip in LOOPBACK or ip in MULTICAST:
             return True
-
-        if (ip in LINK_LOCAL) and not self._flag('obfuscate_ipv6_linklocal', 'no'):
+        if ip in LINK_LOCAL:
             return True
-        if (ip in ULA) and not self._flag('obfuscate_ipv6_ula', 'no'):
+        if ip in ULA:
             return True
-
-        if (ip in GLOBAL_UNICAST):
+        if ip in GLOBAL_UNICAST:
             return False
-        if (ip in ULA) and self._flag('obfuscate_ipv6_ula', 'no'):
-            return False
-        if (ip in LINK_LOCAL) and self._flag('obfuscate_ipv6_linklocal', 'no'):
-            return False
-
         return True
 
     

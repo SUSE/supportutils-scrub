@@ -203,7 +203,7 @@ def rename_extraction_paths(clean_folder_path, hostname_dict, rename_top=True):
                 try:
                     os.rename(os.path.join(root, d), os.path.join(root, scrubbed))
                 except Exception as e:
-                    print(f"[!] Could not rename directory '{d}': {e}")
+                    print(f"[!] Could not rename directory '{d}': {e}", file=sys.stderr)
     if not rename_top:
         return clean_folder_path
     parent   = os.path.dirname(clean_folder_path)
@@ -217,7 +217,7 @@ def rename_extraction_paths(clean_folder_path, hostname_dict, rename_top=True):
             os.rename(clean_folder_path, new_path)
             return new_path
         except Exception as e:
-            print(f"[!] Could not rename extraction folder: {e}")
+            print(f"[!] Could not rename extraction folder: {e}", file=sys.stderr)
     return clean_folder_path
 
 

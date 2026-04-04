@@ -1,0 +1,24 @@
+# /etc/hosts
+127.0.0.1 localhost
+192.168.1.10 dbserver.corp.example.com dbserver
+10.0.0.1 gateway.internal.lan gateway
+172.16.5.50 appnode1.corp.example.com appnode1
+
+# /etc/resolv.conf
+search corp.example.com internal.lan
+nameserver 10.0.0.53
+nameserver 8.8.8.8
+
+# /sbin/ip addr show
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
+    inet 127.0.0.1/8 scope host lo
+    inet6 ::1/128 scope host
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
+    link/ether 52:54:00:9a:c4:ad brd ff:ff:ff:ff:ff:ff
+    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0
+    inet6 2001:db8:85a3::8a2e:370:7334/64 scope global
+
+# /sbin/ip route show
+default via 192.168.1.1 dev eth0
+10.0.0.0/8 via 10.0.0.1 dev eth1
+172.16.0.0/12 via 172.16.5.1 dev eth2

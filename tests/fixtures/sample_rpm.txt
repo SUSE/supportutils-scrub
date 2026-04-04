@@ -1,0 +1,6 @@
+# rpm -qa --last
+libmodplug1                         SUSE Linux Enterprise 12            0.8.9.0+git20170610.f6dd59a-15.4.1
+python3-setuptools                  openSUSE Leap 15.6                  67.7.2-150400.1.10
+kernel-default                      openSUSE Leap 15.6                  6.4.0-150600.23.47.2
+glibc                               openSUSE Leap 15.6                  2.38.0-150600.14.17.2
+openssl-1_1                         openSUSE Leap 15.6                  1.1.1.25-150600.5.11.2

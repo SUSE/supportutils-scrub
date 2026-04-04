@@ -9,16 +9,18 @@ import socket
 from datetime import datetime, timezone
 from supportutils_scrub.translator import Translator
 
+_err = sys.stderr
+
 
 def get_encryption_passphrase():
     import getpass
     passphrase = getpass.getpass("[*] Mapping file encryption passphrase: ")
     confirm    = getpass.getpass("[*] Confirm passphrase: ")
     if passphrase != confirm:
-        print("[!] Passphrases do not match. Aborting.")
+        print("[!] Passphrases do not match. Aborting.", file=_err)
         sys.exit(1)
     if len(passphrase) < 8:
-        print("[!] Passphrase must be at least 8 characters.")
+        print("[!] Passphrase must be at least 8 characters.", file=_err)
         sys.exit(1)
     return passphrase
 
@@ -26,7 +28,7 @@ def get_encryption_passphrase():
 def get_secure_tmp_base():
     if os.path.exists('/dev/shm') and os.access('/dev/shm', os.W_OK):
         return '/dev/shm'
-    print("[!] WARNING: /dev/shm not available, falling back to /var/tmp")
+    print("[!] WARNING: /dev/shm not available, falling back to /var/tmp", file=_err)
     return '/var/tmp'
 
 
@@ -54,7 +56,7 @@ def load_mappings_file(path):
             with open(path, 'rb') as f:
                 return json.loads(Fernet(key).decrypt(f.read()))
         except Exception:
-            print(f"[!] Failed to decrypt {path}. Wrong passphrase or corrupted file.")
+            print(f"[!] Failed to decrypt {path}. Wrong passphrase or corrupted file.", file=_err)
             sys.exit(1)
     try:
         with open(path, 'r') as f:
@@ -66,14 +68,14 @@ def load_mappings_file(path):
 
 def save_mappings(args, dataset_path, dataset_dict):
     if args.no_mappings:
-        print("[!] Mapping file not written (--no-mappings).")
+        print("[!] Mapping file not written (--no-mappings).", file=_err)
         return None
     if getattr(args, '_enc_passphrase', None):
         try:
             return Translator.save_datasets_encrypted(
                 dataset_path, dataset_dict, args._enc_passphrase)
         except Exception as e:
-            print(f"[!] Encrypted mapping failed: {e}, falling back to plain.")
+            print(f"[!] Encrypted mapping failed: {e}, falling back to plain.", file=_err)
     Translator.save_datasets(dataset_path, dataset_dict)
     return dataset_path
 
@@ -96,7 +98,7 @@ def write_audit_log(audit_path, record):
             json.dump(record, f, indent=4)
         os.chmod(audit_path, 0o600)
     except Exception as e:
-        print(f"[!] Could not write audit log: {e}")
+        print(f"[!] Could not write audit log: {e}", file=_err)
 
 
 def audit_record(mode, inputs, outputs, mapping_path, args, version):
@@ -136,6 +138,6 @@ def write_report(report_path, archives, version, verify_findings=None):
         with open(report_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
         os.chmod(report_path, 0o600)
-        print(f"[✓] Coverage report written to:  {report_path}")
+        print(f"[✓] Coverage report written to:  {report_path}", file=_err)
     except Exception as e:
         print(f"[!] Could not write report to {report_path}: {e}", file=sys.stderr)

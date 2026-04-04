@@ -454,6 +454,10 @@ supportutils-scrub /var/log/scc_node1.txz \
     --verify --report /var/tmp/scrub_report_$(date +%Y%m%d).json
 ```
 
+## Disclaimer
+
+supportutils-scrub is a best-effort obfuscation tool. It does not guarantee that all sensitive data has been removed from the output. The operator is responsible for reviewing the scrubbed output before sharing it with any third party. Use `--verify` to perform an automated post-scrub scan, but note that automated verification cannot detect all forms of sensitive data. SUSE accepts no liability for data disclosed in scrubbed archives.
+
 ## License
 
 This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; version 2 of the License.

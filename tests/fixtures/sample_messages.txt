@@ -1,0 +1,8 @@
+Mar 10 08:01:22 dbserver sshd[1234]: Accepted publickey for jdoe from 192.168.1.50 port 22 ssh2
+Mar 10 08:01:22 dbserver sshd[1234]: pam_unix(sshd:session): session opened for user jdoe by (uid=0)
+Mar 10 08:02:15 dbserver sudo: jdoe : TTY=pts/0 ; PWD=/home/jdoe ; USER=root ; COMMAND=/bin/systemctl restart postgresql
+Mar 10 08:03:00 dbserver kernel: [UFW BLOCK] IN=eth0 OUT= MAC=52:54:00:9a:c4:ad:00:1a:2b:3c:4d:5e:08:00 SRC=203.0.113.45 DST=192.168.1.10
+Mar 10 08:04:11 dbserver postfix/smtp[5678]: connect to mail.corp.example.com[192.168.1.25]:25
+Mar 10 08:05:00 dbserver crond[9012]: (admin) CMD (/usr/local/bin/backup.sh)
+Mar 10 08:06:33 appnode1 haproxy[3456]: Server backend/web1 is UP, reason: Layer7 check passed
+Mar 10 09:00:00 dbserver sshd[2345]: Failed password for invalid user hacker from 45.33.32.156 port 54321 ssh2
