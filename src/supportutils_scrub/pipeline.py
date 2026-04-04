@@ -69,7 +69,7 @@ def extract_and_map_domains(report_files, additional_domains, mappings):
         DomainScrubber._add_domain_and_parents(domain, all_domains)
 
     files_to_scan = {
-        'network.txt': ['# /etc/hosts', '# /etc/resolv.conf'],
+        'network.txt': ['# /etc/hosts', '# /etc/resolv.conf', '# /bin/nmcli', '# /usr/bin/nmcli'],
         'nfs.txt': ['# /bin/egrep'],
         'ntp.txt': ['# /etc/ntp.conf', '# /etc/chrony.conf'],
         'sssd.txt': ['# /etc/sssd/sssd.conf'],

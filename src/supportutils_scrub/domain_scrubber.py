@@ -20,6 +20,8 @@ _VALID_TLDS = frozenset({
     "aero", "coop", "museum", "travel",
     "cloud", "tech", "dev", "app", "ai", "online", "digital", "global",
     "email", "zone", "host", "data", "software",
+    "asia", "tel", "xxx", "post",
+    "box", "local", "lan", "internal", "home", "corp", "intranet",
     "us", "eu",
     "ac", "ad", "ae", "af", "ag", "al", "am", "ao", "ar", "at", "au", "az",
     "ba", "bb", "bd", "be", "bf", "bg", "bh", "bi", "bj", "bm", "bn", "bo",
@@ -150,6 +152,7 @@ class DomainScrubber(Scrubber):
             if not _is_valid_domain(fqdn):
                 continue
 
+            all_domain_parts.add(fqdn)
             parts = fqdn.split('.')
 
             for i in range(1, len(parts) - 1):
