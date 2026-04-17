@@ -272,12 +272,12 @@ def run_archive_mode(paths, args, logger):
         verify_exit = EXIT_OK
 
     hostname_dict_final = current_mappings.get('hostname', {})
-    want_report = getattr(args, 'report', None) is not None
+    want_report = bool(getattr(args, 'report', False)) or bool(getattr(args, 'report_file', None))
     input_basename = os.path.basename(paths[0].rstrip('/')) if paths else ''
     dataset_path, audit_path, report_path = dataset_paths(
         dataset_dir, timestamp, hostname_dict_final, input_name=input_basename, report=want_report)
-    if want_report and isinstance(args.report, str):
-        report_path = args.report
+    if args.report_file:
+        report_path = args.report_file
 
     if report_path:
         archives_report = [s['report_data'] for s in all_stats]

@@ -94,12 +94,12 @@ def run_folder_mode(args, logger):
         additional_hostnames = re.split(r'[,\s;]+', args.hostname)
     hostname_dict = extract_hostnames(scan_files, additional_hostnames, mappings)
 
-    want_report = getattr(args, 'report', None) is not None
+    want_report = bool(getattr(args, 'report', False)) or bool(getattr(args, 'report_file', None))
     input_basename = os.path.basename(args.supportconfig_path[0].rstrip('/'))
     dataset_path, audit_path, report_path = dataset_paths(
         dataset_dir, timestamp, hostname_dict, input_name=input_basename, report=want_report)
-    if want_report and isinstance(args.report, str):
-        report_path = args.report
+    if args.report_file:
+        report_path = args.report_file
 
     serial_scrubber = None
     if is_sc:
