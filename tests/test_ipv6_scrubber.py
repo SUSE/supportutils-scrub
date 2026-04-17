@@ -3,8 +3,8 @@ from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.scrub_config import ScrubConfig
 
 
-def _make(enabled=True):
-    cfg = ScrubConfig(obfuscate_ipv6=enabled)
+def _make(enabled=True, private=True):
+    cfg = ScrubConfig(obfuscate_ipv6=enabled, obfuscate_private_ip=private)
     return IPv6Scrubber(cfg, mappings={})
 
 
@@ -62,3 +62,21 @@ class TestIPv6Scrub:
 
     def test_trailing_double_colon_extracts(self):
         assert "2600:1901:0:7018::" in IPv6Scrubber.extract_ipv6("x 2600:1901:0:7018:: y")
+
+    def test_ula_obfuscated_when_private_on(self):
+        s = _make(private=True)
+        out = s.scrub("mesh fd12:3456:789a::1")
+        assert "fd12:3456:789a::1" not in out
+
+    def test_ula_preserved_when_private_off(self):
+        s = _make(private=False)
+        assert "fd12:3456:789a::1" in s.scrub("mesh fd12:3456:789a::1")
+
+    def test_link_local_obfuscated_when_private_on(self):
+        s = _make(private=True)
+        out = s.scrub("iface fe80::1")
+        assert "fe80::1" not in out
+
+    def test_link_local_preserved_when_private_off(self):
+        s = _make(private=False)
+        assert "fe80::1" in s.scrub("iface fe80::1")

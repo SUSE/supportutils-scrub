@@ -45,10 +45,9 @@ class IPv6Scrubber(Scrubber):
     def _skip_scope(self, ip: ipaddress.IPv6Address) -> bool:
         if ip in UNSPECIFIED or ip in LOOPBACK or ip in MULTICAST:
             return True
-        if ip in LINK_LOCAL:
-            return True
-        if ip in ULA:
-            return True
+        obfuscate_private = getattr(self.config, 'obfuscate_private_ip', True)
+        if ip in LINK_LOCAL or ip in ULA:
+            return not obfuscate_private
         if ip in GLOBAL_UNICAST:
             return False
         return True
