@@ -6,8 +6,6 @@ import time
 from datetime import datetime
 
 from supportutils_scrub.main import SCRIPT_VERSION
-from supportutils_scrub.config import DEFAULT_CONFIG_PATH
-from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.domain_scrubber import DomainScrubber
 from supportutils_scrub.hostname_scrubber import HostnameScrubber
 from supportutils_scrub.username_scrubber import UsernameScrubber
@@ -47,8 +45,7 @@ def run_stdin_mode(args, logger):
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
-    config = config_reader.read_config(args.config)
+    config = args._preloaded_config
     dataset_dir = config.dataset_dir
     dataset_path, audit_path, _ = dataset_paths(dataset_dir, timestamp)
     warn_private_ip(config, file=err)
