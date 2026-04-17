@@ -1,44 +1,45 @@
-import random
 import logging
 import re
 import os
+import sys
 from supportutils_scrub.scrubber import Scrubber
+
 
 class KeywordScrubber(Scrubber):
     name = 'keyword'
 
-    def __init__(self, keyword_file=None, cmd_keywords=None):
+    def __init__(self, keyword_file=None, cmd_keywords=None, mappings=None):
         self.keyword_file = keyword_file
         self.cmd_keywords = cmd_keywords or []
-        self.keyword_dict = {}
+        self.keyword_dict = dict((mappings or {}).get('keyword', {}))
+        self._counter = len(self.keyword_dict)
         self.load_keywords()
 
     def load_keywords(self):
         if self.keyword_file:
             if not os.path.isfile(self.keyword_file):
-                print(f"[!] Keyword file not found: {self.keyword_file}")
+                print(f"[!] Keyword file not found: {self.keyword_file}", file=sys.stderr)
             else:
                 try:
                     with open(self.keyword_file, 'r', encoding='utf-8') as f:
-                        print(f"[✓] Loading keywords from file: {self.keyword_file}")
+                        logging.info("Loading keywords from file: %s", self.keyword_file)
                         for line in f:
                             kw = line.split('#', 1)[0].strip().lower()
                             if not kw:
                                 continue
                             if kw not in self.keyword_dict:
-                                self.keyword_dict[kw] = self._generate_obfuscated_keyword()
-
+                                self.keyword_dict[kw] = self._next_fake()
                 except Exception as e:
-                    print(f"[!] Error reading keyword file: {e}")
+                    print(f"[!] Error reading keyword file: {e}", file=sys.stderr)
         if self.cmd_keywords:
             for keyword in self.cmd_keywords:
-                if keyword.lower() not in self.keyword_dict:
-                    logging.info("[✓] Loading keywords from command line arguments")
-                    self.keyword_dict[keyword.lower()] = self._generate_obfuscated_keyword()
+                kw = keyword.lower()
+                if kw not in self.keyword_dict:
+                    self.keyword_dict[kw] = self._next_fake()
 
-    def _generate_obfuscated_keyword(self):
-        random_length = random.randint(7, 10)
-        return 'x' * random_length
+    def _next_fake(self):
+        self._counter += 1
+        return f"keyword_{self._counter}"
 
     @property
     def mapping(self):
