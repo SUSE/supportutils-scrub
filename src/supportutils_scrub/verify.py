@@ -87,11 +87,17 @@ def _is_safe_ipv4(ip_str, safe_nets):
         addr = ipaddress.IPv4Address(ip_str)
     except ValueError:
         return True  # not a valid IP, ignore
-    # IPs with first octet <= 2 are almost never real network addresses —
-    # they are typically version strings (e.g. 2.12.0.4, 1.0.8.177)
-    if addr.packed[0] <= 2:
-        return True
     return any(addr in net for net in safe_nets)
+
+
+# Mirrors the suppression in ip_scrubber.scrub_text so verify agrees with scrub.
+_VERSION_CONTEXT_RE = re.compile(r'(?:\b|_)(?:ver(?:sion)?|rev|build|release)[\s:="\']*$', re.IGNORECASE)
+
+
+def _looks_like_version_context(line, match_start):
+    """True if the IP at match_start is preceded by version-like context."""
+    snippet = line[max(0, match_start - 20):match_start].rstrip()
+    return bool(_VERSION_CONTEXT_RE.search(snippet))
 
 
 # ---------------------------------------------------------------------------
@@ -509,12 +515,15 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
                     if scan_ctx['check_allowlist'] and '.' in line:
                         for m in _IP_RE.finditer(line):
                             ip_str = m.group(1)
-                            if not _is_safe_ipv4(ip_str, scan_ctx['safe_nets']):
-                                file_findings.append({
-                                    'file': rel, 'line': lineno,
-                                    'category': 'unlisted IPv4',
-                                    'value': ip_str,
-                                })
+                            if _is_safe_ipv4(ip_str, scan_ctx['safe_nets']):
+                                continue
+                            if _looks_like_version_context(line, m.start()):
+                                continue
+                            file_findings.append({
+                                'file': rel, 'line': lineno,
+                                'category': 'unlisted IPv4',
+                                'value': ip_str,
+                            })
 
                     if scan_ctx['check_allowlist'] and ':' in line:
                         for m in _MAC_RE.finditer(line):
