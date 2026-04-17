@@ -44,3 +44,21 @@ class TestIPv6Scrub:
         s = _make()
         s.scrub("host 2001:db8::1")
         assert 'ipv6_pool_cursor' in s.state
+
+    def test_trailing_double_colon_matched(self):
+        s = _make()
+        out = s.scrub("route 2600:1901:0:7018::/64 via gw")
+        assert "2600:1901:0:7018" not in out
+
+    def test_trailing_double_colon_no_prefix(self):
+        s = _make()
+        out = s.scrub("peer 2600:1901:0:7018::")
+        assert "2600:1901:0:7018" not in out
+
+    def test_bare_double_colon_preserved(self):
+        s = _make()
+        out = s.scrub("unspec ::")
+        assert "::" in out
+
+    def test_trailing_double_colon_extracts(self):
+        assert "2600:1901:0:7018::" in IPv6Scrubber.extract_ipv6("x 2600:1901:0:7018:: y")
