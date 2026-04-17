@@ -312,8 +312,8 @@ An audit log is written automatically to \fI/var/tmp/obfuscation_audit_*.json\fR
 .IP \(bu 2
 All sensitive files (\fI*.json\fR, \fI*.json.enc\fR, \fI*_audit_*.json\fR) are written with mode \fB0600\fR.
 
-.SH INTEGRATION
-This section describes the stable interface for tools and scripts that call \fBsupportutils-scrub\fR programmatically.
+.SH INTEGRATION WITH SUPPORTCONFIG(8)
+This section describes the stable interface for tools and scripts that call \fBsupportutils-scrub\fR programmatically. \fBsupportconfig\fR(8) may invoke \fBsupportutils-scrub\fR after collecting its dataset when a scrub option is passed; the contract below is the one \fBsupportconfig\fR relies on and is considered stable across minor versions.
 
 .SS stdout / stderr contract
 When called with \fB\-\-quiet\fR in folder mode, the tool follows a strict two-stream contract:
