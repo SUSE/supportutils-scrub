@@ -3,10 +3,10 @@ import re
 from supportutils_scrub.scrubber import Scrubber
 
 _PASSWORD_RE = re.compile(
-    r'(?i)(\b(?:password|passwd)\s*=\s*["\']?)'     
-    r'(?!\*REMOVED)'                                  
-    r'(?!scrubbed_pass_)'                             
-    r'([A-Za-z0-9+/]{8,})'                           
+    r'(?i)(\b(?:password|passwd)\s*[:=]\s*["\']?)'
+    r'(?!\*REMOVED)'
+    r'(?!scrubbed_pass_)'
+    r'([A-Za-z0-9+/]{8,})'
 )
 
 
