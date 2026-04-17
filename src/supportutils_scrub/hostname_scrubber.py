@@ -116,14 +116,3 @@ class HostnameScrubber(Scrubber):
                 hostnames.add(h)
 
         return list(hostnames)
-
-    @staticmethod
-    def build_hostname_dict(hostnames):
-        hostname_dict = {}
-        seen = set()
-        for hostname in hostnames:
-            short = hostname.split('.')[0]
-            if short not in seen:
-                seen.add(short)
-                hostname_dict[short] = f'hostname{len(seen)-1}'
-        return hostname_dict
