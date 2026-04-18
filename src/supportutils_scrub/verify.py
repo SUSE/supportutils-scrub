@@ -27,9 +27,10 @@ _SAFE_DOMAIN_VALUES = {
 }
 
 # Mirrors the lookbehind/lookahead in ip_scrubber.CIDR_RE so that IPs embedded
-# in version strings (e.g. "nftables-1.4.4.2") are not flagged as leaks.
+# in version strings (e.g. "nftables-1.4.4.2" or "upower-lang-1.90.7.13+git")
+# are not flagged as leaks.
 # Must match CIDR_RE boundaries in ip_scrubber.py
-_IP_BOUNDARY = r'(?<![A-Za-z0-9.\-]){}(?![A-Za-z0-9.\-])'
+_IP_BOUNDARY = r'(?<![A-Za-z0-9.\-]){}(?![A-Za-z0-9.\-+])'
 
 # ---------------------------------------------------------------------------
 # 1. IP allowlist — structural guarantee
@@ -40,7 +41,7 @@ _OCTET = r'(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)'
 _IP_RE = re.compile(
     rf'(?<![A-Za-z0-9.\-])'
     rf'({_OCTET}\.{_OCTET}\.{_OCTET}\.{_OCTET})'
-    rf'(?![A-Za-z0-9.\-])'
+    rf'(?![A-Za-z0-9.\-+])'
 )
 
 _SAFE_IPV4_ALWAYS = [
@@ -181,9 +182,10 @@ _SECRET_PATTERNS = [
 
 # LDAP / Kerberos patterns
 _LDAP_DN_RE = re.compile(r'(?:CN|OU|DC|O|L|ST|C)=[^,\s]{2,}(?:,\s*(?:CN|OU|DC|O|L|ST|C)=[^,\s]{2,}){2,}', re.IGNORECASE)
-# Require local part >= 3 alphanumeric chars (no dots/special), realm all-uppercase
-# letters/digits only. Avoids binary garbage and shell completion patterns.
-_KERBEROS_RE = re.compile(r'(?<![A-Za-z0-9@])([A-Za-z][A-Za-z0-9]{2,})@([A-Z][A-Z0-9]{3,}(?:\.[A-Z][A-Z0-9]{1,})*)', re.ASCII)
+# Require local part >= 3 alphanumeric chars, realm looks like an FQDN
+# (at least one dot). Avoids binary garbage like "HEH@HHEHP" that happens
+# to look like user@REALM but has no domain structure.
+_KERBEROS_RE = re.compile(r'(?<![A-Za-z0-9@])([A-Za-z][A-Za-z0-9]{2,})@([A-Z][A-Z0-9]+(?:\.[A-Z][A-Z0-9]+)+)', re.ASCII)
 
 # URL with potentially real hostnames
 _URL_RE = re.compile(r'https?://([A-Za-z0-9.-]+)')

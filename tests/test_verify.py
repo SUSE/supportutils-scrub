@@ -54,3 +54,30 @@ class TestVersionContext:
         line = "gateway 8.8.8.8"
         m = next(_IP_RE.finditer(line))
         assert not _looks_like_version_context(line, m.start())
+
+
+class TestIPBoundary:
+    def test_rpm_version_with_plus_not_matched(self):
+        line = "upower-lang 1.90.7.13+git.4f1ef04-160000.2.2"
+        assert list(_IP_RE.finditer(line)) == []
+
+    def test_rpm_version_space_separated_with_plus(self):
+        line = "tuned 2.25.1.0+git.889387b-16000"
+        assert list(_IP_RE.finditer(line)) == []
+
+    def test_real_ip_before_slash_still_matches(self):
+        line = "gateway 192.168.1.1/24"
+        hits = [m.group(1) for m in _IP_RE.finditer(line)]
+        assert "192.168.1.1" in hits
+
+
+class TestKerberosRegex:
+    def test_binary_garbage_rejected(self):
+        from supportutils_scrub.verify import _KERBEROS_RE
+        for junk in ("HtAHEH@HHEHP", "HEH@HUHP", "HEH@HEHE", "HtPhH@HHHH"):
+            assert _KERBEROS_RE.search(junk) is None, junk
+
+    def test_real_principal_matches(self):
+        from supportutils_scrub.verify import _KERBEROS_RE
+        for real in ("admin@EXAMPLE.COM", "krbtgt@AD.EXAMPLE.LOCAL"):
+            assert _KERBEROS_RE.search(real) is not None, real
