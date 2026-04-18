@@ -35,6 +35,46 @@ class TestDomainScrub:
         assert "a.com" in s.mapping
 
 
+    def test_sssd_ldb_filename_replaced(self):
+        s = DomainScrubber({"example-corp.com": "domain_1.com"})
+        out = s.scrub("cache_example-corp.com.ldb")
+        assert "example-corp.com" not in out
+        assert "domain_1.com" in out
+
+    def test_sssd_ccache_uppercase_replaced(self):
+        s = DomainScrubber({"example-corp.com": "domain_1.com"})
+        out = s.scrub("ccache_EXAMPLE-CORP.COM")
+        assert "example-corp" not in out.lower()
+        assert "domain_1.com" in out
+
+    def test_timestamps_prefix_replaced(self):
+        s = DomainScrubber({"example.com": "domain_0.aaa"})
+        out = s.scrub("timestamps_example.com.ldb")
+        assert "example.com" not in out
+        assert "domain_0.aaa" in out
+
+    def test_full_dc_form_replaced(self):
+        s = DomainScrubber({"example-corp.com": "domain_1.com"})
+        out = s.scrub("CN=Foo,DC=Example-corp,DC=com")
+        assert "example-corp" not in out.lower()
+        assert "DC=domain_1" in out
+
+    def test_truncated_single_dc_replaced(self):
+        s = DomainScrubber({"example-corp.com": "domain_1.com"})
+        out = s.scrub("CN=Aggregate,CN=Schema,CN=Configuration,DC=Example-corp")
+        assert "example-corp" not in out.lower()
+        assert "DC=domain_1" in out
+
+    def test_common_tld_dc_untouched(self):
+        s = DomainScrubber({"example-corp.com": "domain_1.com"})
+        assert s.scrub("DC=com") == "DC=com"
+        assert s.scrub("DC=org") == "DC=org"
+
+    def test_short_label_not_mapped_single_dc(self):
+        s = DomainScrubber({"abc.com": "domain_2.com"})
+        assert s.scrub("DC=abc") == "DC=abc"
+
+
 class TestDomainExtraction:
     def test_extract_from_text(self):
         domains = DomainScrubber.extract_domains_from_text(
