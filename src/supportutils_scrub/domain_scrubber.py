@@ -5,8 +5,6 @@ from typing import Set, Dict, List, Optional, Tuple, Iterable, Match
 from supportutils_scrub.scrubber import Scrubber
 
 LABEL = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
-# Boundary excludes alnum and hyphen (DNS label chars) but NOT underscore or dot:
-# sssd ldb filenames like cache_<domain>.ldb would otherwise be missed.
 DOMAIN_RE = re.compile(rf"(?<![A-Za-z0-9-])({LABEL}(?:\.{LABEL})+)(?![A-Za-z0-9-])", re.IGNORECASE)
 
 _DC_RE = re.compile(r'(DC=[A-Za-z0-9-]+(?:,DC=[A-Za-z0-9-]+)+)', re.IGNORECASE)
@@ -121,9 +119,6 @@ class DomainScrubber(Scrubber):
         else:
             self._dc_re = None
 
-        # Truncated / line-wrapped AD DNs often leave a single DC=<label> with no
-        # matching ,DC=<tld>. Map the first label of each mapped domain so it is
-        # replaced on its own. Skip 1-label domains and common TLDs.
         _tld_like = {'com', 'org', 'net', 'edu', 'gov', 'mil', 'int', 'arpa',
                      'local', 'lan', 'internal', 'corp', 'intranet'}
         self._dc_label_dict: Dict[str, str] = {}
@@ -137,6 +132,19 @@ class DomainScrubber(Scrubber):
             self._dc_label_re = re.compile(rf'(?i)\bDC=({lbl_alts})\b')
         else:
             self._dc_label_re = None
+
+        _MIN_PREFIX = 8
+        prefix_to_fake: Dict[str, str] = {}
+        for real_first_lower, fake_first in self._dc_label_dict.items():
+            for length in range(_MIN_PREFIX, len(real_first_lower)):
+                prefix_to_fake.setdefault(real_first_lower[:length], fake_first)
+        self._dc_prefix_dict = prefix_to_fake
+        if prefix_to_fake:
+            pfx_alts = "|".join(re.escape(p) for p in sorted(prefix_to_fake, key=len, reverse=True))
+
+            self._dc_prefix_re = re.compile(rf'(?i)\bDC=({pfx_alts})(?![A-Za-z0-9-])')
+        else:
+            self._dc_prefix_re = None
 
     @property
     def mapping(self):
@@ -158,6 +166,12 @@ class DomainScrubber(Scrubber):
         if self._dc_label_re:
             text = self._dc_label_re.sub(
                 lambda m: 'DC=' + self._dc_label_dict[m.group(1).lower()],
+                text
+            )
+
+        if self._dc_prefix_re:
+            text = self._dc_prefix_re.sub(
+                lambda m: 'DC=' + self._dc_prefix_dict[m.group(1).lower()],
                 text
             )
 

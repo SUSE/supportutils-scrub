@@ -16,6 +16,7 @@ from supportutils_scrub.serial_scrubber import SerialScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
+from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.processor import FileProcessor
 from supportutils_scrub.extractor import copy_folder_to_scrubbed, walk_supportconfig
 from supportutils_scrub.verify import verify_scrubbed_folder

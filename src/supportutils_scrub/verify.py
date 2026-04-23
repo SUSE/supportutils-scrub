@@ -350,9 +350,11 @@ def _parse_hardware_txt(folder, identity):
 # Core: build terms from mappings (original approach)
 # ---------------------------------------------------------------------------
 
-# Skip our own fake replacement values in mapping keys
+# Skip our own fake replacement values in mapping keys.
+# Used with both match() (anchored) and search() (anywhere, e.g. inside LDAP DNs).
 _FAKE_VALUE_RE = re.compile(
-    r'^(?:hostname_\d+|user_\d+|domain_\d+|email_\d+@scrubbed\.local'
+    r'(?:hostname_\d+|user_\d+|domain_\d+|keyword_\d+|cn_\d+|ou_\d+'
+    r'|email_\d+@scrubbed\.local'
     r'|scrubbed_pass_\d+|SCRUBBED_\w+_\d+|SERIAL_\d+'
     r'|00:1[Aa]:2[Bb]:[0-9A-Fa-f:]+|00000000-0000-)'
 )

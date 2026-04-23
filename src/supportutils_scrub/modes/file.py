@@ -11,6 +11,7 @@ from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
+from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.processor import FileProcessor
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers,
@@ -63,6 +64,7 @@ def run_file_mode(args, logger):
     scrubbers = [
         ip_scrubber, ipv6_scrubber, mac_scrubber, keyword_scrubber,
         HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
+        LdapDnScrubber(mappings=mappings),
         UsernameScrubber(username_dict), EmailScrubber(mappings=mappings),
         PasswordScrubber(mappings=mappings), CloudTokenScrubber(mappings=mappings),
     ]

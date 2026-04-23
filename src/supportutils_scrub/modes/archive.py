@@ -18,6 +18,7 @@ from supportutils_scrub.serial_scrubber import SerialScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
+from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
 from supportutils_scrub.processor import FileProcessor
 from supportutils_scrub.extractor import extract_supportconfig, create_txz, walk_supportconfig
@@ -106,6 +107,7 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
         scrubbers = [
             ip_scrubber, ipv6_scrubber, mac_scrubber, keyword_scrubber,
             HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
+            LdapDnScrubber(mappings=current_mappings),
             UsernameScrubber(username_dict), EmailScrubber(mappings=current_mappings),
             PasswordScrubber(mappings=current_mappings), CloudTokenScrubber(mappings=current_mappings),
             serial_scrubber,
