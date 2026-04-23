@@ -6,9 +6,7 @@ import ipaddress
 from typing import Dict, Tuple, List, Iterable, Match, Optional
 from supportutils_scrub.scrubber import Scrubber
 
-CANDIDATE_V6 = re.compile(r"(?<![A-Za-z0-9:_-])([0-9A-Fa-f:.]+[0-9A-Fa-f])(?:/(\d{1,3}))?(?![A-Za-z0-9_-])(?!:[0-9A-Fa-f])")
-
-# Matches [AF_INET6]ipv6addr:port — OpenVPN/socket notation where port follows IPv6 with no brackets
+CANDIDATE_V6 = re.compile(r"(?<![A-Za-z0-9:_-])([0-9A-Fa-f:.]*(?:[0-9A-Fa-f]|::))(?:/(\d{1,3}))?(?![A-Za-z0-9_-])(?!:[0-9A-Fa-f])")
 _AF_INET6_RE = re.compile(r'(\[AF_INET6\])([0-9A-Fa-f:]+):(\d{1,5})\b')
 
 UNSPECIFIED = ipaddress.IPv6Network("::/128")
@@ -45,10 +43,9 @@ class IPv6Scrubber(Scrubber):
     def _skip_scope(self, ip: ipaddress.IPv6Address) -> bool:
         if ip in UNSPECIFIED or ip in LOOPBACK or ip in MULTICAST:
             return True
-        if ip in LINK_LOCAL:
-            return True
-        if ip in ULA:
-            return True
+        obfuscate_private = getattr(self.config, 'obfuscate_private_ip', True)
+        if ip in LINK_LOCAL or ip in ULA:
+            return not obfuscate_private
         if ip in GLOBAL_UNICAST:
             return False
         return True

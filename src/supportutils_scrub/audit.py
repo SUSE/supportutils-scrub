@@ -61,9 +61,16 @@ def load_mappings_file(path):
     try:
         with open(path, 'r') as f:
             return json.load(f)
+    except FileNotFoundError:
+        print(f"[!] Mapping file not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"[!] Malformed mapping file {path}: {e}", file=sys.stderr)
+        print("    Remove the --mappings flag or supply a valid JSON file.", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
         print(f"[!] Failed to load mapping from {path}: {e}", file=sys.stderr)
-        return {}
+        sys.exit(1)
 
 
 def save_mappings(args, dataset_path, dataset_dict):

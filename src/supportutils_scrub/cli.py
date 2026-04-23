@@ -80,8 +80,10 @@ def parse_args():
         help="Suppress banner and per-file listing. Errors still go to stderr.")
     parser.add_argument("--output-dir", metavar="DIR",
         help="Directory for scrubbed output archives. Default: same directory as input.")
-    parser.add_argument("--report", nargs='?', const=True, default=None, metavar="FILE",
-        help="Write a JSON report. If FILE is given, write there; otherwise auto-generate a path alongside the mapping file.")
+    parser.add_argument("--report", action="store_true",
+        help="Write a JSON coverage/verify report. Path auto-generated next to the mapping file unless --report-file is given.")
+    parser.add_argument("--report-file", metavar="FILE", default=None,
+        help="Explicit path for the JSON report (implies --report).")
     parser.add_argument("--verify", action="store_true",
         help="After scrubbing, re-scan the output for remaining sensitive data. "
              "Checks: mapping values, IP/MAC allowlists, emails, secrets/keys, "
@@ -105,13 +107,8 @@ def main():
 
     args = parse_args()
 
-    # nargs='?' for --report can greedily consume the archive path when --report
-    # appears in SUPPORTUTILS_SCRUB_OPTS without a value. Recover it.
-    if not args.supportconfig_path and isinstance(getattr(args, 'report', None), str):
-        val = args.report
-        if not val.endswith('.json') and (val.endswith(('.txz', '.tgz', '.tar.gz')) or os.path.isdir(val) or os.path.isfile(val)):
-            args.supportconfig_path = [val]
-            args.report = True
+    if args.report_file:
+        args.report = True
 
     if not args.decrypt_mappings and len(args.supportconfig_path) == 1 \
             and args.supportconfig_path[0].endswith('.json.enc'):
@@ -190,8 +187,7 @@ def main():
         if not getattr(args, 'quiet', False):
             print_header()
         run_folder_mode(args, logger)
-        if not getattr(args, 'quiet', False):
-            print_footer()
+        print_footer(file=sys.stderr if getattr(args, 'quiet', False) else None)
         return
 
     if not getattr(args, 'quiet', False):

@@ -5,7 +5,7 @@ from typing import Set, Dict, List, Optional, Tuple, Iterable, Match
 from supportutils_scrub.scrubber import Scrubber
 
 LABEL = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
-DOMAIN_RE = re.compile(rf"(?<![\w-])({LABEL}(?:\.{LABEL})+)(?![\w-])", re.IGNORECASE)
+DOMAIN_RE = re.compile(rf"(?<![A-Za-z0-9-])({LABEL}(?:\.{LABEL})+)(?![A-Za-z0-9-])", re.IGNORECASE)
 
 _DC_RE = re.compile(r'(DC=[A-Za-z0-9-]+(?:,DC=[A-Za-z0-9-]+)+)', re.IGNORECASE)
 
@@ -106,7 +106,7 @@ class DomainScrubber(Scrubber):
         self._ordered_domains = _sort_specific_first(self.domain_dict.keys())
         if self._ordered_domains:
             alternates = "|".join(re.escape(d) for d in self._ordered_domains)
-            self._re = re.compile(rf"(?<![\w-])(?:{alternates})(?![\w-])", re.IGNORECASE)
+            self._re = re.compile(rf"(?<![A-Za-z0-9-])(?:{alternates})(?![A-Za-z0-9-])", re.IGNORECASE)
         else:
             self._re = None
 
@@ -118,6 +118,33 @@ class DomainScrubber(Scrubber):
             self._dc_re = re.compile(rf'(?:{dc_alts})', re.IGNORECASE)
         else:
             self._dc_re = None
+
+        _tld_like = {'com', 'org', 'net', 'edu', 'gov', 'mil', 'int', 'arpa',
+                     'local', 'lan', 'internal', 'corp', 'intranet'}
+        self._dc_label_dict: Dict[str, str] = {}
+        for real, fake in self.domain_dict.items():
+            real_first = real.split('.', 1)[0]
+            fake_first = fake.split('.', 1)[0]
+            if len(real_first) >= 4 and real_first.lower() not in _tld_like:
+                self._dc_label_dict[real_first.lower()] = fake_first
+        if self._dc_label_dict:
+            lbl_alts = "|".join(re.escape(k) for k in sorted(self._dc_label_dict, key=len, reverse=True))
+            self._dc_label_re = re.compile(rf'(?i)\bDC=({lbl_alts})\b')
+        else:
+            self._dc_label_re = None
+
+        _MIN_PREFIX = 8
+        prefix_to_fake: Dict[str, str] = {}
+        for real_first_lower, fake_first in self._dc_label_dict.items():
+            for length in range(_MIN_PREFIX, len(real_first_lower)):
+                prefix_to_fake.setdefault(real_first_lower[:length], fake_first)
+        self._dc_prefix_dict = prefix_to_fake
+        if prefix_to_fake:
+            pfx_alts = "|".join(re.escape(p) for p in sorted(prefix_to_fake, key=len, reverse=True))
+
+            self._dc_prefix_re = re.compile(rf'(?i)\bDC=({pfx_alts})(?![A-Za-z0-9-])')
+        else:
+            self._dc_prefix_re = None
 
     @property
     def mapping(self):
@@ -133,6 +160,18 @@ class DomainScrubber(Scrubber):
         if self._dc_re:
             text = self._dc_re.sub(
                 lambda m: self._dc_dict.get(m.group(0).lower(), m.group(0)),
+                text
+            )
+
+        if self._dc_label_re:
+            text = self._dc_label_re.sub(
+                lambda m: 'DC=' + self._dc_label_dict[m.group(1).lower()],
+                text
+            )
+
+        if self._dc_prefix_re:
+            text = self._dc_prefix_re.sub(
+                lambda m: 'DC=' + self._dc_prefix_dict[m.group(1).lower()],
                 text
             )
 

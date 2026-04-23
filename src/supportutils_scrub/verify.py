@@ -27,9 +27,10 @@ _SAFE_DOMAIN_VALUES = {
 }
 
 # Mirrors the lookbehind/lookahead in ip_scrubber.CIDR_RE so that IPs embedded
-# in version strings (e.g. "nftables-1.4.4.2") are not flagged as leaks.
+# in version strings (e.g. "nftables-1.4.4.2" or "upower-lang-1.90.7.13+git")
+# are not flagged as leaks.
 # Must match CIDR_RE boundaries in ip_scrubber.py
-_IP_BOUNDARY = r'(?<![A-Za-z0-9.\-]){}(?![A-Za-z0-9.\-])'
+_IP_BOUNDARY = r'(?<![A-Za-z0-9.\-]){}(?![A-Za-z0-9.\-+])'
 
 # ---------------------------------------------------------------------------
 # 1. IP allowlist — structural guarantee
@@ -40,7 +41,7 @@ _OCTET = r'(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)'
 _IP_RE = re.compile(
     rf'(?<![A-Za-z0-9.\-])'
     rf'({_OCTET}\.{_OCTET}\.{_OCTET}\.{_OCTET})'
-    rf'(?![A-Za-z0-9.\-])'
+    rf'(?![A-Za-z0-9.\-+])'
 )
 
 _SAFE_IPV4_ALWAYS = [
@@ -87,11 +88,17 @@ def _is_safe_ipv4(ip_str, safe_nets):
         addr = ipaddress.IPv4Address(ip_str)
     except ValueError:
         return True  # not a valid IP, ignore
-    # IPs with first octet <= 2 are almost never real network addresses —
-    # they are typically version strings (e.g. 2.12.0.4, 1.0.8.177)
-    if addr.packed[0] <= 2:
-        return True
     return any(addr in net for net in safe_nets)
+
+
+# Mirrors the suppression in ip_scrubber.scrub_text so verify agrees with scrub.
+_VERSION_CONTEXT_RE = re.compile(r'(?:\b|_)(?:ver(?:sion)?|rev|build|release)[\s:="\']*$', re.IGNORECASE)
+
+
+def _looks_like_version_context(line, match_start):
+    """True if the IP at match_start is preceded by version-like context."""
+    snippet = line[max(0, match_start - 20):match_start].rstrip()
+    return bool(_VERSION_CONTEXT_RE.search(snippet))
 
 
 # ---------------------------------------------------------------------------
@@ -175,9 +182,10 @@ _SECRET_PATTERNS = [
 
 # LDAP / Kerberos patterns
 _LDAP_DN_RE = re.compile(r'(?:CN|OU|DC|O|L|ST|C)=[^,\s]{2,}(?:,\s*(?:CN|OU|DC|O|L|ST|C)=[^,\s]{2,}){2,}', re.IGNORECASE)
-# Require local part >= 3 alphanumeric chars (no dots/special), realm all-uppercase
-# letters/digits only. Avoids binary garbage and shell completion patterns.
-_KERBEROS_RE = re.compile(r'(?<![A-Za-z0-9@])([A-Za-z][A-Za-z0-9]{2,})@([A-Z][A-Z0-9]{3,}(?:\.[A-Z][A-Z0-9]{1,})*)', re.ASCII)
+# Require local part >= 3 alphanumeric chars, realm looks like an FQDN
+# (at least one dot). Avoids binary garbage like "HEH@HHEHP" that happens
+# to look like user@REALM but has no domain structure.
+_KERBEROS_RE = re.compile(r'(?<![A-Za-z0-9@])([A-Za-z][A-Za-z0-9]{2,})@([A-Z][A-Z0-9]+(?:\.[A-Z][A-Z0-9]+)+)', re.ASCII)
 
 # URL with potentially real hostnames
 _URL_RE = re.compile(r'https?://([A-Za-z0-9.-]+)')
@@ -342,9 +350,11 @@ def _parse_hardware_txt(folder, identity):
 # Core: build terms from mappings (original approach)
 # ---------------------------------------------------------------------------
 
-# Skip our own fake replacement values in mapping keys
+# Skip our own fake replacement values in mapping keys.
+# Used with both match() (anchored) and search() (anywhere, e.g. inside LDAP DNs).
 _FAKE_VALUE_RE = re.compile(
-    r'^(?:hostname_\d+|user_\d+|domain_\d+|email_\d+@scrubbed\.local'
+    r'(?:hostname_\d+|user_\d+|domain_\d+|keyword_\d+|cn_\d+|ou_\d+'
+    r'|email_\d+@scrubbed\.local'
     r'|scrubbed_pass_\d+|SCRUBBED_\w+_\d+|SERIAL_\d+'
     r'|00:1[Aa]:2[Bb]:[0-9A-Fa-f:]+|00000000-0000-)'
 )
@@ -509,12 +519,15 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
                     if scan_ctx['check_allowlist'] and '.' in line:
                         for m in _IP_RE.finditer(line):
                             ip_str = m.group(1)
-                            if not _is_safe_ipv4(ip_str, scan_ctx['safe_nets']):
-                                file_findings.append({
-                                    'file': rel, 'line': lineno,
-                                    'category': 'unlisted IPv4',
-                                    'value': ip_str,
-                                })
+                            if _is_safe_ipv4(ip_str, scan_ctx['safe_nets']):
+                                continue
+                            if _looks_like_version_context(line, m.start()):
+                                continue
+                            file_findings.append({
+                                'file': rel, 'line': lineno,
+                                'category': 'unlisted IPv4',
+                                'value': ip_str,
+                            })
 
                     if scan_ctx['check_allowlist'] and ':' in line:
                         for m in _MAC_RE.finditer(line):

@@ -8,8 +8,6 @@ import pwd
 from datetime import datetime
 
 from supportutils_scrub.main import SCRIPT_VERSION, EXIT_OK, EXIT_ERROR, EXIT_VERIFY_FAIL
-from supportutils_scrub.config import DEFAULT_CONFIG_PATH
-from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.ip_scrubber import IPScrubber
 from supportutils_scrub.domain_scrubber import DomainScrubber
 from supportutils_scrub.hostname_scrubber import HostnameScrubber
@@ -20,6 +18,7 @@ from supportutils_scrub.serial_scrubber import SerialScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
+from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
 from supportutils_scrub.processor import FileProcessor
 from supportutils_scrub.extractor import extract_supportconfig, create_txz, walk_supportconfig
@@ -108,6 +107,7 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
         scrubbers = [
             ip_scrubber, ipv6_scrubber, mac_scrubber, keyword_scrubber,
             HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
+            LdapDnScrubber(mappings=current_mappings),
             UsernameScrubber(username_dict), EmailScrubber(mappings=current_mappings),
             PasswordScrubber(mappings=current_mappings), CloudTokenScrubber(mappings=current_mappings),
             serial_scrubber,
@@ -199,8 +199,7 @@ def run_archive_mode(paths, args, logger):
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
-    config = config_reader.read_config(args.config)
+    config = args._preloaded_config
     dataset_dir = config.dataset_dir
     warn_private_ip(config, file=sys.stderr if getattr(args, 'quiet', False) else None)
 
@@ -275,12 +274,12 @@ def run_archive_mode(paths, args, logger):
         verify_exit = EXIT_OK
 
     hostname_dict_final = current_mappings.get('hostname', {})
-    want_report = getattr(args, 'report', None) is not None
+    want_report = bool(getattr(args, 'report', False)) or bool(getattr(args, 'report_file', None))
     input_basename = os.path.basename(paths[0].rstrip('/')) if paths else ''
     dataset_path, audit_path, report_path = dataset_paths(
         dataset_dir, timestamp, hostname_dict_final, input_name=input_basename, report=want_report)
-    if want_report and isinstance(args.report, str):
-        report_path = args.report
+    if args.report_file:
+        report_path = args.report_file
 
     if report_path:
         archives_report = [s['report_data'] for s in all_stats]

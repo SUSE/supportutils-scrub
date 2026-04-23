@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
-SCRIPT_VERSION = "1.4"
-SCRIPT_DATE = "2026-04-01"
+SCRIPT_VERSION = "1.5"
+SCRIPT_DATE = "2026-04-18"
 
 EXIT_OK           = 0   # success
 EXIT_ERROR        = 1   # fatal error

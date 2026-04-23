@@ -16,6 +16,7 @@ from supportutils_scrub.serial_scrubber import SerialScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
+from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.processor import FileProcessor
 from supportutils_scrub.extractor import copy_folder_to_scrubbed, walk_supportconfig
 from supportutils_scrub.verify import verify_scrubbed_folder
@@ -94,12 +95,12 @@ def run_folder_mode(args, logger):
         additional_hostnames = re.split(r'[,\s;]+', args.hostname)
     hostname_dict = extract_hostnames(scan_files, additional_hostnames, mappings)
 
-    want_report = getattr(args, 'report', None) is not None
+    want_report = bool(getattr(args, 'report', False)) or bool(getattr(args, 'report_file', None))
     input_basename = os.path.basename(args.supportconfig_path[0].rstrip('/'))
     dataset_path, audit_path, report_path = dataset_paths(
         dataset_dir, timestamp, hostname_dict, input_name=input_basename, report=want_report)
-    if want_report and isinstance(args.report, str):
-        report_path = args.report
+    if args.report_file:
+        report_path = args.report_file
 
     serial_scrubber = None
     if is_sc:

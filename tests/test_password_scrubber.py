@@ -38,3 +38,19 @@ class TestPasswordScrub:
         s = _make()
         s.scrub("password=SuperSecret1")
         assert "SuperSecret1" in s.mapping
+
+    def test_password_colon_yaml(self):
+        s = _make()
+        out = s.scrub("password: YamlSecret1")
+        assert "YamlSecret1" not in out
+        assert "scrubbed_pass_" in out
+
+    def test_passwd_colon_netrc(self):
+        s = _make()
+        out = s.scrub('passwd: "NetrcPass1"')
+        assert "NetrcPass1" not in out
+
+    def test_password_colon_quoted(self):
+        s = _make()
+        out = s.scrub('password: "AnsiblePass1"')
+        assert "AnsiblePass1" not in out

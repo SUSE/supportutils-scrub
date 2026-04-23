@@ -1,0 +1,146 @@
+-------------------------------------------------------------------
+Fri Apr 18 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
+
+- Update to version 1.5
+  + IPv6: addresses ending in :: (e.g. 2600:1901:0:7018::) now matched
+  + IPv6: ULA fc00::/7 and link-local fe80::/10 now gated on obfuscate_private_ip
+  + LDAP: new LdapDnScrubber anonymizes CN=/OU= values in AD DNs
+  + LDAP: sssd ldb filenames (cache_<domain>.ldb) and truncated single-DC= DNs scrubbed
+  + LDAP: domain boundary regex switched from \w to [A-Za-z0-9-] so _ prefix no longer blocks
+  + Verify: drop blanket first-octet <=2 allowlist; check version-context instead
+  + Verify: Kerberos realm must contain a dot to skip binary false positives
+  + Verify: exclude + from IP trailing boundary so rpm version strings are not flagged
+  + Password: accept : delimiter in addition to = (YAML, netrc, Ansible vault)
+  + Keyword: deterministic keyword_N replacements replacing random x-strings
+  + Keyword: loading messages go to stderr, not stdout
+  + Audit: exit with error on malformed or missing mapping file instead of silently continuing
+  + CLI: --report is now a plain flag; --report-file FILE specifies an explicit path
+  + Modes: reuse args._preloaded_config instead of re-reading the config file per mode
+  + Docs: INTEGRATION WITH supportconfig(8) section in man page
+  + Docs: correct private-IP default documented as yes in README and shipped config
+  + Packaging: config path is /usr/etc on SLES 16, /etc on SLES 15
+
+-------------------------------------------------------------------
+Sat Apr  4 17:23:00 UTC 2026 - Ronald Pina <rpina@suse.com>
+
+  - fix IPv6 scrubber broken after _flag() removal (all IPv6 was skipped silently)     
+  - route all warnings and errors to stderr so --quiet prints only the scrubbed path   
+  - parallelize --verify with ThreadPoolExecutor (3-4x faster on large supportconfigs) 
+  - set obfuscate_private_ip = yes as default                                        
+  - update scrubbed file header to "Review before sharing" disclaimer                  
+  - add disclaimer to README and man page                                              
+  - add integration and network integrity tests (routing, iptables, firewalld) 
+
+-------------------------------------------------------------------
+Fri Apr  3 22:24:00 UTC 2026 - Ronald Pina <rpina@suse.com>
+
+- Update to version 1.4.0
+    + Refactor main.py into separate modules                                               
+      * cli.py — argument parsing and mode dispatch                                        
+      * pipeline.py — domain/hostname/username extraction helpers
+      * audit.py — mapping I/O, audit trail, reports                                       
+      * modes/ — archive, folder, file, stdin handlers                                     
+    + Abstract Scrubber base class                                                         
+      * All 11 scrubbers implement scrub() and mapping interface                           
+      * FileProcessor takes a list instead of 11 parameters                                
+      * Adding new scrubbers requires zero changes to FileProcessor                        
+      + Typed ScrubConfig dataclass                                                          
+      * Replaces raw dict config with typed fields                                         
+      * Boolean flags, pool ranges, paths all type-checked                                 
+    + Bug fixes                                                                            
+      * Version strings like 0.8.9.0 no longer matched as IPs                              
+    + Unit test suite                                                                      
+      * tests covering all scrubbers, processor, and config   
+
+-------------------------------------------------------------------
+Tue Mar 10 01:27:19 UTC 2026 - Ronald Pina <rpina@suse.com>
+
+- Update to version 1.3.0
+    + Serial number and UUID obfuscation
+      * Pre-scans basic-environment.txt, boot.txt, hardware.txt
+      * Replaces serials with SERIAL_N, UUIDs with 00000000-...-N
+    + Post-scrub verify mode (--verify)
+      * Scans scrubbed output for remaining real values
+      * Word-boundary matching for usernames/hostnames
+      * CIDR-style boundary matching for IPs (avoids version strings)
+    + Coverage report (--report): JSON file per data category
+    + supportconfig integration
+      * SUPPORTUTILS_SCRUB_OPTS environment variable
+      * Exit codes: 0=ok, 1=error, 2=warning, 3=verify-failed
+    + New CLI options: --quiet, --output-dir, --verify, --report
+    + Encrypted mapping reuse (--mappings accepts .json.enc)
+    + System accounts (UID < 1000) excluded from username obfuscation
+    + Bug fixes
+      * Fixed [Errno 17] when re-running on same archive
+      * Fixed docker incorrectly detected as username
+ 
+
+-------------------------------------------------------------------
+Sun Feb 22 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
+
+- Update to version 1.2.0
+  + New input modes
+    * Folder mode: pass any directory, output written to {dir}_scrubbed/
+    * Stdin/pipe mode: cat log | supportutils-scrub (scrubbed text to stdout)
+    * Single file mode: process a plain file, output to {file}_scrubbed
+    * Multi-archive mode: process several .txz/.tgz in one run with shared
+      mappings ensuring consistent obfuscation across all archives
+  + Improved automatic entity detection for pipe/file/stdin modes
+    * PAM log patterns: pam_unix([...]) and unix_chkpwd extract usernames
+    * logname= field now recognised as username source
+    * NFS server lines extract hostname and domain automatically
+    * RFC 5424 syslog hostname (field repeated >= 3 lines) auto-detected
+  + Fixed domain parser false positives
+    * Added TLD allowlist rejecting D-Bus names, container runtime
+      interfaces, version strings, systemd scopes and hardware IDs
+  + Bug fixes
+    * Fixed IP pool exhaustion crash when mixed prefix lengths allocated
+
+-------------------------------------------------------------------
+Tue Aug 19 18:44:08 UTC 2025 - Ronald Pina <rpina@suse.com>
+
+- Update to version 1.1.0
+  + Major enhancement: Subnet-aware IP obfuscation
+    * Maps entire IPv4 subnets to fake subnets preserving host offsets
+    * Gateway .1 remains .1, broadcast .255 remains .255
+    * Maintains network topology for effective troubleshooting
+  + Added PCAP obfuscation support with tcprewrite integration
+    * Rewrites packet captures using same subnet mappings as logs
+    * Ensures consistency across supportconfigs and network traces
+    * Exports tcprewrite-compatible subnet rules 
+  + Enhanced mapping file structure
+    * Added 'subnet' section with subnet-to-subnet translations
+    * Added 'state' section tracking IP pool allocation cursors
+    * Enables reproducible obfuscation across multiple runs
+  + Improved IP processing
+    * Two-pass processing: learns subnets then applies mapping
+    * Preserves special IPs (0.0.0.0, 127.0.0.1, multicast)
+    * Protects version strings from incorrect obfuscation
+  + Enhanced domain and hostname extraction
+    * Multiple source parsing (resolv.conf, hosts, NFS, NTP)
+    * Fixed word boundary detection preventing partial replacements
+    * Added minimum length requirements for hostnames
+  + Security improvements
+    * Dataset JSON files created with 0600 permissions
+    * System users excluded from obfuscation
+  + Added command-line options for PCAP processing
+    * --rewrite-pcap: Enable PCAP rewriting mode
+    * --pcap-in: Specify input PCAP files
+    * --pcap-out-dir: Output directory for obfuscated PCAPs
+    * --print-tcprewrite: Display tcprewrite command
+  + Bug fixes
+    * Fixed /32 host route handling
+    * Corrected inline comment processing in hostnames
+    * Resolved IPv6 subnet awareness issues
+    * Fixed MAC address parsing false positives
+
+
+-------------------------------------------------------------------
+Thu May  8 11:39:48 UTC 2025 - Ronald Pina <rpina@suse.com>
+
+- Initial release version 1.0.0
+  + Basic obfuscation for supportconfig tarballs
+  + Supports IP, domain, hostname, username, MAC, IPv6
+  + Configuration file support
+  + Keyword-based obfuscation
+  + Mapping file for consistency across runs 

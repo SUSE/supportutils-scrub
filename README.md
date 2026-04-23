@@ -77,7 +77,7 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
 ```
 =============================================================================
           Obfuscation Utility - supportutils-scrub
-                      Version : 1.4
+                      Version : 1.5
                  Release Date : 2026-04-01
 
  supportutils-scrub masks sensitive information from SUSE supportconfig
@@ -262,7 +262,7 @@ Default: `/etc/supportutils-scrub/supportutils-scrub.conf`
 
 ```ini
 # Obfuscation controls
-obfuscate_private_ip = no     # Set 'yes' to obfuscate private IPs (10.x, 172.16.x, 192.168.x)
+obfuscate_private_ip = yes    # Set 'no' to leave private IPs (10.x, 172.16.x, 192.168.x, ULA, link-local) untouched
 obfuscate_public_ip = yes
 obfuscate_domain = yes
 obfuscate_username = yes

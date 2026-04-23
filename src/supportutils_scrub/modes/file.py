@@ -5,14 +5,13 @@ import json
 from datetime import datetime
 
 from supportutils_scrub.main import SCRIPT_VERSION
-from supportutils_scrub.config import DEFAULT_CONFIG_PATH
-from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.domain_scrubber import DomainScrubber
 from supportutils_scrub.hostname_scrubber import HostnameScrubber
 from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
+from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.processor import FileProcessor
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers,
@@ -30,13 +29,8 @@ def run_file_mode(args, logger):
     output_path = input_path + '_scrubbed'
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    config_reader_f = ConfigReader(DEFAULT_CONFIG_PATH)
-    config_f = config_reader_f.read_config(args.config)
-    dataset_dir = config_f.dataset_dir
-    dataset_path, audit_path, _ = dataset_paths(dataset_dir, timestamp)
-
-    config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
-    config = config_reader.read_config(args.config)
+    config = args._preloaded_config
+    dataset_path, audit_path, _ = dataset_paths(config.dataset_dir, timestamp)
     warn_private_ip(config)
 
     mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber = \
@@ -70,6 +64,7 @@ def run_file_mode(args, logger):
     scrubbers = [
         ip_scrubber, ipv6_scrubber, mac_scrubber, keyword_scrubber,
         HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
+        LdapDnScrubber(mappings=mappings),
         UsernameScrubber(username_dict), EmailScrubber(mappings=mappings),
         PasswordScrubber(mappings=mappings), CloudTokenScrubber(mappings=mappings),
     ]
