@@ -8,7 +8,7 @@ def _yes(val):
 class ScrubConfig:
     def __init__(
         self,
-        obfuscate_private_ip=True,
+        obfuscate_private_ip=False,
         obfuscate_public_ip=True,
         obfuscate_domain=True,
         obfuscate_username=True,
