@@ -161,23 +161,26 @@ class DomainScrubber(Scrubber):
                 return self.domain_dict.get(found_domain, match.group(0))
             text = self._re.sub(_replacer, text)
 
-        if self._dc_re:
-            text = self._dc_re.sub(
-                lambda m: self._dc_dict.get(m.group(0).lower(), m.group(0)),
-                text
-            )
+        # The DC= passes only matter for LDAP/AD distinguished names. Skip all
+        # three (each a full-text scan) when no DC= component is present.
+        if 'dc=' in text.lower():
+            if self._dc_re:
+                text = self._dc_re.sub(
+                    lambda m: self._dc_dict.get(m.group(0).lower(), m.group(0)),
+                    text
+                )
 
-        if self._dc_label_re:
-            text = self._dc_label_re.sub(
-                lambda m: 'DC=' + self._dc_label_dict[m.group(1).lower()],
-                text
-            )
+            if self._dc_label_re:
+                text = self._dc_label_re.sub(
+                    lambda m: 'DC=' + self._dc_label_dict[m.group(1).lower()],
+                    text
+                )
 
-        if self._dc_prefix_re:
-            text = self._dc_prefix_re.sub(
-                lambda m: 'DC=' + self._dc_prefix_dict[m.group(1).lower()],
-                text
-            )
+            if self._dc_prefix_re:
+                text = self._dc_prefix_re.sub(
+                    lambda m: 'DC=' + self._dc_prefix_dict[m.group(1).lower()],
+                    text
+                )
 
         return text
 

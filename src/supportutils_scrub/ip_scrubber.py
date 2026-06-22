@@ -12,6 +12,15 @@ CIDR_RE = re.compile(
     r'(?:/(?P<pfx>\d{1,2}))?'
 )
 
+# Like CIDR_RE but the /prefix is mandatory — for the subnet-learning pre-pass,
+# so it only yields actual CIDR subnets instead of iterating every bare IP.
+CIDR_SUBNET_RE = re.compile(
+    rf'(?<![A-Za-z0-9.\-])'
+    rf'(?P<ip>{OCTET}\.{OCTET}\.{OCTET}\.{OCTET})'
+    rf'(?![A-Za-z0-9.\-+])'
+    r'/(?P<pfx>\d{1,2})'
+)
+
 SPECIALS = {
     "0.0.0.0", "127.0.0.1", "127.0.0.0", "127.255.255.255", "255.255.255.255",
     "255.255.255.0", "255.255.0.0", "255.0.0.0"
@@ -170,14 +179,9 @@ class IPScrubber(Scrubber):
 
     def _prepare_subnets(self, text):
         """learn all CIDR subnets from text to enable subnet-aware mapping."""
-        for m in CIDR_RE.finditer(text):
+        for m in CIDR_SUBNET_RE.finditer(text):
             ip = m.group('ip')
-            pfx = m.group('pfx')
-            
-            if not pfx:
-                continue
-
-            pfx = int(pfx)
+            pfx = int(m.group('pfx'))
 
             if pfx in (0, 32):
                 continue
