@@ -1,3 +1,7 @@
+
+  + scrub domain part of FQDN hostnames in output archive and folder name
+
+
 -------------------------------------------------------------------
 Fri Apr 18 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
 
