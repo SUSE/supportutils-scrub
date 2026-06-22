@@ -1,5 +1,7 @@
 # scrub_config.py
 
+import inspect
+
 
 def _yes(val):
     return str(val).strip().lower() == 'yes'
@@ -60,13 +62,16 @@ class ScrubConfig:
             'obfuscate_ipv6', 'obfuscate_serial', 'secure_tmp',
             'encrypt_mappings', 'verbose', 'use_key_words_file',
         }
+        # __init__ params are instance attrs, not class attrs, so hasattr(cls,..)
+        # misses them — accept any valid __init__ parameter instead.
+        valid = set(inspect.signature(cls.__init__).parameters) - {'self'}
         kwargs = {}
         for key, val in d.items():
             if key in bool_fields:
                 kwargs[key] = _yes(val)
             elif key == 'default_infer_prefixlen':
                 kwargs[key] = int(val)
-            elif hasattr(cls, key):
+            elif key in valid:
                 kwargs[key] = val
         return cls(**kwargs)
 
