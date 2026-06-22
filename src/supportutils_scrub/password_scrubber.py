@@ -14,9 +14,10 @@ class PasswordScrubber(Scrubber):
     name = 'password'
     """Finds and replaces password values """
 
-    def __init__(self, mappings=None):
+    def __init__(self, mappings=None, deterministic=False):
         self.password_dict = dict(mappings.get('password', {})) if mappings else {}
         self._counter = len(self.password_dict)
+        self.deterministic = deterministic
 
     @property
     def mapping(self):
@@ -26,8 +27,12 @@ class PasswordScrubber(Scrubber):
         """Returns fake password for a real one."""
         if real_value in self.password_dict:
             return self.password_dict[real_value]
-        self._counter += 1
-        fake = f"scrubbed_pass_{self._counter}"
+        if self.deterministic:
+            from supportutils_scrub.det import dhash
+            fake = f"scrubbed_pass_{dhash(real_value)}"
+        else:
+            self._counter += 1
+            fake = f"scrubbed_pass_{self._counter}"
         self.password_dict[real_value] = fake
         return fake
 

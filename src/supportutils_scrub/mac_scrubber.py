@@ -17,15 +17,20 @@ class MACScrubber(Scrubber):
     
     EXCLUDED_MACS = {"ff:ff:ff:ff:ff:ff", "00:00:00:00:00:00"}
 
-    def __init__(self, config, mappings=None):
+    def __init__(self, config, mappings=None, deterministic=False):
         self.mac_dict = {k.lower(): v for k, v in (mappings.get('mac', {}) if mappings else {}).items()}
         self.config = config
+        self.deterministic = deterministic
 
     @property
     def mapping(self):
         return self.mac_dict
 
-    def _generate_fake_mac(self):
+    def _generate_fake_mac(self, original=None):
+        if self.deterministic and original is not None:
+            from supportutils_scrub.det import dhash
+            h = dhash(original, 3).upper()
+            return f"00:1A:2B:{h[0:2]}:{h[2:4]}:{h[4:6]}"
         count = len(self.mac_dict)
 
         b1 = (count >> 16) & 0xFF
@@ -45,8 +50,8 @@ class MACScrubber(Scrubber):
 
             if original_mac in self.mac_dict:
                 return self.mac_dict[original_mac]
-            
-            fake_mac = self._generate_fake_mac()
+
+            fake_mac = self._generate_fake_mac(original_mac)
             self.mac_dict[original_mac] = fake_mac
             return fake_mac
 

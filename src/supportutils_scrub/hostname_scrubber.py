@@ -2,6 +2,7 @@
 
 import re
 from supportutils_scrub.scrubber import Scrubber
+from supportutils_scrub.trie_re import build_trie_pattern
 
 class HostnameScrubber(Scrubber):
     name = 'hostname'
@@ -10,9 +11,7 @@ class HostnameScrubber(Scrubber):
         self.hostname_dict = hostname_dict
         self._re = None
         if hostname_dict:
-            sorted_hosts = sorted(hostname_dict.keys(), key=len, reverse=True)
-            alts = '|'.join(re.escape(h) for h in sorted_hosts)
-            self._re = re.compile(r'\b(?:' + alts + r')\b')
+            self._re = re.compile(r'\b(?:' + build_trie_pattern(hostname_dict.keys()) + r')\b')
 
     @property
     def mapping(self):

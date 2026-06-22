@@ -114,28 +114,57 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
         ]
         scrubbers = [s for s in scrubbers if s is not None]
 
-        file_processor = FileProcessor(config, scrubbers)
+        jobs = getattr(args, 'jobs', 1) or 1
+        profile = getattr(args, 'profile', False)
+        if jobs > 1 and len(report_files) > 1 and not profile:
+            from supportutils_scrub.parallel import scrub_in_parallel
+            logger.info(f"Scrubbing with {jobs} worker processes...")
+            frozen_seed = dict(current_mappings)
+            frozen_seed['hostname'] = hostname_dict
+            frozen_seed['domain'] = domain_dict
+            frozen_seed['user'] = username_dict
+            frozen_seed['serial'] = serial_dict
+            frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
+            updated_mappings, report_file_hits = scrub_in_parallel(
+                report_files, frozen_seed, config, jobs, logger,
+                verbose=verbose_flag, include_ldap=True)
+            updated_mappings['tld_map'] = tld_map
+            combined_mappings_for_verify = updated_mappings
+            file_processor = None
+        else:
+            file_processor = FileProcessor(config, scrubbers, profile=profile)
 
-        logger.info("Scrubbing:")
-        for report_file in report_files:
-            basename = os.path.basename(report_file)
-            if not re.match(r"^sa\d{8}(\.xz)?$", basename):
-                if not getattr(args, 'quiet', False):
-                    print(f"        {basename}")
+            logger.info("Scrubbing:")
+            for report_file in report_files:
+                basename = os.path.basename(report_file)
+                if not re.match(r"^sa\d{8}(\.xz)?$", basename):
+                    if not getattr(args, 'quiet', False):
+                        print(f"        {basename}")
 
-            before = {s.name: len(s.mapping) for s in file_processor.scrubbers}
-            file_processor.process_file(report_file, logger, verbose_flag)
-            file_hits = [name for name, prev in before.items()
-                         if len(file_processor[name].mapping) > prev]
-            if file_hits:
-                report_file_hits[os.path.basename(report_file)] = file_hits
+                before = {s.name: len(s.mapping) for s in file_processor.scrubbers}
+                file_processor.process_file(report_file, logger, verbose_flag)
+                file_hits = [name for name, prev in before.items()
+                             if len(file_processor[name].mapping) > prev]
+                if file_hits:
+                    report_file_hits[os.path.basename(report_file)] = file_hits
+
+            ip_s = file_processor['ip']
+            ipv6_s = file_processor['ipv6']
+            updated_mappings = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
+            updated_mappings['subnet'] = ip_s.subnet_dict if ip_s else {}
+            updated_mappings['state'] = ip_s.state if ip_s else {}
+            updated_mappings['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
+            updated_mappings['tld_map'] = tld_map
+            combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
+
+        if profile and file_processor is not None:
+            print(file_processor.format_profile())
 
         create_txz(clean_folder_path, new_txz_file_path)
         print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
 
         verify_findings = []
         if getattr(args, 'verify', False):
-            combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
             verify_findings = verify_scrubbed_folder(
                 clean_folder_path, combined_mappings_for_verify,
                 config=config,
@@ -167,14 +196,7 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
         archive_size_mb = 0
         archive_owner = "unknown"
 
-    ip_s = file_processor['ip']
-    ipv6_s = file_processor['ipv6']
-
-    updated_mappings = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
-    updated_mappings['subnet'] = ip_s.subnet_dict if ip_s else {}
-    updated_mappings['state'] = ip_s.state if ip_s else {}
-    updated_mappings['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
-    updated_mappings['tld_map'] = tld_map
+    # updated_mappings was built above (serial or parallel branch).
 
     stats = {
         'archive_path': archive_path,

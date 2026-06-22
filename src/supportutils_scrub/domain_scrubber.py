@@ -3,6 +3,7 @@
 import re
 from typing import Set, Dict, List, Optional, Tuple, Iterable, Match
 from supportutils_scrub.scrubber import Scrubber
+from supportutils_scrub.trie_re import build_trie_pattern
 
 LABEL = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
 DOMAIN_RE = re.compile(rf"(?<![A-Za-z0-9-])({LABEL}(?:\.{LABEL})+)(?![A-Za-z0-9-])", re.IGNORECASE)
@@ -105,8 +106,11 @@ class DomainScrubber(Scrubber):
 
         self._ordered_domains = _sort_specific_first(self.domain_dict.keys())
         if self._ordered_domains:
-            alternates = "|".join(re.escape(d) for d in self._ordered_domains)
-            self._re = re.compile(rf"(?<![A-Za-z0-9-])(?:{alternates})(?![A-Za-z0-9-])", re.IGNORECASE)
+            # Trie-regex (greedy, so most-specific wins) wrapped in the original
+            # label-boundary lookarounds. Fast for large domain sets; matching a
+            # known suffix inside an undiscovered subdomain still works.
+            trie = build_trie_pattern(self._ordered_domains)
+            self._re = re.compile(rf"(?<![A-Za-z0-9-])(?:{trie})(?![A-Za-z0-9-])", re.IGNORECASE)
         else:
             self._re = None
 

@@ -23,8 +23,9 @@ GLOBAL_UNICAST = ipaddress.IPv6Network("2000::/3")
 class IPv6Scrubber(Scrubber):
     name = 'ipv6'
 
-    def __init__(self, config: Dict, mappings: Optional[Dict] = None) -> None:
+    def __init__(self, config: Dict, mappings: Optional[Dict] = None, deterministic: bool = False) -> None:
         self.config = config or {}
+        self.deterministic = deterministic
 
         self.ipv6_map: Dict[str, str] = dict((mappings or {}).get('ipv6', {}))
         self._subnet_map: Dict[ipaddress.IPv6Network, ipaddress.IPv6Network] = {}
@@ -82,10 +83,28 @@ class IPv6Scrubber(Scrubber):
         raise RuntimeError(f"IPv6 fake pool {pool} exhausted for /{prefixlen}")
 
 
+    def _alloc_fake_subnet_det(self, real_net: ipaddress.IPv6Network) -> ipaddress.IPv6Network:
+        """Allocate a fake subnet as a pure hash of the real subnet, so parallel
+        workers produce identical mappings without coordination. The fake pools
+        are huge (>=2^32 slots) so collisions are negligible."""
+        from supportutils_scrub.det import dhash
+        prefixlen = real_net.prefixlen
+        pool = self._pick_pool(prefixlen)
+        if prefixlen < pool.prefixlen:
+            prefixlen = pool.prefixlen
+        host_bits = 128 - prefixlen
+        slot_count = 1 << (prefixlen - pool.prefixlen)
+        h = int(dhash(str(real_net), 8), 16) % slot_count
+        base = int(pool.network_address) + (h << host_bits)
+        return ipaddress.IPv6Network((base, prefixlen))
+
     def _get_or_create_fake_subnet(self, real_net: ipaddress.IPv6Network) -> ipaddress.IPv6Network:
         if real_net in self._subnet_map:
             return self._subnet_map[real_net]
-        fake = self._alloc_fake_subnet(real_net.prefixlen)
+        if self.deterministic:
+            fake = self._alloc_fake_subnet_det(real_net)
+        else:
+            fake = self._alloc_fake_subnet(real_net.prefixlen)
         self._subnet_map[real_net] = fake
         return fake
 
@@ -109,6 +128,13 @@ class IPv6Scrubber(Scrubber):
 
         def repl(m: Match) -> str:
             token = m.group(0)
+            # Cheap reject before the costly parse: IPv4 addresses and timestamps
+            # match the candidate regex but are not IPv6. Every valid IPv6 text
+            # form has '::', or exactly 7 colons, or 6 colons + an embedded IPv4
+            # dotted quad — so this never drops a real address.
+            c = token.count(':')
+            if '::' not in token and c != 7 and not (c == 6 and '.' in token):
+                return token
             pfx_s = m.group(2)
             try:
                 iface = ipaddress.IPv6Interface(token) if pfx_s else ipaddress.IPv6Interface(f"{token}/128")

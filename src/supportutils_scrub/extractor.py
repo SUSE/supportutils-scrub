@@ -4,6 +4,7 @@ import os
 import shutil
 import logging
 import tarfile
+import subprocess
 
 
 def _is_safe_path(target_dir: str, member_name: str) -> bool:
@@ -154,6 +155,25 @@ def extract_tgz_archive(archive_path, logger, extract_base=None):
     return report_files, clean_folder_path
 
 def create_txz(source_dir, output_filename):
+    xz_bin = shutil.which('xz')
+    if xz_bin:
+        # Stream an uncompressed tar into multithreaded `xz -T0` so all cores
+        # are used. Python's lzma module is single-threaded; on a large
+        # supportconfig this compression step dominates the runtime.
+        with open(output_filename, 'wb') as out_f:
+            proc = subprocess.Popen([xz_bin, '-T0', '-c'],
+                                    stdin=subprocess.PIPE, stdout=out_f)
+            try:
+                with tarfile.open(fileobj=proc.stdin, mode='w|') as tar:
+                    tar.add(source_dir, arcname=os.path.basename(source_dir))
+            finally:
+                proc.stdin.close()
+                ret = proc.wait()
+            if ret != 0:
+                raise RuntimeError(f"xz exited with status {ret} while writing {output_filename}")
+        return
+
+    # Fallback: no xz binary available, use single-threaded lzma.
     with tarfile.open(output_filename, 'w:xz') as tar:
         tar.add(source_dir, arcname=os.path.basename(source_dir))
 

@@ -2,6 +2,7 @@
 
 import re
 from supportutils_scrub.scrubber import Scrubber
+from supportutils_scrub.trie_re import build_trie_pattern
 
 class UsernameScrubber(Scrubber):
     name = 'user'
@@ -21,11 +22,12 @@ class UsernameScrubber(Scrubber):
 
     def __init__(self, username_dict):
         self.username_dict = username_dict
+        # Trie-regex: factoring shared prefixes lets the C engine dispatch by
+        # character (O(text)), instead of a flat alternation backtracking through
+        # 1000+ usernames at every position. The callback fires only on matches.
         self._re = None
         if username_dict:
-            sorted_users = sorted(username_dict.keys(), key=len, reverse=True)
-            alts = '|'.join(re.escape(u) for u in sorted_users)
-            self._re = re.compile(r'\b(?:' + alts + r')\b')
+            self._re = re.compile(r'\b(?:' + build_trie_pattern(username_dict.keys()) + r')\b')
 
     @property
     def mapping(self):

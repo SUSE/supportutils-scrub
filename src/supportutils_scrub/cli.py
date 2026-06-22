@@ -89,6 +89,14 @@ def parse_args():
              "Checks: mapping values, IP/MAC allowlists, emails, secrets/keys, "
              "LDAP DNs, Kerberos principals, and (in folder mode) system identity "
              "from the original. Exit 3 if leaks found.")
+    parser.add_argument("--jobs", "-j", metavar="N", default="1",
+        help="Scrub files across N worker processes (use 'auto' for all CPUs). "
+             "Default 1 (serial). Parallel mode uses deterministic hash-based "
+             "fake values, so obfuscated values differ from serial mode but stay "
+             "consistent across the archive.")
+    parser.add_argument("--profile", action="store_true",
+        help="Measure and print where scrub time is spent (per-scrubber totals, "
+             "throughput, and the slowest files). Use to find bottlenecks.")
     parser.add_argument("--stream", action="store_true",
         help="Streaming stdin mode: buffer the first 500 lines to build entity maps, "
              "then scrub and flush each subsequent line immediately. "
@@ -109,6 +117,15 @@ def main():
 
     if args.report_file:
         args.report = True
+
+    if str(args.jobs).lower() == 'auto':
+        args.jobs = os.cpu_count() or 1
+    else:
+        try:
+            args.jobs = max(1, int(args.jobs))
+        except (TypeError, ValueError):
+            print("[!] --jobs must be an integer or 'auto'; using 1.", file=sys.stderr)
+            args.jobs = 1
 
     if not args.decrypt_mappings and len(args.supportconfig_path) == 1 \
             and args.supportconfig_path[0].endswith('.json.enc'):

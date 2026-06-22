@@ -17,6 +17,9 @@ SPECIALS = {
     "255.255.255.0", "255.255.0.0", "255.0.0.0"
 }
 
+# "...version: " context before a dotted number means it's a version, not an IP.
+_VERSION_CTX_RE = re.compile(r'(?:\b|_)ver(?:sion)?[\s:="\']*$')
+
 
 class IPScrubber(Scrubber):
     name = 'ip'
@@ -33,6 +36,7 @@ class IPScrubber(Scrubber):
             'priv192_168': IPv4Network(self.config.pool_192_168),
             'linklocal':   IPv4Network(self.config.pool_169_254),
         }
+        self._exhausted_pools = set()
         self._pool_cursor = {}
         for key in self.category_pools:
             cursor_key = f'pool_cursor_{key}'
@@ -42,7 +46,12 @@ class IPScrubber(Scrubber):
 
         self._last_state = {}
         self._real_to_fake = {}
-        self._used_slots = set()  
+        # prefix index: {prefixlen: {network_addr_int: fake_net}} + masks, so a
+        # lookup is O(distinct prefix lengths) instead of O(all subnets).
+        self._prefix_index = {}
+        self._prefix_masks = []
+        self._index_dirty = True
+        self._used_slots = set()
         for k, v in self.subnet_dict.items():
             try:
                 real_net = IPv4Network(k)
@@ -117,6 +126,11 @@ class IPScrubber(Scrubber):
         if prefixlen < pool.prefixlen:
             prefixlen = pool.prefixlen
 
+        # Once a (category, prefixlen) pool is full it stays full (subnets are
+        # never freed). Short-circuit so we don't rescan every slot per IP.
+        if cat_key in self._exhausted_pools:
+            raise RuntimeError(f"Pool {pool} exhausted for /{prefixlen}")
+
         step  = 2 ** (32 - prefixlen)
         start = int(pool.network_address)
         end   = int(pool.broadcast_address) + 1
@@ -137,6 +151,7 @@ class IPScrubber(Scrubber):
                 return IPv4Network((base, prefixlen))
             cursor += step
 
+        self._exhausted_pools.add(cat_key)
         raise RuntimeError(f"Pool {pool} exhausted for /{prefixlen}")
 
 
@@ -150,6 +165,7 @@ class IPScrubber(Scrubber):
         self._real_to_fake[real_net] = fake_net
         self.subnet_dict[str(real_net)] = str(fake_net)
         self._sorted_subnets = None  # invalidate cache
+        self._index_dirty = True
 
 
     def _prepare_subnets(self, text):
@@ -190,28 +206,46 @@ class IPScrubber(Scrubber):
             self._real_to_fake.items(), key=lambda kv: kv[0].prefixlen, reverse=True
         )
 
+    def _rebuild_index(self):
+        idx = {}
+        for real_net, fake_net in self._real_to_fake.items():
+            idx.setdefault(real_net.prefixlen, {})[int(real_net.network_address)] = fake_net
+        self._prefix_index = idx
+        self._prefix_masks = [
+            (plen, (~0 << (32 - plen)) & 0xFFFFFFFF)
+            for plen in sorted(idx.keys(), reverse=True)
+        ]
+        self._index_dirty = False
+
     def _map_in_subnets(self, ip_str):
-        """Map an IP to its fake equivalent by offset within its known subnet."""
-        from ipaddress import IPv4Address
+        """Map an IP to its fake equivalent by offset within its known subnet.
+
+        Most-specific-first via a prefix index: for each distinct prefix length
+        we mask the IP and do a dict lookup, so this is O(#prefix lengths) per
+        IP rather than O(#subnets).
+        """
         try:
-            ip = IPv4Address(ip_str)
-        except:
+            ip_int = int(IPv4Address(ip_str))
+        except Exception:
             return None
 
-        if self._sorted_subnets is None:
-            self._sorted_subnets = sorted(
-                self._real_to_fake.items(), key=lambda kv: kv[0].prefixlen, reverse=True
-            )
+        if self._index_dirty:
+            self._rebuild_index()
 
-        for real_net, fake_net in self._sorted_subnets:
-            if ip in real_net:
-                off = int(ip) - int(real_net.network_address)
+        for plen, mask in self._prefix_masks:
+            net_int = ip_int & mask
+            fake_net = self._prefix_index[plen].get(net_int)
+            if fake_net is not None:
+                off = ip_int - net_int
                 return str(IPv4Address(int(fake_net.network_address) + off))
         return None
 
 
     
     def _scrub_token(self, ip_str, pfx_str):
+        cached = self.ip_dict.get(ip_str)
+        if cached is not None:
+            return cached + (f"/{pfx_str}" if pfx_str else "")
         try:
             ip_obj = IPv4Address(ip_str)
         except ValueError:
@@ -250,9 +284,14 @@ class IPScrubber(Scrubber):
 
     def _ensure_logical_subnet_for_ip(self, ip_str):
         ip = IPv4Address(ip_str)
-        for real_net in sorted(self._real_to_fake.keys(), key=lambda n: n.prefixlen, reverse=True):
-            if ip in real_net:
-                return real_net, self._real_to_fake[real_net]
+        ip_int = int(ip)
+        if self._index_dirty:
+            self._rebuild_index()
+        for plen, mask in self._prefix_masks:
+            net_int = ip_int & mask
+            fake_net = self._prefix_index[plen].get(net_int)
+            if fake_net is not None:
+                return IPv4Network((net_int, plen)), fake_net
 
         default_pfx = self.config.default_infer_prefixlen
         real_net = ip_network(f"{ip}/{default_pfx}", strict=False)
@@ -279,30 +318,42 @@ class IPScrubber(Scrubber):
     
 
 
+    def _replace_match(self, m, text):
+        """Compute the replacement for one CIDR match (also allocates mappings).
+        Shared by scrub_text and learn so both make identical decisions."""
+        ip = m.group('ip')
+        pfx = m.group('pfx')
+
+        if ip.startswith('0.'):
+            return m.group(0)
+
+        start = m.start()
+        snippet = text[max(0, start-20):start].lower()
+        if _VERSION_CTX_RE.search(snippet.rstrip()):
+            return m.group(0)
+        if snippet.endswith('/') and not snippet.endswith('://') and (len(snippet) < 2 or not snippet[-2].isdigit()):
+            return m.group(0)
+
+        return self._scrub_token(ip, pfx)
+
     def scrub_text(self, text):
         """Two-pass scrub: learn subnets, then replace IPs subnet-aware."""
         self._prepare_subnets(text)
-        
-        def repl(m):
-            ip = m.group('ip')
-            pfx = m.group('pfx')
 
-            if ip.startswith('0.'):
-                return m.group(0)
-
-            start = m.start()
-            snippet = text[max(0, start-20):start].lower()
-            if re.search(r'(?:\b|_)ver(?:sion)?[\s:="\']*$', snippet.rstrip()):
-                return m.group(0)
-            if snippet.endswith('/') and not snippet.endswith('://') and (len(snippet) < 2 or not snippet[-2].isdigit()):
-                return m.group(0)
-
-            return self._scrub_token(ip, pfx)
-        
-        new_text = CIDR_RE.sub(repl, text)
+        new_text = CIDR_RE.sub(lambda m: self._replace_match(m, text), text)
         self._last_state = {f'pool_cursor_{k}': v for k, v in self._pool_cursor.items()}
 
         return new_text, self.ip_dict, self.subnet_dict, self._last_state
+
+    def learn(self, text):
+        """Discover IPs/subnets and allocate fakes without rebuilding the string.
+        Uses the same per-match logic as scrub_text (just discards the result),
+        so the maps it builds are identical — but with no output-string cost.
+        Used by the parallel pre-pass where only the mappings are needed."""
+        self._prepare_subnets(text)
+        for m in CIDR_RE.finditer(text):
+            self._replace_match(m, text)
+        self._last_state = {f'pool_cursor_{k}': v for k, v in self._pool_cursor.items()}
 
     @property
     def mapping(self):

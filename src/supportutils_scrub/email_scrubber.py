@@ -24,9 +24,10 @@ class EmailScrubber(Scrubber):
     name = 'email'
     """Finds and replaces email addresses consistently """
 
-    def __init__(self, mappings=None):
+    def __init__(self, mappings=None, deterministic=False):
         self.email_dict = dict(mappings.get('email', {})) if mappings else {}
         self._counter = len(self.email_dict)
+        self.deterministic = deterministic
 
     @property
     def mapping(self):
@@ -36,13 +37,20 @@ class EmailScrubber(Scrubber):
         """Return a consistent fake email for a real one."""
         if real_email in self.email_dict:
             return self.email_dict[real_email]
-        self._counter += 1
-        fake = f"email_{self._counter}@scrubbed.local"
+        if self.deterministic:
+            from supportutils_scrub.det import dhash
+            fake = f"email_{dhash(real_email)}@scrubbed.local"
+        else:
+            self._counter += 1
+            fake = f"email_{self._counter}@scrubbed.local"
         self.email_dict[real_email] = fake
         return fake
 
     def scrub(self, text):
         """Replace all real email addresses in text. Returns scrubbed text."""
+        if '@' not in text:
+            return text
+
         def _replace(m):
             email = m.group(1)
             if any(email.endswith(s) for s in _SKIP_SUFFIXES):

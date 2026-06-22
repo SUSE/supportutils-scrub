@@ -120,45 +120,71 @@ def run_folder_mode(args, logger):
     scrubbers = [s for s in scrubbers if s is not None]
 
     try:
-        file_processor = FileProcessor(config, scrubbers)
+        file_processor = FileProcessor(config, scrubbers, profile=getattr(args, 'profile', False))
     except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
 
     total_files = len(report_files)
-    if not quiet:
-        logger.info("Scrubbing:")
-    _devnull = open(os.devnull, 'w') if quiet else None
-    try:
-        for file_idx, report_file in enumerate(report_files, 1):
-            basename = os.path.basename(report_file)
-            if quiet:
-                err.write(f"\r  Scrubbing {file_idx}/{total_files} {basename:<60}")
-                err.flush()
-                _saved_stdout = sys.stdout
-                sys.stdout = _devnull
-            elif not re.match(r"^sa\d{8}(\.xz)?$", basename):
-                print(f"        {basename}")
-            try:
-                file_processor.process_file(report_file, logger, verbose_flag)
-            finally:
-                if quiet:
-                    sys.stdout = _saved_stdout
-        if quiet:
-            err.write(f"\r  Scrubbing {total_files}/{total_files} done.{' ' * 60}\n")
+    jobs = getattr(args, 'jobs', 1) or 1
+    profile = getattr(args, 'profile', False)
+
+    if jobs > 1 and total_files > 1 and not profile:
+        from supportutils_scrub.parallel import scrub_in_parallel
+        if not quiet:
+            logger.info(f"Scrubbing with {jobs} worker processes...")
+        else:
+            err.write(f"  Scrubbing {total_files} files with {jobs} workers...\n")
             err.flush()
-    finally:
-        if _devnull is not None:
-            _devnull.close()
+        frozen_seed = dict(mappings)
+        frozen_seed['hostname'] = hostname_dict
+        frozen_seed['domain'] = domain_dict
+        frozen_seed['user'] = username_dict
+        frozen_seed['serial'] = serial_scrubber.serial_dict if serial_scrubber else {}
+        frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
+        dataset_dict, _hits = scrub_in_parallel(
+            report_files, frozen_seed, config, jobs, logger,
+            verbose=verbose_flag, include_ldap=False)
+        dataset_dict['tld_map'] = tld_map
+        combined_mappings_for_verify = dataset_dict
+    else:
+        if not quiet:
+            logger.info("Scrubbing:")
+        _devnull = open(os.devnull, 'w') if quiet else None
+        try:
+            for file_idx, report_file in enumerate(report_files, 1):
+                basename = os.path.basename(report_file)
+                if quiet:
+                    err.write(f"\r  Scrubbing {file_idx}/{total_files} {basename:<60}")
+                    err.flush()
+                    _saved_stdout = sys.stdout
+                    sys.stdout = _devnull
+                elif not re.match(r"^sa\d{8}(\.xz)?$", basename):
+                    print(f"        {basename}")
+                try:
+                    file_processor.process_file(report_file, logger, verbose_flag)
+                finally:
+                    if quiet:
+                        sys.stdout = _saved_stdout
+            if quiet:
+                err.write(f"\r  Scrubbing {total_files}/{total_files} done.{' ' * 60}\n")
+                err.flush()
+        finally:
+            if _devnull is not None:
+                _devnull.close()
 
-    ip_s = file_processor['ip']
-    ipv6_s = file_processor['ipv6']
+        ip_s = file_processor['ip']
+        ipv6_s = file_processor['ipv6']
 
-    dataset_dict = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
-    dataset_dict['subnet'] = ip_s.subnet_dict if ip_s else {}
-    dataset_dict['state'] = ip_s.state if ip_s else {}
-    dataset_dict['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
-    dataset_dict['tld_map'] = tld_map
+        dataset_dict = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
+        dataset_dict['subnet'] = ip_s.subnet_dict if ip_s else {}
+        dataset_dict['state'] = ip_s.state if ip_s else {}
+        dataset_dict['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
+        dataset_dict['tld_map'] = tld_map
+        combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
+
+    if profile:
+        print(file_processor.format_profile(), file=sys.stderr if quiet else sys.stdout)
 
     saved_mapping_path = save_mappings(args, dataset_path, dataset_dict)
 
@@ -166,7 +192,9 @@ def run_folder_mode(args, logger):
         print("\n--- Obfuscated Mapping Preview ---")
         print(json.dumps(dataset_dict, indent=4))
 
-    counts = {s.name: len(s.mapping) for s in file_processor.scrubbers}
+    _non_scrubber = {'subnet', 'state', 'ipv6_subnet', 'tld_map'}
+    counts = {k: len(v) for k, v in dataset_dict.items()
+              if isinstance(v, dict) and k not in _non_scrubber}
     subnet_count = len(dataset_dict.get('subnet', {}))
     ipv6_subnet_count = len(dataset_dict.get('ipv6_subnet', {}))
     total_files_scrubbed = len(report_files)
@@ -207,7 +235,6 @@ def run_folder_mode(args, logger):
     verify_findings = []
     if getattr(args, 'verify', False):
         original_path = args.supportconfig_path[0]
-        combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
         verify_findings = verify_scrubbed_folder(
             scrubbed_path, combined_mappings_for_verify,
             original_folder=original_path, config=config,

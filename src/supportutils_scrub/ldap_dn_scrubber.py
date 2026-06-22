@@ -56,10 +56,11 @@ class LdapDnScrubber(Scrubber):
 
     name = 'ldap_dn'
 
-    def __init__(self, mappings: Optional[Dict] = None):
+    def __init__(self, mappings: Optional[Dict] = None, deterministic: bool = False):
         stored = (mappings or {}).get('ldap_dn', {}) or {}
         self.ldap_dict: Dict[str, str] = {k.lower(): v for k, v in stored.items()}
         self._counter = len(self.ldap_dict)
+        self.deterministic = deterministic
 
     @property
     def mapping(self):
@@ -69,8 +70,12 @@ class LdapDnScrubber(Scrubber):
         key = real_val.lower()
         if key in self.ldap_dict:
             return self.ldap_dict[key]
-        self._counter += 1
-        fake = f"{typ.lower()}_{self._counter}"
+        if self.deterministic:
+            from supportutils_scrub.det import dhash
+            fake = f"{typ.lower()}_{dhash(key)}"
+        else:
+            self._counter += 1
+            fake = f"{typ.lower()}_{self._counter}"
         self.ldap_dict[key] = fake
         return fake
 
