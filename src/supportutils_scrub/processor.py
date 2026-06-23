@@ -6,6 +6,7 @@ import re
 import time
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
+from supportutils_scrub.extractor import is_archive_path
 
 
 _CONFIG_GATES = {
@@ -78,9 +79,14 @@ class FileProcessor:
         # dry_run: run scrubbers to populate mappings but never write or delete
         # files. Used by the parallel pre-pass to build IP/IPv6/MAC maps with
         # the exact same file handling as the real run.
+        base_name = os.path.basename(file_path)
+
+        # Skip sub-archives to prevent binary corruption during text-based scrubbing
+        if is_archive_path(base_name):
+            return
+
         BINARY_SA_PATTERN = re.compile(r"^sa\d{8}(\.xz)?$")
         BINARY_OBJ_PATTERN = re.compile(r"^.*\.obj$", re.IGNORECASE)
-        base_name = os.path.basename(file_path)
 
         if BINARY_SA_PATTERN.match(base_name) or BINARY_OBJ_PATTERN.match(base_name):
             if dry_run:

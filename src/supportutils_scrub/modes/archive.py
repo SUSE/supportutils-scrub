@@ -125,6 +125,46 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
             combined_mappings_for_verify, hostname_dict, domain_dict, tld_map)
 
 
+def scrub_nested_archives_recursively(folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
+    """Scan folder_path for any sub-archives, recursively extract, scrub, and repack them."""
+    import shutil
+    from supportutils_scrub.extractor import is_archive_path, extract_supportconfig, create_txz
+
+    for root, dirs, files in os.walk(folder_path):
+        for file in files:
+            file_path = os.path.join(root, file)
+            if is_archive_path(file_path):
+                logger.info(f"        [NESTED] Extracting and scrubbing: {file}")
+
+                # 1. Extract the nested archive to a temporary directory
+                temp_extract_dir = file_path + "_unpacked_temp"
+                try:
+                    sub_files, sub_clean_dir = extract_supportconfig(file_path, logger, extract_base=temp_extract_dir)
+
+                    # 2. Recursively scrub the extracted sub-directory tree
+                    sub_clean_dir, _, current_mappings, _, _, _, _, _ = _scrub_tree(
+                        sub_clean_dir, current_mappings, args, config, keyword_scrubber,
+                        logger, verbose_flag, include_ldap=False # Skip ldap check on nested for speed
+                    )
+
+                    # 3. Handle deeper nesting (e.g., nested inside nested)
+                    current_mappings = scrub_nested_archives_recursively(
+                        sub_clean_dir, current_mappings, args, config, keyword_scrubber, logger, verbose_flag
+                    )
+
+                    # 4. Re-compress the scrubbed folder back into the original filename (txz format)
+                    os.remove(file_path)
+                    create_txz(sub_clean_dir, file_path)
+
+                except Exception as ex:
+                    logger.error(f"Failed to scrub nested archive {file}: {ex}")
+                finally:
+                    if os.path.exists(temp_extract_dir):
+                        shutil.rmtree(temp_extract_dir, ignore_errors=True)
+
+    return current_mappings
+
+
 def process_one_archive(archive_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
     extract_base = get_secure_tmp_base() if getattr(args, 'secure_tmp', False) else None
 
@@ -155,6 +195,11 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
         except Exception as e:
             print(f"[!] Error during extraction of {archive_path}: {e}")
             raise
+
+        # Recursively scrub embedded archives first (SMLM 5.1/Podman support)
+        current_mappings = scrub_nested_archives_recursively(
+            clean_folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag
+        )
 
         (clean_folder_path, report_files, updated_mappings, report_file_hits,
          combined_mappings_for_verify, hostname_dict, domain_dict, tld_map) = _scrub_tree(
