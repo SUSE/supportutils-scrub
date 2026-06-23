@@ -7,6 +7,22 @@ import tarfile
 import subprocess
 
 
+_ARCHIVE_SUFFIXES = ('.tar.gz', '.tar.bz2', '.tar.xz', '.tgz', '.tbz', '.tbz2', '.txz')
+
+
+def strip_archive_ext(name: str) -> str:
+    """Strip a tar archive extension (handles double extensions like .tar.bz2)."""
+    low = name.lower()
+    for suf in _ARCHIVE_SUFFIXES:
+        if low.endswith(suf):
+            return name[:-len(suf)]
+    return os.path.splitext(name)[0]
+
+
+def is_archive_path(path: str) -> bool:
+    return path.lower().endswith(_ARCHIVE_SUFFIXES)
+
+
 def _is_safe_path(target_dir: str, member_name: str) -> bool:
     """Return True if member_name extracts safely within target_dir."""
     norm = os.path.normpath(member_name)
@@ -20,12 +36,15 @@ def extract_supportconfig(supportconfig_path, logger, extract_base=None):
     """Extract Supportconfig files and return a list of  file """
     report_files = []
 
+    low = supportconfig_path.lower()
     if os.path.isdir(supportconfig_path):
         report_files = walk_supportconfig(supportconfig_path)
-    elif supportconfig_path.endswith(".txz"):
-        report_files = extract_xz_archive(supportconfig_path, logger, extract_base=extract_base)
-    elif supportconfig_path.endswith(".tgz") or supportconfig_path.endswith(".tar.gz"):
-        report_files = extract_tgz_archive(supportconfig_path, logger, extract_base=extract_base)
+    elif low.endswith(".txz") or low.endswith(".tar.xz"):
+        report_files = extract_tgz_archive(supportconfig_path, logger, extract_base=extract_base, mode="r:xz")
+    elif low.endswith(".tgz") or low.endswith(".tar.gz"):
+        report_files = extract_tgz_archive(supportconfig_path, logger, extract_base=extract_base, mode="r:gz")
+    elif low.endswith(".tbz") or low.endswith(".tbz2") or low.endswith(".tar.bz2"):
+        report_files = extract_tgz_archive(supportconfig_path, logger, extract_base=extract_base, mode="r:bz2")
     else:
         print(f"[!] Unsupported file type: {supportconfig_path}")
         raise Exception(f"Unsupported file type: {supportconfig_path}")
@@ -93,14 +112,11 @@ def extract_xz_archive(archive_path, logger, extract_base=None):
 
     return report_files, clean_folder_path
 
-def extract_tgz_archive(archive_path, logger, extract_base=None):
-    """Extract a .tgz or .tar.gz archive and return a list of report files."""
+def extract_tgz_archive(archive_path, logger, extract_base=None, mode="r:gz"):
+    """Extract a tar archive (gz/bz2/xz per `mode`) and return report files."""
     archive_dir = os.path.dirname(archive_path)
     base_name = os.path.basename(archive_path)
-    if base_name.endswith(".tar.gz"):
-        base_name_no_ext = base_name[:-7]
-    else:
-        base_name_no_ext = os.path.splitext(base_name)[0]
+    base_name_no_ext = strip_archive_ext(base_name)
     clean_folder_name = base_name_no_ext + "_scrubbed"
     if extract_base:
         clean_folder_path = os.path.join(extract_base, clean_folder_name)
@@ -114,7 +130,7 @@ def extract_tgz_archive(archive_path, logger, extract_base=None):
 
     os.makedirs(clean_folder_path, exist_ok=True)
 
-    with tarfile.open(archive_path, "r:gz") as tar:
+    with tarfile.open(archive_path, mode) as tar:
         members = tar.getmembers()
         top_level = None
         for member in members:

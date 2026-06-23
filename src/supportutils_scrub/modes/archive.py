@@ -21,7 +21,10 @@ from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
 from supportutils_scrub.processor import FileProcessor
-from supportutils_scrub.extractor import extract_supportconfig, create_txz, walk_supportconfig
+from supportutils_scrub.extractor import (
+    extract_supportconfig, create_txz, walk_supportconfig,
+    copy_folder_to_scrubbed, strip_archive_ext, is_archive_path,
+)
 from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
 from supportutils_scrub.verify import verify_scrubbed_folder
 from supportutils_scrub.pipeline import (
@@ -35,11 +38,94 @@ from supportutils_scrub.audit import (
 )
 
 
-def process_one_archive(archive_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
-    ip_scrubber = IPScrubber(config, mappings=current_mappings)
-    mac_scrubber = MACScrubber(config, mappings=current_mappings)
-    ipv6_scrubber = IPv6Scrubber(config, mappings=current_mappings)
+def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrubber,
+                logger, verbose_flag, include_ldap=True):
+    """Pre-scan, build scrubbers, and scrub a directory tree in place.
 
+    Shared by archive, folder, and file handlers so a mixed run keeps one
+    consistent mapping. Returns the (possibly renamed) clean_folder_path,
+    report_files, updated mappings, per-file hits, the verify mapping, and the
+    hostname/domain dicts + tld_map (needed for output naming)."""
+    report_files = walk_supportconfig(clean_folder_path)
+
+    additional_domains = re.split(r'[,\s;]+', args.domain) if args.domain else []
+    domain_dict, tld_map = extract_and_map_domains(report_files, additional_domains, current_mappings)
+    additional_usernames = re.split(r'[,\s;]+', args.username) if args.username else []
+    username_dict = extract_usernames(report_files, additional_usernames, current_mappings)
+    additional_hostnames = re.split(r'[,\s;]+', args.hostname) if args.hostname else []
+    hostname_dict = extract_hostnames(report_files, additional_hostnames, current_mappings)
+
+    clean_folder_path = rename_extraction_paths(clean_folder_path, hostname_dict, domain_dict=domain_dict)
+    report_files = walk_supportconfig(clean_folder_path)
+
+    serial_dict = extract_serials(report_files, current_mappings)
+    serial_scrubber = SerialScrubber(mappings=current_mappings)
+    serial_scrubber.serial_dict = serial_dict
+
+    scrubbers = [
+        IPScrubber(config, mappings=current_mappings),
+        IPv6Scrubber(config, mappings=current_mappings),
+        MACScrubber(config, mappings=current_mappings),
+        keyword_scrubber,
+        HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
+    ]
+    if include_ldap:
+        scrubbers.append(LdapDnScrubber(mappings=current_mappings))
+    scrubbers += [
+        UsernameScrubber(username_dict), EmailScrubber(mappings=current_mappings),
+        PasswordScrubber(mappings=current_mappings), CloudTokenScrubber(mappings=current_mappings),
+        serial_scrubber,
+    ]
+    scrubbers = [s for s in scrubbers if s is not None]
+
+    report_file_hits = {}
+    jobs = getattr(args, 'jobs', 1) or 1
+    profile = getattr(args, 'profile', False)
+
+    if jobs > 1 and len(report_files) > 1 and not profile:
+        from supportutils_scrub.parallel import scrub_in_parallel
+        logger.info(f"Scrubbing with {jobs} worker processes...")
+        frozen_seed = dict(current_mappings)
+        frozen_seed['hostname'] = hostname_dict
+        frozen_seed['domain'] = domain_dict
+        frozen_seed['user'] = username_dict
+        frozen_seed['serial'] = serial_dict
+        frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
+        updated_mappings, report_file_hits = scrub_in_parallel(
+            report_files, frozen_seed, config, jobs, logger,
+            verbose=verbose_flag, include_ldap=include_ldap)
+        updated_mappings['tld_map'] = tld_map
+        combined_mappings_for_verify = updated_mappings
+    else:
+        file_processor = FileProcessor(config, scrubbers, profile=profile)
+        logger.info("Scrubbing:")
+        for report_file in report_files:
+            basename = os.path.basename(report_file)
+            if not re.match(r"^sa\d{8}(\.xz)?$", basename) and not getattr(args, 'quiet', False):
+                print(f"        {basename}")
+            before = {s.name: len(s.mapping) for s in file_processor.scrubbers}
+            file_processor.process_file(report_file, logger, verbose_flag)
+            hits = [name for name, prev in before.items()
+                    if len(file_processor[name].mapping) > prev]
+            if hits:
+                report_file_hits[os.path.basename(report_file)] = hits
+
+        ip_s = file_processor['ip']
+        ipv6_s = file_processor['ipv6']
+        updated_mappings = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
+        updated_mappings['subnet'] = ip_s.subnet_dict if ip_s else {}
+        updated_mappings['state'] = ip_s.state if ip_s else {}
+        updated_mappings['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
+        updated_mappings['tld_map'] = tld_map
+        combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
+        if profile:
+            print(file_processor.format_profile())
+
+    return (clean_folder_path, report_files, updated_mappings, report_file_hits,
+            combined_mappings_for_verify, hostname_dict, domain_dict, tld_map)
+
+
+def process_one_archive(archive_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
     extract_base = get_secure_tmp_base() if getattr(args, 'secure_tmp', False) else None
 
     new_txz_file_path = None
@@ -70,95 +156,17 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
             print(f"[!] Error during extraction of {archive_path}: {e}")
             raise
 
-        additional_domains = []
-        if args.domain:
-            additional_domains = re.split(r'[,\s;]+', args.domain)
-        domain_dict, tld_map = extract_and_map_domains(report_files, additional_domains, current_mappings)
+        (clean_folder_path, report_files, updated_mappings, report_file_hits,
+         combined_mappings_for_verify, hostname_dict, domain_dict, tld_map) = _scrub_tree(
+            clean_folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag)
 
-        additional_usernames = []
-        if args.username:
-            additional_usernames = re.split(r'[,\s;]+', args.username)
-        username_dict = extract_usernames(report_files, additional_usernames, current_mappings)
-
-        additional_hostnames = []
-        if args.hostname:
-            additional_hostnames = re.split(r'[,\s;]+', args.hostname)
-        hostname_dict = extract_hostnames(report_files, additional_hostnames, current_mappings)
-
-        clean_folder_path = rename_extraction_paths(clean_folder_path, hostname_dict, domain_dict=domain_dict)
-        report_files = walk_supportconfig(clean_folder_path)
-
-        serial_dict = extract_serials(report_files, current_mappings)
-        serial_scrubber = SerialScrubber(mappings=current_mappings)
-        serial_scrubber.serial_dict = serial_dict
-
-        archive_dir = os.path.dirname(os.path.abspath(archive_path))
         archive_basename = os.path.basename(archive_path)
-        if archive_path.endswith(".tar.gz"):
-            archive_name_no_ext = archive_basename[:-7]
-        else:
-            archive_name_no_ext = os.path.splitext(archive_basename)[0]
+        archive_name_no_ext = strip_archive_ext(archive_basename)
         scrubbed_archive_name = scrub_name(archive_name_no_ext, hostname_dict, domain_dict=domain_dict)
-        out_dir = getattr(args, 'output_dir', None) or archive_dir
+        out_dir = getattr(args, 'output_dir', None) or os.path.dirname(os.path.abspath(archive_path))
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
         new_txz_file_path = os.path.join(out_dir, scrubbed_archive_name + "_scrubbed.txz")
-
-        scrubbers = [
-            ip_scrubber, ipv6_scrubber, mac_scrubber, keyword_scrubber,
-            HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
-            LdapDnScrubber(mappings=current_mappings),
-            UsernameScrubber(username_dict), EmailScrubber(mappings=current_mappings),
-            PasswordScrubber(mappings=current_mappings), CloudTokenScrubber(mappings=current_mappings),
-            serial_scrubber,
-        ]
-        scrubbers = [s for s in scrubbers if s is not None]
-
-        jobs = getattr(args, 'jobs', 1) or 1
-        profile = getattr(args, 'profile', False)
-        if jobs > 1 and len(report_files) > 1 and not profile:
-            from supportutils_scrub.parallel import scrub_in_parallel
-            logger.info(f"Scrubbing with {jobs} worker processes...")
-            frozen_seed = dict(current_mappings)
-            frozen_seed['hostname'] = hostname_dict
-            frozen_seed['domain'] = domain_dict
-            frozen_seed['user'] = username_dict
-            frozen_seed['serial'] = serial_dict
-            frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
-            updated_mappings, report_file_hits = scrub_in_parallel(
-                report_files, frozen_seed, config, jobs, logger,
-                verbose=verbose_flag, include_ldap=True)
-            updated_mappings['tld_map'] = tld_map
-            combined_mappings_for_verify = updated_mappings
-            file_processor = None
-        else:
-            file_processor = FileProcessor(config, scrubbers, profile=profile)
-
-            logger.info("Scrubbing:")
-            for report_file in report_files:
-                basename = os.path.basename(report_file)
-                if not re.match(r"^sa\d{8}(\.xz)?$", basename):
-                    if not getattr(args, 'quiet', False):
-                        print(f"        {basename}")
-
-                before = {s.name: len(s.mapping) for s in file_processor.scrubbers}
-                file_processor.process_file(report_file, logger, verbose_flag)
-                file_hits = [name for name, prev in before.items()
-                             if len(file_processor[name].mapping) > prev]
-                if file_hits:
-                    report_file_hits[os.path.basename(report_file)] = file_hits
-
-            ip_s = file_processor['ip']
-            ipv6_s = file_processor['ipv6']
-            updated_mappings = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
-            updated_mappings['subnet'] = ip_s.subnet_dict if ip_s else {}
-            updated_mappings['state'] = ip_s.state if ip_s else {}
-            updated_mappings['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
-            updated_mappings['tld_map'] = tld_map
-            combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
-
-        if profile and file_processor is not None:
-            print(file_processor.format_profile())
 
         create_txz(clean_folder_path, new_txz_file_path)
         print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
@@ -214,6 +222,108 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
     }
 
     return updated_mappings, stats
+
+
+def process_one_folder(folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
+    """Scrub a directory in place to <name>_scrubbed/ (original untouched)."""
+    report_files, clean_folder_path = copy_folder_to_scrubbed(folder_path)
+    (clean_folder_path, report_files, updated_mappings, report_file_hits,
+     combined_mappings_for_verify, hostname_dict, domain_dict, tld_map) = _scrub_tree(
+        clean_folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag)
+    print(f"[✓] Scrubbed folder written to: {clean_folder_path}")
+
+    verify_findings = []
+    if getattr(args, 'verify', False):
+        verify_findings = verify_scrubbed_folder(
+            clean_folder_path, combined_mappings_for_verify,
+            original_folder=folder_path, config=config,
+            check_allowlist=True, check_patterns=True, check_identity=True)
+        if verify_findings:
+            print(f"[!] VERIFY: {len(verify_findings)} potential leak(s) found in scrubbed output:")
+            for f in verify_findings[:20]:
+                print(f"    {f['file']}:{f['line']}  [{f['category']}]  {f['value']!r}")
+            if len(verify_findings) > 20:
+                print(f"    ... and {len(verify_findings)-20} more (see --report for full details)")
+        else:
+            print("[✓] VERIFY: No sensitive data found in scrubbed output.")
+
+    try:
+        owner = pwd.getpwuid(os.stat(clean_folder_path).st_uid).pw_name
+    except Exception:
+        owner = "unknown"
+    stats = {
+        'archive_path': folder_path, 'output_path': clean_folder_path,
+        'files': len(report_files), 'size_mb': 0, 'owner': owner,
+        'report_data': {'input': folder_path, 'output': clean_folder_path,
+                        'files_total': len(report_files), 'file_hits': report_file_hits},
+        'verify_findings': verify_findings,
+    }
+    return updated_mappings, stats
+
+
+def process_one_file(file_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
+    """Scrub a single plain file to <name>_scrubbed<ext>, reusing existing maps.
+
+    No supportconfig structure to pre-scan, so it relies on the shared mapping
+    built from other inputs plus the self-discovering scrubbers (ip/ipv6/mac/
+    email/password/cloud_token/ldap)."""
+    base = os.path.basename(file_path)
+    root, ext = os.path.splitext(base)
+    out_dir = getattr(args, 'output_dir', None) or os.path.dirname(os.path.abspath(file_path))
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, "{}_scrubbed{}".format(root, ext))
+    shutil.copyfile(file_path, out_path)
+
+    serial_scrubber = SerialScrubber(mappings=current_mappings)
+    serial_scrubber.serial_dict = dict(current_mappings.get('serial', {}))
+    scrubbers = [
+        IPScrubber(config, mappings=current_mappings),
+        IPv6Scrubber(config, mappings=current_mappings),
+        MACScrubber(config, mappings=current_mappings),
+        keyword_scrubber,
+        HostnameScrubber(dict(current_mappings.get('hostname', {}))),
+        DomainScrubber(dict(current_mappings.get('domain', {}))),
+        LdapDnScrubber(mappings=current_mappings),
+        UsernameScrubber(dict(current_mappings.get('user', {}))),
+        EmailScrubber(mappings=current_mappings),
+        PasswordScrubber(mappings=current_mappings),
+        CloudTokenScrubber(mappings=current_mappings),
+        serial_scrubber,
+    ]
+    scrubbers = [s for s in scrubbers if s is not None]
+    fp = FileProcessor(config, scrubbers)
+    logger.info(f"Scrubbing file: {base}")
+    fp.process_file(out_path, logger, verbose_flag)
+    print(f"[✓] Scrubbed file written to: {out_path}")
+
+    ip_s = fp['ip']
+    ipv6_s = fp['ipv6']
+    updated_mappings = {s.name: dict(s.mapping) for s in fp.scrubbers}
+    updated_mappings['subnet'] = ip_s.subnet_dict if ip_s else {}
+    updated_mappings['state'] = ip_s.state if ip_s else {}
+    updated_mappings['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
+    updated_mappings['tld_map'] = current_mappings.get('tld_map', {})
+
+    stats = {
+        'archive_path': file_path, 'output_path': out_path, 'files': 1,
+        'size_mb': (os.path.getsize(out_path) / (1024 * 1024)) if os.path.exists(out_path) else 0,
+        'owner': 'unknown',
+        'report_data': {'input': file_path, 'output': out_path, 'files_total': 1, 'file_hits': {}},
+        'verify_findings': [],
+    }
+    return updated_mappings, stats
+
+
+def _process_one_input(path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
+    """Dispatch a single input to the right handler by type (dir/archive/file)."""
+    if os.path.isdir(path):
+        return process_one_folder(path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag)
+    if is_archive_path(path):
+        return process_one_archive(path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag)
+    if os.path.isfile(path):
+        return process_one_file(path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag)
+    raise Exception(f"Unsupported input (not a folder, archive, or file): {path}")
 
 
 def run_archive_mode(paths, args, logger):
@@ -276,7 +386,7 @@ def run_archive_mode(paths, args, logger):
         if len(paths) > 1:
             print(f"\n[{i+1}/{len(paths)}] Processing: {os.path.basename(archive_path)}")
         try:
-            current_mappings, stats = process_one_archive(
+            current_mappings, stats = _process_one_input(
                 archive_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag
             )
             all_stats.append(stats)
