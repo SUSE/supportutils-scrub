@@ -198,5 +198,5 @@ def copy_folder_to_scrubbed(folder_path):
     scrubbed_path = folder_path.rstrip('/') + '_scrubbed'
     if os.path.exists(scrubbed_path):
         shutil.rmtree(scrubbed_path)
-    shutil.copytree(folder_path, scrubbed_path)
+    shutil.copytree(folder_path, scrubbed_path, symlinks=True)
     return walk_supportconfig(scrubbed_path), scrubbed_path
