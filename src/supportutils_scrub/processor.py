@@ -8,6 +8,17 @@ from supportutils_scrub.keyword_scrubber import KeywordScrubber
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 
 
+BINARY_SA_PATTERN = re.compile(r"^sa\d{8}(\.xz)?$")
+BINARY_OBJ_PATTERN = re.compile(r"^.*\.obj$", re.IGNORECASE)
+SAR_XZ_PATTERN = re.compile(r'^sar\d{8}\.xz$')
+SAR_PLAIN_PATTERN = re.compile(r'^sar\d{8}$')
+
+_SCRUB_INFO_HEADER = (
+    "#" + "-" * 93 + "\n"
+    "# INFO: This file was processed by supportutils-scrub to remove sensitive data. Review before sharing.\n"
+    "#" + "-" * 93 + "\n\n"
+)
+
 _CONFIG_GATES = {
     'ip':       lambda cfg: cfg.obfuscate_public_ip or cfg.obfuscate_private_ip,
     'ipv6':     lambda cfg: cfg.obfuscate_ipv6,
@@ -78,8 +89,6 @@ class FileProcessor:
         # dry_run: run scrubbers to populate mappings but never write or delete
         # files. Used by the parallel pre-pass to build IP/IPv6/MAC maps with
         # the exact same file handling as the real run.
-        BINARY_SA_PATTERN = re.compile(r"^sa\d{8}(\.xz)?$")
-        BINARY_OBJ_PATTERN = re.compile(r"^.*\.obj$", re.IGNORECASE)
         base_name = os.path.basename(file_path)
 
         if BINARY_SA_PATTERN.match(base_name) or BINARY_OBJ_PATTERN.match(base_name):
@@ -92,16 +101,8 @@ class FileProcessor:
                 print(f"[!] Failed to remove binary file {file_path}: {e} ")
             return
 
-        SAR_XZ_PATTERN   = re.compile(r'^sar\d{8}\.xz$')
-        SAR_PLAIN_PATTERN = re.compile(r'^sar\d{8}$')
         is_sar_xz_file   = bool(SAR_XZ_PATTERN.match(base_name))
         is_sar_plain_file = bool(SAR_PLAIN_PATTERN.match(base_name))
-
-        _SCRUB_INFO_HEADER = (
-            "#" + "-" * 93 + "\n"
-            "# INFO: This file was processed by supportutils-scrub to remove sensitive data. Review before sharing.\n"
-            "#" + "-" * 93 + "\n\n"
-        )
 
         try:
             if is_sar_xz_file:

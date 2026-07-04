@@ -3,6 +3,7 @@ import re
 import os
 import sys
 from supportutils_scrub.scrubber import Scrubber
+from supportutils_scrub.trie_re import build_trie_pattern
 
 
 class KeywordScrubber(Scrubber):
@@ -13,6 +14,7 @@ class KeywordScrubber(Scrubber):
         self.cmd_keywords = cmd_keywords or []
         self.keyword_dict = dict((mappings or {}).get('keyword', {}))
         self._counter = len(self.keyword_dict)
+        self._re = None
         self.load_keywords()
 
     def load_keywords(self):
@@ -36,6 +38,16 @@ class KeywordScrubber(Scrubber):
                 kw = keyword.lower()
                 if kw not in self.keyword_dict:
                     self.keyword_dict[kw] = self._next_fake()
+        self._build_re()
+
+    def _build_re(self):
+        # One trie-factored regex for all keywords: a single pass over the text
+        # instead of one re.sub (full scan + string rebuild) per keyword.
+        if self.keyword_dict:
+            trie = build_trie_pattern(self.keyword_dict.keys())
+            self._re = re.compile('(?:' + trie + ')', re.IGNORECASE)
+        else:
+            self._re = None
 
     def _next_fake(self):
         self._counter += 1
@@ -46,9 +58,10 @@ class KeywordScrubber(Scrubber):
         return self.keyword_dict
 
     def scrub(self, text):
-        for keyword, obfuscated in self.keyword_dict.items():
-            text = re.sub(re.escape(keyword), obfuscated, text, flags=re.IGNORECASE)
-        return text
+        if self._re is None:
+            return text
+        return self._re.sub(
+            lambda m: self.keyword_dict.get(m.group(0).lower(), m.group(0)), text)
 
     def is_loaded(self):
         return bool(self.keyword_dict)

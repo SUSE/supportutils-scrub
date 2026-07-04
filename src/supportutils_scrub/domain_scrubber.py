@@ -162,8 +162,9 @@ class DomainScrubber(Scrubber):
             text = self._re.sub(_replacer, text)
 
         # The DC= passes only matter for LDAP/AD distinguished names. Skip all
-        # three (each a full-text scan) when no DC= component is present.
-        if 'dc=' in text.lower():
+        # three (each a full-text scan) when no DC= component is present. The
+        # four case variants avoid text.lower(), which copies the whole file.
+        if 'dc=' in text or 'DC=' in text or 'Dc=' in text or 'dC=' in text:
             if self._dc_re:
                 text = self._dc_re.sub(
                     lambda m: self._dc_dict.get(m.group(0).lower(), m.group(0)),

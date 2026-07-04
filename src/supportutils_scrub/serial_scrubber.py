@@ -1,6 +1,7 @@
 # serial_scrubber.py
 import re
 from supportutils_scrub.scrubber import Scrubber
+from supportutils_scrub.trie_re import build_trie_pattern
 
 _SKIP_VALUES = frozenset({
     '', 'not specified', 'not present', 'unknown', 'n/a', 'none',
@@ -39,6 +40,8 @@ class SerialScrubber(Scrubber):
         if mappings:
             self.serial_dict = dict(mappings.get('serial', {}))
         self._counter = len(self.serial_dict)
+        self._re = None
+        self._re_size = -1
 
     @property
     def mapping(self):
@@ -61,6 +64,10 @@ class SerialScrubber(Scrubber):
     def scrub(self, text: str) -> str:
         if not self.serial_dict:
             return text
-        for real, fake in sorted(self.serial_dict.items(), key=lambda x: len(x[0]), reverse=True):
-            text = text.replace(real, fake)
-        return text
+        # Single trie-regex pass (greedy, so the longest serial wins at any
+        # position) instead of one str.replace full pass per serial. Rebuilt
+        # lazily because pre_scan keeps adding entries between scrubs.
+        if self._re is None or self._re_size != len(self.serial_dict):
+            self._re = re.compile(build_trie_pattern(self.serial_dict.keys()))
+            self._re_size = len(self.serial_dict)
+        return self._re.sub(lambda m: self.serial_dict[m.group(0)], text)
