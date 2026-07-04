@@ -349,15 +349,77 @@ class IPScrubber(Scrubber):
 
         return new_text, self.ip_dict, self.subnet_dict, self._last_state
 
+    def discover(self, text):
+        """Read-only discovery half of learn(): returns (cidrs, tokens).
+
+        cidrs are 'ip/pfx' strings and tokens are (ip, pfx) pairs, each in
+        first-seen order and deduplicated. All text-dependent filtering (the
+        validation from _prepare_subnets, the context checks from
+        _replace_match) happens here; nothing touches allocation state, so
+        this can run in parallel workers and be replayed in the parent."""
+        cidrs = []
+        seen_c = set()
+        for m in CIDR_SUBNET_RE.finditer(text):
+            ip = m.group('ip')
+            pfx = int(m.group('pfx'))
+            if pfx in (0, 32):
+                continue
+            try:
+                ip_obj = IPv4Address(ip)
+            except ValueError:
+                continue
+            if ip.startswith('0.'):
+                continue
+            if ip_obj.is_loopback or ip_obj.is_multicast or ip in SPECIALS:
+                continue
+            if self._is_private(ip) and not self._should_obfuscate_private():
+                continue
+            key = f"{ip}/{pfx}"
+            if key not in seen_c:
+                seen_c.add(key)
+                cidrs.append(key)
+
+        tokens = []
+        seen_t = set()
+        for m in CIDR_RE.finditer(text):
+            ip = m.group('ip')
+            if ip.startswith('0.'):
+                continue
+            start = m.start()
+            snippet = text[max(0, start-20):start].lower()
+            if _VERSION_CTX_RE.search(snippet.rstrip()):
+                continue
+            if snippet.endswith('/') and not snippet.endswith('://') and (len(snippet) < 2 or not snippet[-2].isdigit()):
+                continue
+            key = (ip, m.group('pfx'))
+            if key not in seen_t:
+                seen_t.add(key)
+                tokens.append(key)
+        return cidrs, tokens
+
+    def replay(self, cidrs, tokens):
+        """Allocation half of learn(): apply one file's discover() output.
+
+        Repeated (ip, pfx) pairs are pure cache hits in _scrub_token, so the
+        dedup in discover() does not change the resulting maps."""
+        for cidr in cidrs:
+            try:
+                self._ensure_fake_subnet(ip_network(cidr, strict=False))
+            except (ValueError, RuntimeError):
+                pass
+        self._sorted_subnets = sorted(
+            self._real_to_fake.items(), key=lambda kv: kv[0].prefixlen, reverse=True
+        )
+        for ip, pfx in tokens:
+            self._scrub_token(ip, pfx)
+        self._last_state = {f'pool_cursor_{k}': v for k, v in self._pool_cursor.items()}
+
     def learn(self, text):
         """Discover IPs/subnets and allocate fakes without rebuilding the string.
-        Uses the same per-match logic as scrub_text (just discards the result),
-        so the maps it builds are identical — but with no output-string cost.
-        Used by the parallel pre-pass where only the mappings are needed."""
-        self._prepare_subnets(text)
-        for m in CIDR_RE.finditer(text):
-            self._replace_match(m, text)
-        self._last_state = {f'pool_cursor_{k}': v for k, v in self._pool_cursor.items()}
+        Same per-match filters and allocation decisions as scrub_text, so the
+        maps it builds are identical — but with no output-string cost."""
+        cidrs, tokens = self.discover(text)
+        self.replay(cidrs, tokens)
 
     @property
     def mapping(self):

@@ -90,33 +90,46 @@ class UsernameScrubber(Scrubber):
         re.compile(r'password check failed for user \(([A-Za-z0-9._-]+)\)'),
     ]
 
-    @staticmethod
-    def extract_usernames_from_messages(file_name):
-        """Extract non-excluded usernames from log files."""
-        usernames = set()
-        try:
-            with open(file_name, 'r', encoding='utf-8', errors='ignore') as file:
-                for line in file:
-                    for pat in UsernameScrubber._LOG_PATTERNS:
-                        match = pat.search(line)
-                        if match:
-                            username = match.group(1)
-                            if not UsernameScrubber._is_excluded(username):
-                                usernames.add(username)
-        except IOError:
-            pass
-
-        return list(usernames)
+    # Every line any _LOG_PATTERNS entry can match contains one of these
+    # substrings, so locating them with str.find and running the 6 patterns
+    # only on the enclosing lines is an exact-semantics fast path.
+    _LOG_TRIGGERS = ('user', 'logname', 'acct="', 'pam_unix')
 
     @staticmethod
-    def extract_usernames_from_text(text):
-        """Extract non-excluded usernames from a text string using log patterns."""
+    def _extract_from_log_lines(lines):
         usernames = set()
-        for line in text.splitlines():
+        for line in lines:
             for pat in UsernameScrubber._LOG_PATTERNS:
                 match = pat.search(line)
                 if match:
                     username = match.group(1)
                     if not UsernameScrubber._is_excluded(username):
                         usernames.add(username)
-        return list(usernames)
+        return usernames
+
+    @staticmethod
+    def extract_usernames_from_messages(file_name):
+        """Extract non-excluded usernames from log files."""
+        try:
+            with open(file_name, 'r', encoding='utf-8', errors='ignore') as file:
+                text = file.read()
+        except IOError:
+            return []
+        return UsernameScrubber.extract_usernames_from_text(text)
+
+    @staticmethod
+    def extract_usernames_from_text(text):
+        """Extract non-excluded usernames from a text string using log patterns."""
+        lower = text.lower()
+        seen_starts = set()
+        lines = []
+        for trigger in UsernameScrubber._LOG_TRIGGERS:
+            pos = lower.find(trigger)
+            while pos != -1:
+                line_start = lower.rfind('\n', 0, pos) + 1
+                if line_start not in seen_starts:
+                    seen_starts.add(line_start)
+                    line_end = lower.find('\n', pos)
+                    lines.append(text[line_start:line_end if line_end != -1 else len(text)])
+                pos = lower.find(trigger, pos + 1)
+        return list(UsernameScrubber._extract_from_log_lines(lines))
