@@ -110,11 +110,17 @@ class DomainScrubber(Scrubber):
         }
 
         self._ordered_domains = _sort_specific_first(self.domain_dict.keys(), trusted=True)
-        if self._ordered_domains:
+        # Also match underscore-encoded forms (cloudregister credentials and
+        # similar filename encodings turn smt.susecloud.net into
+        # smt_susecloud_net); replace with the fake encoded the same way.
+        self._scrub_lookup: Dict[str, str] = dict(self.domain_dict)
+        for real, fake in self.domain_dict.items():
+            self._scrub_lookup.setdefault(real.replace('.', '_'), fake.replace('.', '_'))
+        if self._scrub_lookup:
             # Trie-regex (greedy, so most-specific wins) wrapped in the original
             # label-boundary lookarounds. Fast for large domain sets; matching a
             # known suffix inside an undiscovered subdomain still works.
-            trie = build_trie_pattern(self._ordered_domains)
+            trie = build_trie_pattern(self._scrub_lookup.keys())
             self._re = re.compile(rf"(?<![A-Za-z0-9-])(?:{trie})(?![A-Za-z0-9-])", re.IGNORECASE)
         else:
             self._re = None
@@ -163,7 +169,7 @@ class DomainScrubber(Scrubber):
         if self._re:
             def _replacer(match: Match) -> str:
                 found_domain = _norm(match.group(0))
-                return self.domain_dict.get(found_domain, match.group(0))
+                return self._scrub_lookup.get(found_domain, match.group(0))
             text = self._re.sub(_replacer, text)
 
         # The DC= passes only matter for LDAP/AD distinguished names. Skip all
