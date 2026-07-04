@@ -10,8 +10,19 @@ class HostnameScrubber(Scrubber):
     def __init__(self, hostname_dict):
         self.hostname_dict = hostname_dict
         self._re = None
+        self._lookup = {}
         if hostname_dict:
-            self._re = re.compile(r'\b(?:' + build_trie_pattern(hostname_dict.keys()) + r')\b')
+            # Boundaries: \b is not enough — underscore must count as a
+            # boundary or the hostname survives inside SAP instance profile
+            # tokens (DAA_SMDA98_<host>) and scc_<host>_<date> path names,
+            # and a leading digit must too (HANA traces glue a timestamp
+            # straight onto the hostname). The trailing lookahead keeps
+            # digits so sibling hosts (web01 vs web012) stay distinct.
+            # Case-insensitive: NetBIOS/SAP contexts uppercase the hostname.
+            self._lookup = {k.lower(): v for k, v in hostname_dict.items()}
+            self._re = re.compile(r'(?<![A-Za-z])(?:'
+                                  + build_trie_pattern(self._lookup.keys())
+                                  + r')(?![A-Za-z0-9])', re.IGNORECASE)
 
     @property
     def mapping(self):
@@ -20,7 +31,7 @@ class HostnameScrubber(Scrubber):
     def scrub(self, text):
         if not self._re:
             return text
-        return self._re.sub(lambda m: self.hostname_dict[m.group(0)], text)
+        return self._re.sub(lambda m: self._lookup[m.group(0).lower()], text)
     
 
 

@@ -61,7 +61,10 @@ def _norm(d: str) -> str:
 def _labels_count(d: str) -> int:
     return _norm(d).count(".") + 1
 
-def _is_valid_domain(d: str) -> bool:
+def _is_valid_domain(d: str, trusted: bool = False) -> bool:
+    """trusted: the domain comes from an authoritative source (resolv.conf
+    search list, /etc/hosts FQDN), so skip the public-TLD whitelist — internal
+    TLDs like .rz would otherwise never be learned and leak wholesale."""
     d = _norm(d)
     if "." not in d:
         return False
@@ -79,13 +82,13 @@ def _is_valid_domain(d: str) -> bool:
             return False
         if not re.fullmatch(r"[a-zA-Z0-9-]+", p):
             return False
-    if parts[-1].lower() not in _VALID_TLDS:
+    if not trusted and parts[-1].lower() not in _VALID_TLDS:
         return False
     return True
 
-def _sort_specific_first(domains: Iterable[str]) -> List[str]:
+def _sort_specific_first(domains: Iterable[str], trusted: bool = False) -> List[str]:
     """Sort domains most-specific first (by label count, then length)."""
-    uniq = {_norm(d) for d in domains if _is_valid_domain(d)}
+    uniq = {_norm(d) for d in domains if _is_valid_domain(d, trusted)}
     return sorted(uniq, key=lambda s: (_labels_count(s), len(s)), reverse=True)
 
 def _dc_to_domain(dc_str: str) -> str:
@@ -98,13 +101,15 @@ class DomainScrubber(Scrubber):
     name = 'domain'
 
     def __init__(self, domain_dict: Dict[str, str]):
+        # trusted=True: entries were validated when learned; re-filtering here
+        # against the TLD whitelist would silently drop internal-TLD mappings.
         self.domain_dict: Dict[str, str] = {
             _norm(real): fake
             for real, fake in (domain_dict or {}).items()
-            if _is_valid_domain(real)
+            if _is_valid_domain(real, trusted=True)
         }
 
-        self._ordered_domains = _sort_specific_first(self.domain_dict.keys())
+        self._ordered_domains = _sort_specific_first(self.domain_dict.keys(), trusted=True)
         if self._ordered_domains:
             # Trie-regex (greedy, so most-specific wins) wrapped in the original
             # label-boundary lookarounds. Fast for large domain sets; matching a
@@ -187,7 +192,7 @@ class DomainScrubber(Scrubber):
 
 
     @staticmethod
-    def extract_domains_from_text(text: str) -> List[str]:
+    def extract_domains_from_text(text: str, trusted: bool = False) -> List[str]:
         """Extract valid domains from text, including parent domains."""
         if not text:
             return []
@@ -196,7 +201,7 @@ class DomainScrubber(Scrubber):
         matches = DOMAIN_RE.finditer(text)
         for m in matches:
             fqdn = _norm(m.group(1))
-            if not _is_valid_domain(fqdn):
+            if not _is_valid_domain(fqdn, trusted):
                 continue
 
             all_domain_parts.add(fqdn)
@@ -204,18 +209,19 @@ class DomainScrubber(Scrubber):
 
             for i in range(1, len(parts) - 1):
                 parent_domain = '.'.join(parts[i:])
-                if _is_valid_domain(parent_domain):
+                if _is_valid_domain(parent_domain, trusted):
                     all_domain_parts.add(parent_domain)
 
         for m in _DC_RE.finditer(text):
             domain = _dc_to_domain(m.group(1))
-            if _is_valid_domain(domain):
+            if _is_valid_domain(domain, trusted):
                 DomainScrubber._add_domain_and_parents(domain, all_domain_parts)
 
-        return _sort_specific_first(all_domain_parts)
+        return _sort_specific_first(all_domain_parts, trusted)
 
     @staticmethod
-    def extract_domains_from_file_section(file_handle, section_start: str) -> List[str]:
+    def extract_domains_from_file_section(file_handle, section_start: str,
+                                          trusted: bool = False) -> List[str]:
         """Extract domains from a specific section of a file, stopping at the next section header."""
         all_domains = set()
         in_section = False
@@ -226,17 +232,18 @@ class DomainScrubber(Scrubber):
                 if stripped_line == section_start:
                     in_section = True
                     continue
-                
+
                 if in_section and stripped_line.startswith("#"):
-                    break 
-                
+                    break
+
                 if in_section:
                     content = line.split("#", 1)[0]
-                    all_domains.update(DomainScrubber.extract_domains_from_text(content))
+                    all_domains.update(
+                        DomainScrubber.extract_domains_from_text(content, trusted))
         except Exception:
-           
+
             pass
-        return _sort_specific_first(all_domains)
+        return _sort_specific_first(all_domains, trusted)
 
     @staticmethod
     def _add_domain_and_parents(domain: str, out: Set[str]) -> None:

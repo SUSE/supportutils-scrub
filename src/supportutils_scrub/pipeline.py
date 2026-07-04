@@ -74,13 +74,17 @@ def extract_and_map_domains(report_files, additional_domains, mappings):
         'ntp.txt': ['# /etc/ntp.conf', '# /etc/chrony.conf'],
         'sssd.txt': ['# /etc/sssd/sssd.conf'],
     }
+    # Authoritative domain declarations: exempt from the public-TLD whitelist
+    # so internal TLDs (e.g. .rz) are learned too.
+    trusted_sections = {'# /etc/hosts', '# /etc/resolv.conf'}
     for file_path in report_files:
         basename = os.path.basename(file_path)
         if basename in files_to_scan:
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     for section in files_to_scan[basename]:
-                        domains = DomainScrubber.extract_domains_from_file_section(f, section)
+                        domains = DomainScrubber.extract_domains_from_file_section(
+                            f, section, trusted=section in trusted_sections)
                         all_domains.update(domains)
             except Exception as e:
                 logging.error(f"Error reading file {file_path}: {e}")
