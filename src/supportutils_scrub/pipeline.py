@@ -203,14 +203,24 @@ def dataset_paths(dataset_dir, timestamp, hostname_dict=None, input_name=None, r
 def rename_extraction_paths(clean_folder_path, hostname_dict, rename_top=True, domain_dict=None):
     if not hostname_dict:
         return clean_folder_path
-    for root, dirs, _ in os.walk(clean_folder_path, topdown=True):
-        for d in dirs:
+    for root, dirs, files in os.walk(clean_folder_path, topdown=True):
+        # dirs must be updated in place or the walk descends into the old
+        # (renamed-away) path and silently skips everything below it.
+        for i, d in enumerate(dirs):
             scrubbed = scrub_name(d, hostname_dict, domain_dict=domain_dict)
             if scrubbed != d:
                 try:
                     os.rename(os.path.join(root, d), os.path.join(root, scrubbed))
+                    dirs[i] = scrubbed
                 except Exception as e:
                     print(f"[!] Could not rename directory '{d}': {e}", file=sys.stderr)
+        for f in files:
+            scrubbed = scrub_name(f, hostname_dict, domain_dict=domain_dict)
+            if scrubbed != f:
+                try:
+                    os.rename(os.path.join(root, f), os.path.join(root, scrubbed))
+                except Exception as e:
+                    print(f"[!] Could not rename file '{f}': {e}", file=sys.stderr)
     if not rename_top:
         return clean_folder_path
     parent   = os.path.dirname(clean_folder_path)
