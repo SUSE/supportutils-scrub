@@ -58,6 +58,57 @@ def walk_supportconfig(folder_path):
             report_files.append(os.path.join(root, file))
     return report_files
 
+
+# Nested archives also include plain .tar; tarfile 'r:*' auto-detects.
+_NESTED_ARCHIVE_SUFFIXES = _ARCHIVE_SUFFIXES + ('.tar',)
+
+
+def expand_nested_archives(root_dir, logger=None, max_depth=5):
+    """Unpack tar archives found anywhere under root_dir so their contents get
+    scrubbed like regular files. Each archive is extracted into a sibling
+    folder named after it (extension stripped) and then removed — the output
+    stays unpacked. Repeats up to max_depth times for archives-in-archives.
+    An archive that cannot be unpacked is removed too: shipping it unscrubbed
+    would leak whatever it contains. Returns the number of archives unpacked.
+    """
+    unpacked = 0
+    for _ in range(max_depth):
+        archives = [p for p in walk_supportconfig(root_dir)
+                    if p.lower().endswith(_NESTED_ARCHIVE_SUFFIXES)]
+        if not archives:
+            break
+        for archive in archives:
+            rel = os.path.relpath(archive, root_dir)
+            dest = os.path.join(os.path.dirname(archive),
+                                strip_archive_ext(os.path.basename(archive)))
+            base_dest, n = dest, 1
+            while os.path.exists(dest):
+                dest = f"{base_dest}_{n}"
+                n += 1
+            try:
+                with tarfile.open(archive, 'r:*') as tar:
+                    os.makedirs(dest)
+                    for member in tar.getmembers():
+                        # Untrusted content: regular files and dirs only, no
+                        # symlinks/devices, no paths escaping dest.
+                        if not (member.isfile() or member.isdir()):
+                            continue
+                        if not _is_safe_path(dest, member.name):
+                            continue
+                        tar.extract(member, path=dest)
+                if logger:
+                    logger.info(f"Unpacked nested archive: {rel}")
+                unpacked += 1
+            except Exception as e:
+                if logger:
+                    logger.error(f"Could not unpack nested archive {rel}: {e} — removed (cannot scrub its contents)")
+            try:
+                os.remove(archive)
+            except OSError as e:
+                if logger:
+                    logger.error(f"Failed to remove nested archive {rel}: {e}")
+    return unpacked
+
 def extract_xz_archive(archive_path, logger, extract_base=None):
     """
     Extract an XZ archive and return a list of report files.

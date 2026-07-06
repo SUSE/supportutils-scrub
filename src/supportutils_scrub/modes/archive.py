@@ -24,6 +24,7 @@ from supportutils_scrub.processor import FileProcessor
 from supportutils_scrub.extractor import (
     extract_supportconfig, create_txz, walk_supportconfig,
     copy_folder_to_scrubbed, strip_archive_ext, is_archive_path,
+    expand_nested_archives,
 )
 from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
 from supportutils_scrub.verify import verify_scrubbed_folder
@@ -46,6 +47,7 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
     consistent mapping. Returns the (possibly renamed) clean_folder_path,
     report_files, updated mappings, per-file hits, the verify mapping, and the
     hostname/domain dicts + tld_map (needed for output naming)."""
+    expand_nested_archives(clean_folder_path, logger)
     report_files = walk_supportconfig(clean_folder_path)
 
     additional_domains = re.split(r'[,\s;]+', args.domain) if args.domain else []

@@ -18,7 +18,9 @@ from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.processor import FileProcessor
-from supportutils_scrub.extractor import copy_folder_to_scrubbed, walk_supportconfig
+from supportutils_scrub.extractor import (
+    copy_folder_to_scrubbed, walk_supportconfig, expand_nested_archives,
+)
 from supportutils_scrub.verify import verify_scrubbed_folder
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers, is_supportconfig_folder,
@@ -76,6 +78,9 @@ def run_folder_mode(args, logger):
         os._exit(1)
     signal.signal(signal.SIGINT,  _cleanup_on_signal)
     signal.signal(signal.SIGTERM, _cleanup_on_signal)
+
+    if expand_nested_archives(scrubbed_path, logger):
+        report_files = walk_supportconfig(scrubbed_path)
 
     is_sc = is_supportconfig_folder(report_files)
     scan_files = report_files if is_sc else []
