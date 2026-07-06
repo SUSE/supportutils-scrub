@@ -3,6 +3,8 @@ import os
 import re
 import ipaddress
 
+from supportutils_scrub.processor import compressed_opener
+
 _CATEGORIES = [
     ('ip',       'IPv4 address',  'ip'),
     ('ipv6',     'IPv6 address',  'substring'),
@@ -496,8 +498,10 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
         fpath, fname = fpath_fname
         rel = os.path.relpath(fpath, scan_ctx['folder_path'])
         file_findings = []
+        comp = compressed_opener(fname)
+        _open = comp[1] if comp else open
         try:
-            with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+            with _open(fpath, 'rt', encoding='utf-8', errors='ignore') as f:
                 for lineno, line in enumerate(f, 1):
 
                     if scan_ctx['combined_re']:

@@ -1,6 +1,8 @@
 # processor.py
 
 import os
+import bz2
+import gzip
 import lzma
 import re
 import time
@@ -12,6 +14,22 @@ BINARY_SA_PATTERN = re.compile(r"^sa\d{8}(\.xz)?$")
 BINARY_OBJ_PATTERN = re.compile(r"^.*\.obj$", re.IGNORECASE)
 SAR_XZ_PATTERN = re.compile(r'^sar\d{8}\.xz$')
 SAR_PLAIN_PATTERN = re.compile(r'^sar\d{8}$')
+
+# Single-file compressed logs (traces.gz, logging.xz, boot.log.bz2, ...).
+# Tar archives are excluded: their payload is a tar stream, not text.
+_TAR_SUFFIXES = ('.tar.gz', '.tgz', '.tar.xz', '.txz', '.tar.bz2', '.tbz', '.tbz2')
+_COMPRESS_OPENERS = {'.gz': gzip.open, '.xz': lzma.open, '.bz2': bz2.open}
+
+
+def compressed_opener(base_name):
+    """Return (ext, open_func) for single-file compressed names, else None."""
+    low = base_name.lower()
+    if low.endswith(_TAR_SUFFIXES):
+        return None
+    for ext, opener in _COMPRESS_OPENERS.items():
+        if low.endswith(ext):
+            return ext, opener
+    return None
 
 _SCRUB_INFO_HEADER = (
     "#" + "-" * 93 + "\n"
@@ -130,6 +148,19 @@ class FileProcessor:
                 if scrubbed_first_line != first_line and not dry_run:
                     with open(file_path, mode="w", encoding="utf-8") as out_f:
                         out_f.write(_SCRUB_INFO_HEADER + scrubbed_first_line + rest)
+
+            elif compressed_opener(base_name):
+                ext, opener = compressed_opener(base_name)
+                with opener(file_path, mode="rt", encoding="utf-8", errors="ignore") as f:
+                    original_text = f.read()
+
+                # Strip the compression extension so per-file skip lists
+                # (e.g. MAC skipping modules.txt) still apply.
+                scrubbed_text = self._scrub_content(original_text, base_name[:-len(ext)], logger)
+
+                if scrubbed_text != original_text and not dry_run:
+                    with opener(file_path, mode="wt", encoding="utf-8") as out_f:
+                        out_f.write(_SCRUB_INFO_HEADER + scrubbed_text)
 
             else:
                 with open(file_path, mode="r", encoding="utf-8", errors="ignore") as file:

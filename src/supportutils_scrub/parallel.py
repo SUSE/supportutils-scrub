@@ -49,6 +49,7 @@ from supportutils_scrub.serial_scrubber import SerialScrubber
 from supportutils_scrub.processor import (
     FileProcessor, BINARY_SA_PATTERN, BINARY_OBJ_PATTERN,
     SAR_XZ_PATTERN, SAR_PLAIN_PATTERN, _SCRUB_INFO_HEADER,
+    compressed_opener,
 )
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 
@@ -247,7 +248,8 @@ def _chunk_bounds(path, jobs):
 def _is_chunkable(path):
     base = os.path.basename(path)
     if (BINARY_SA_PATTERN.match(base) or BINARY_OBJ_PATTERN.match(base)
-            or SAR_XZ_PATTERN.match(base) or SAR_PLAIN_PATTERN.match(base)):
+            or SAR_XZ_PATTERN.match(base) or SAR_PLAIN_PATTERN.match(base)
+            or compressed_opener(base)):
         return False  # special-cased in process_file; leave whole
     try:
         return os.path.getsize(path) > _CHUNK_THRESHOLD

@@ -12,7 +12,7 @@ from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
-from supportutils_scrub.processor import FileProcessor
+from supportutils_scrub.processor import FileProcessor, compressed_opener
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers,
     extract_and_map_domains, extract_hostnames, extract_usernames,
@@ -26,7 +26,12 @@ from supportutils_scrub.audit import (
 def run_file_mode(args, logger):
     verbose_flag = args.verbose
     input_path = args.supportconfig_path[0]
-    output_path = input_path + '_scrubbed'
+    comp = compressed_opener(os.path.basename(input_path))
+    if comp:
+        ext, _opener = comp
+        output_path = input_path[:-len(ext)] + '_scrubbed' + input_path[-len(ext):]
+    else:
+        output_path = input_path + '_scrubbed'
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     config = args._preloaded_config
@@ -41,8 +46,9 @@ def run_file_mode(args, logger):
     if keyword_scrubber is None and (args.keywords or args.keyword_file):
         print("[!] Keyword obfuscation disabled (no keywords loaded)")
 
+    _open = comp[1] if comp else open
     try:
-        with open(input_path, 'r', encoding='utf-8', errors='ignore') as f:
+        with _open(input_path, 'rt', encoding='utf-8', errors='ignore') as f:
             text = f.read()
     except Exception as e:
         print(f"[!] Cannot read {input_path}: {e}")
@@ -89,7 +95,7 @@ def run_file_mode(args, logger):
         final_content = scrubbed_text
 
     try:
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with _open(output_path, 'wt', encoding='utf-8') as f:
             f.write(final_content)
     except Exception as e:
         print(f"[!] Cannot write {output_path}: {e}")

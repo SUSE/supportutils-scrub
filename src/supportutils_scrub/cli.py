@@ -10,6 +10,7 @@ from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 from supportutils_scrub.audit import get_encryption_passphrase, load_mappings_file
 from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
+from supportutils_scrub.extractor import is_archive_path
 
 
 def print_header(file=None):
@@ -182,7 +183,7 @@ def main():
     is_folder = len(paths) == 1 and os.path.isdir(paths[0])
     is_file = (len(paths) == 1
                and os.path.isfile(paths[0])
-               and not paths[0].endswith(('.txz', '.tgz', '.tar.gz')))
+               and not is_archive_path(paths[0]))
 
     if is_stdin:
         from supportutils_scrub.modes.stdin import run_stdin_mode
