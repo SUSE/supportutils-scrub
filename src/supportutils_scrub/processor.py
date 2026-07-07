@@ -32,6 +32,12 @@ def compressed_opener(base_name):
     return None
 
 
+def strip_compression_ext(name):
+    """Drop a single-file compression extension (.gz/.xz/.bz2) if present."""
+    comp = compressed_opener(os.path.basename(name))
+    return name[:-len(comp[0])] if comp else name
+
+
 def append_scrubbed(name):
     """Add the '_scrubbed' marker unless the name already carries it.
 

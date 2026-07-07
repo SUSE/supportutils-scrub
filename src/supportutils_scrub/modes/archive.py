@@ -21,7 +21,7 @@ from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
 from supportutils_scrub.processor import (
-    FileProcessor, scrubbed_output_name, append_scrubbed, compressed_opener,
+    FileProcessor, scrubbed_output_name, append_scrubbed, strip_compression_ext,
 )
 from supportutils_scrub.extractor import (
     extract_supportconfig, create_txz, walk_supportconfig,
@@ -199,10 +199,12 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
             dest = os.path.join(out_dir, append_scrubbed(scrubbed_archive_name))
             if os.path.abspath(dest) != os.path.abspath(clean_folder_path):
                 if os.path.exists(dest):
+                    print(f"[!] Replacing existing output folder: {dest}")
                     shutil.rmtree(dest)
                 shutil.move(clean_folder_path, dest)
                 clean_folder_path = dest
             keep_folder = True
+            timer.mark('move')
             print(f"[✓] Scrubbed folder written to: {clean_folder_path}")
         else:
             new_txz_file_path = os.path.join(out_dir, append_scrubbed(scrubbed_archive_name) + ".txz")
@@ -240,8 +242,12 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
     output_path = new_txz_file_path or clean_folder_path
     try:
         stat = os.stat(output_path)
-        archive_size_mb = (stat.st_size / (1024 * 1024)) if new_txz_file_path else 0
         archive_owner = pwd.getpwuid(stat.st_uid).pw_name
+        if new_txz_file_path:
+            archive_size_mb = stat.st_size / (1024 * 1024)
+        else:
+            archive_size_mb = sum(
+                os.path.getsize(p) for p in walk_supportconfig(output_path)) / (1024 * 1024)
     except Exception:
         archive_size_mb = 0
         archive_owner = "unknown"
@@ -346,10 +352,10 @@ def process_one_file(file_path, current_mappings, args, config, keyword_scrubber
     fp = FileProcessor(config, scrubbers, decompress=unpacked)
     logger.info(f"Scrubbing file: {base}")
     fp.process_file(out_path, logger, verbose_flag)
-    comp = compressed_opener(os.path.basename(out_path))
-    if unpacked and comp:
+    if unpacked and not os.path.exists(out_path):
         # process_file wrote the plain file and removed the compressed copy
-        out_path = out_path[:-len(comp[0])]
+        # (unless a plain sibling existed, in which case it stays compressed)
+        out_path = strip_compression_ext(out_path)
     print(f"[✓] Scrubbed file written to: {out_path}")
 
     ip_s = fp['ip']

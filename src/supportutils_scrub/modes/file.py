@@ -12,7 +12,10 @@ from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
-from supportutils_scrub.processor import FileProcessor, compressed_opener, scrubbed_output_name
+from supportutils_scrub.processor import (
+    FileProcessor, compressed_opener, scrubbed_output_name,
+    strip_compression_ext, _SCRUB_INFO_HEADER,
+)
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers, scrub_name,
     extract_and_map_domains, extract_hostnames, extract_usernames,
@@ -64,8 +67,8 @@ def run_file_mode(args, logger):
 
     unpacked = getattr(args, 'unpacked', False)
     out_base = scrub_name(os.path.basename(input_path), hostname_dict, domain_dict=domain_dict)
-    if comp and unpacked:
-        out_base = out_base[:-len(comp[0])]
+    if unpacked:
+        out_base = strip_compression_ext(out_base)
     output_path = os.path.join(os.path.dirname(input_path), scrubbed_output_name(out_base))
 
     scrubbers = [
@@ -87,12 +90,7 @@ def run_file_mode(args, logger):
     scrubbed_text = file_processor.process_text(text, logger, verbose_flag)
 
     if scrubbed_text != text:
-        header = (
-            "#" + "-" * 93 + "\n"
-            "# INFO: This file was processed by supportutils-scrub to remove sensitive data. Review before sharing.\n"
-            "#" + "-" * 93 + "\n\n"
-        )
-        final_content = header + scrubbed_text
+        final_content = _SCRUB_INFO_HEADER + scrubbed_text
     else:
         final_content = scrubbed_text
 
