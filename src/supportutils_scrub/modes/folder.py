@@ -119,6 +119,7 @@ def run_folder_mode(args, logger):
         ip_scrubber, ipv6_scrubber, mac_scrubber, keyword_scrubber,
         EmailScrubber(mappings=mappings),
         HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
+        LdapDnScrubber(mappings=mappings),
         UsernameScrubber(username_dict),
         PasswordScrubber(mappings=mappings), CloudTokenScrubber(mappings=mappings),
         serial_scrubber,
@@ -150,7 +151,7 @@ def run_folder_mode(args, logger):
         frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
         dataset_dict, _hits = scrub_in_parallel(
             report_files, frozen_seed, config, jobs, logger,
-            verbose=verbose_flag, include_ldap=False)
+            verbose=verbose_flag, include_ldap=True)
         dataset_dict['tld_map'] = tld_map
         combined_mappings_for_verify = dataset_dict
     else:
