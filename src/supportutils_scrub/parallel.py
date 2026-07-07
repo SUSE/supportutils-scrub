@@ -76,6 +76,10 @@ def _build_chain(frozen, config, deterministic, include_ldap):
         IPv6Scrubber(config, mappings=frozen, deterministic=deterministic),
         MACScrubber(config, mappings=frozen, deterministic=deterministic),
         keyword,
+        # Email must run before hostname/domain: once the domain part is
+        # rewritten the address no longer matches EMAIL_RE and the local
+        # part (often firstname.lastname) would survive.
+        EmailScrubber(mappings=frozen, deterministic=deterministic),
         HostnameScrubber(dict(frozen.get('hostname', {}))),
         DomainScrubber(dict(frozen.get('domain', {}))),
     ]
@@ -83,7 +87,6 @@ def _build_chain(frozen, config, deterministic, include_ldap):
         chain.append(LdapDnScrubber(mappings=frozen, deterministic=deterministic))
     chain += [
         UsernameScrubber(dict(frozen.get('user', {}))),
-        EmailScrubber(mappings=frozen, deterministic=deterministic),
         PasswordScrubber(mappings=frozen, deterministic=deterministic),
         CloudTokenScrubber(mappings=frozen, deterministic=deterministic),
         serial,

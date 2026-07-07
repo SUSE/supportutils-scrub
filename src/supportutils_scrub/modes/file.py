@@ -69,9 +69,10 @@ def run_file_mode(args, logger):
 
     scrubbers = [
         ip_scrubber, ipv6_scrubber, mac_scrubber, keyword_scrubber,
+        EmailScrubber(mappings=mappings),
         HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
         LdapDnScrubber(mappings=mappings),
-        UsernameScrubber(username_dict), EmailScrubber(mappings=mappings),
+        UsernameScrubber(username_dict),
         PasswordScrubber(mappings=mappings), CloudTokenScrubber(mappings=mappings),
     ]
     scrubbers = [s for s in scrubbers if s is not None]

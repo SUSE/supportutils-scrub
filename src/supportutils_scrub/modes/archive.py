@@ -69,12 +69,13 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
         IPv6Scrubber(config, mappings=current_mappings),
         MACScrubber(config, mappings=current_mappings),
         keyword_scrubber,
+        EmailScrubber(mappings=current_mappings),
         HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
     ]
     if include_ldap:
         scrubbers.append(LdapDnScrubber(mappings=current_mappings))
     scrubbers += [
-        UsernameScrubber(username_dict), EmailScrubber(mappings=current_mappings),
+        UsernameScrubber(username_dict),
         PasswordScrubber(mappings=current_mappings), CloudTokenScrubber(mappings=current_mappings),
         serial_scrubber,
     ]
@@ -284,11 +285,11 @@ def process_one_file(file_path, current_mappings, args, config, keyword_scrubber
         IPv6Scrubber(config, mappings=current_mappings),
         MACScrubber(config, mappings=current_mappings),
         keyword_scrubber,
+        EmailScrubber(mappings=current_mappings),
         HostnameScrubber(dict(current_mappings.get('hostname', {}))),
         DomainScrubber(dict(current_mappings.get('domain', {}))),
         LdapDnScrubber(mappings=current_mappings),
         UsernameScrubber(dict(current_mappings.get('user', {}))),
-        EmailScrubber(mappings=current_mappings),
         PasswordScrubber(mappings=current_mappings),
         CloudTokenScrubber(mappings=current_mappings),
         serial_scrubber,
