@@ -23,8 +23,10 @@ CIDR_SUBNET_RE = re.compile(
 
 SPECIALS = {
     "0.0.0.0", "127.0.0.1", "127.0.0.0", "127.255.255.255", "255.255.255.255",
-    "255.255.255.0", "255.255.0.0", "255.0.0.0"
 }
+# Contiguous-ones netmasks (255.255.254.0, ...) identify nothing, and 255/8
+# never holds real hosts. Scrubbing them only desyncs "addr/mask" forms.
+SPECIALS.update(str(IPv4Network((0, p)).netmask) for p in range(8, 33))
 
 # "...version: " context before a dotted number means it's a version, not an IP.
 _VERSION_CTX_RE = re.compile(r'(?:\b|_)ver(?:sion)?[\s:="\']*$')
