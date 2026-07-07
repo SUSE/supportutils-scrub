@@ -28,6 +28,11 @@ class IPv6Scrubber(Scrubber):
         self.deterministic = deterministic
 
         self.ipv6_map: Dict[str, str] = dict((mappings or {}).get('ipv6', {}))
+        # Every fake we have emitted. The second sub pass (CANDIDATE_V6) sees
+        # the AF_INET6 pass's own "fake:port" output; without this set it
+        # would re-scrub our fakes into second-generation fakes and pollute
+        # the mapping with fake->fake entries.
+        self._fakes = set(self.ipv6_map.values())
         self._subnet_map: Dict[ipaddress.IPv6Network, ipaddress.IPv6Network] = {}
         for k, v in ((mappings or {}).get('ipv6_subnet', {}) or {}).items():
             try:
@@ -121,6 +126,22 @@ class IPv6Scrubber(Scrubber):
                 return str(ipaddress.IPv6Address(int(fake.network_address) + offset))
         return None
 
+    def _fake_for(self, ip):
+        """Return (and cache) the fake address for a validated real IPv6."""
+        fake = self.ipv6_map.get(str(ip))
+        if fake:
+            return fake
+        fake = self._map_in_known_subnets(ip)
+        if not fake:
+            anchor_pfx = self._choose_mapping_prefix(ip, None)
+            real_subnet = ipaddress.IPv6Network((int(ip) & ~((1 << (128 - anchor_pfx)) - 1), anchor_pfx))
+            fake_subnet = self._get_or_create_fake_subnet(real_subnet)
+            host_off = int(ip) - int(real_subnet.network_address)
+            fake = str(ipaddress.IPv6Address(int(fake_subnet.network_address) + host_off))
+        self.ipv6_map[str(ip)] = fake
+        self._fakes.add(fake)
+        return fake
+
     def scrub_text(self, text: str):
         """Scrub all IPv6 addresses in text. Returns (new_text, ipv6_map, ipv6_subnet_map, state)."""
         if not self._should_obfuscate() or not text:
@@ -133,7 +154,32 @@ class IPv6Scrubber(Scrubber):
             # form has '::', or exactly 7 colons, or 6 colons + an embedded IPv4
             # dotted quad — so this never drops a real address.
             c = token.count(':')
-            if '::' not in token and c != 7 and not (c == 6 and '.' in token):
+            has_dc = '::' in token
+            has_dot = '.' in token
+            # Never re-scrub our own output: the AF_INET6 pass emits
+            # "fake:port", which this pass would otherwise parse as a fresh
+            # address (the port merges into the last hextet) and map the
+            # fake to a second-generation fake.
+            if token in self._fakes:
+                return token
+            head, _, tail = token.rpartition(':')
+            if tail.isdigit() and head in self._fakes:
+                return token
+            if not has_dc and c == 8 and not has_dot:
+                # Full-form address glued to a bare port (urllib3 logs:
+                # "connection (1): 2600:...:41ee:443"). Nine hex groups are
+                # never a valid address, so split off the port and scrub the
+                # first eight.
+                if tail.isdigit() and int(tail) <= 65535:
+                    try:
+                        ip = ipaddress.IPv6Address(head)
+                    except Exception:
+                        return token
+                    if self._skip_scope(ip):
+                        return token
+                    return f"{self._fake_for(ip)}:{tail}"
+                return token
+            if not has_dc and c != 7 and not (c == 6 and has_dot):
                 return token
             pfx_s = m.group(2)
             try:
@@ -153,6 +199,7 @@ class IPv6Scrubber(Scrubber):
             mapped = self._map_in_known_subnets(ip)
             if mapped:
                 self.ipv6_map[str(ip)] = mapped
+                self._fakes.add(mapped)
                 return f"{mapped}/{explicit_pfx}" if explicit_pfx is not None else mapped
 
             anchor_pfx = self._choose_mapping_prefix(ip, explicit_pfx)
@@ -164,6 +211,7 @@ class IPv6Scrubber(Scrubber):
             fake_s = str(fake_ip)
 
             self.ipv6_map[str(ip)] = fake_s
+            self._fakes.add(fake_s)
             return f"{fake_s}/{explicit_pfx}" if explicit_pfx is not None else fake_s
 
         def repl_af_inet6(m: Match) -> str:
@@ -174,19 +222,7 @@ class IPv6Scrubber(Scrubber):
                 return m.group(0)
             if self._skip_scope(ip):
                 return m.group(0)
-            fake = self.ipv6_map.get(str(ip))
-            if not fake:
-                mapped = self._map_in_known_subnets(ip)
-                if mapped:
-                    fake = mapped
-                else:
-                    anchor_pfx = self._choose_mapping_prefix(ip, None)
-                    real_subnet = ipaddress.IPv6Network((int(ip) & ~((1 << (128 - anchor_pfx)) - 1), anchor_pfx))
-                    fake_subnet = self._get_or_create_fake_subnet(real_subnet)
-                    host_off = int(ip) - int(real_subnet.network_address)
-                    fake = str(ipaddress.IPv6Address(int(fake_subnet.network_address) + host_off))
-                self.ipv6_map[str(ip)] = fake
-            return f"{prefix}{fake}:{port}"
+            return f"{prefix}{self._fake_for(ip)}:{port}"
 
         new_text = _AF_INET6_RE.sub(repl_af_inet6, text)
         new_text = CANDIDATE_V6.sub(repl, new_text)
