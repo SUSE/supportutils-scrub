@@ -118,10 +118,14 @@ def run_folder_mode(args, logger):
     if args.report_file:
         report_path = args.report_file
 
+    # Rename regardless of is_sc: --hostname/--domain seeding must scrub
+    # path names of plain folders (hb_reports etc.) too, not only
+    # supportconfigs. No-op when nothing was learned or seeded.
+    scrubbed_path = rename_extraction_paths(scrubbed_path, hostname_dict, domain_dict=domain_dict)
+    report_files = walk_supportconfig(scrubbed_path)
+
     serial_scrubber = None
     if is_sc:
-        scrubbed_path = rename_extraction_paths(scrubbed_path, hostname_dict, domain_dict=domain_dict)
-        report_files = walk_supportconfig(scrubbed_path)
         serial_dict = extract_serials(report_files, mappings)
         serial_scrubber = SerialScrubber(mappings=mappings)
         serial_scrubber.serial_dict = serial_dict

@@ -224,7 +224,7 @@ def dataset_paths(dataset_dir, timestamp, hostname_dict=None, input_name=None, r
 
 
 def rename_extraction_paths(clean_folder_path, hostname_dict, rename_top=True, domain_dict=None):
-    if not hostname_dict:
+    if not hostname_dict and not domain_dict:
         return clean_folder_path
     for root, dirs, files in os.walk(clean_folder_path, topdown=True):
         # dirs must be updated in place or the walk descends into the old
