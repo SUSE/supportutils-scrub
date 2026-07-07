@@ -6,6 +6,8 @@ import logging
 import tarfile
 import subprocess
 
+from supportutils_scrub.processor import append_scrubbed
+
 
 _ARCHIVE_SUFFIXES = ('.tar.gz', '.tar.bz2', '.tar.xz', '.tgz', '.tbz', '.tbz2', '.txz')
 
@@ -115,7 +117,7 @@ def extract_xz_archive(archive_path, logger, extract_base=None):
     """
     base_name = os.path.basename(archive_path)
     base_name_no_ext = os.path.splitext(base_name)[0]
-    clean_folder_name = base_name_no_ext + "_scrubbed"
+    clean_folder_name = append_scrubbed(base_name_no_ext)
     if extract_base:
         clean_folder_path = os.path.join(extract_base, clean_folder_name)
     else:
@@ -168,7 +170,7 @@ def extract_tgz_archive(archive_path, logger, extract_base=None, mode="r:gz"):
     archive_dir = os.path.dirname(archive_path)
     base_name = os.path.basename(archive_path)
     base_name_no_ext = strip_archive_ext(base_name)
-    clean_folder_name = base_name_no_ext + "_scrubbed"
+    clean_folder_name = append_scrubbed(base_name_no_ext)
     if extract_base:
         clean_folder_path = os.path.join(extract_base, clean_folder_name)
         tar_extract_base = extract_base
@@ -245,9 +247,42 @@ def create_txz(source_dir, output_filename):
         tar.add(source_dir, arcname=os.path.basename(source_dir))
 
 def copy_folder_to_scrubbed(folder_path):
-    """copy folder_path to {folder_path}_scrubbed/ and return (file_list, scrubbed_path) """
-    scrubbed_path = folder_path.rstrip('/') + '_scrubbed'
+    """copy folder_path to {folder_path}_scrubbed/ and return (file_list, scrubbed_path)
+
+    A folder already named *_scrubbed is re-scrubbed in place instead of
+    copied onto itself."""
+    src = folder_path.rstrip('/')
+    scrubbed_path = append_scrubbed(src)
+    if scrubbed_path == src:
+        return walk_supportconfig(scrubbed_path), scrubbed_path
     if os.path.exists(scrubbed_path):
         shutil.rmtree(scrubbed_path)
-    shutil.copytree(folder_path, scrubbed_path)
+
+    # Copying is I/O-bound and copyfile releases the GIL (sendfile), so a
+    # small thread pool beats copytree's one-file-at-a-time walk. Unreadable
+    # files are skipped with a warning, same net effect as copytree's
+    # collected shutil.Error.
+    from concurrent.futures import ThreadPoolExecutor
+    tasks = []
+    for root, dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        dst_root = scrubbed_path if rel == '.' else os.path.join(scrubbed_path, rel)
+        os.makedirs(dst_root, exist_ok=True)
+        for f in files:
+            tasks.append((os.path.join(root, f), os.path.join(dst_root, f)))
+
+    errors = []
+    workers = min(16, max(4, os.cpu_count() or 4))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(shutil.copy2, s, d) for s, d in tasks]
+        for (s, _), fut in zip(tasks, futures):
+            try:
+                fut.result()
+            except OSError as e:
+                errors.append((s, e))
+    for s, e in errors[:5]:
+        print(f"[!] Could not copy {s}: {e}")
+    if len(errors) > 5:
+        print(f"[!] ... and {len(errors) - 5} more files could not be copied")
+    shutil.copystat(src, scrubbed_path)
     return walk_supportconfig(scrubbed_path), scrubbed_path

@@ -31,6 +31,35 @@ def compressed_opener(base_name):
             return ext, opener
     return None
 
+
+def append_scrubbed(name):
+    """Add the '_scrubbed' marker unless the name already carries it.
+
+    Used for folder and archive base names; keeps re-runs on scrubbed
+    output from doubling the marker."""
+    return name if name.lower().endswith('_scrubbed') else name + '_scrubbed'
+
+
+def scrubbed_output_name(path):
+    """Canonical name for a scrubbed single-file output (see
+    docs/naming-convention.md). '_scrubbed' goes before the file extension,
+    a compression extension (.gz/.xz/.bz2) stays outermost, and a name that
+    already carries the marker is returned unchanged.
+
+        messages.log          -> messages_scrubbed.log
+        messages.log.xz       -> messages_scrubbed.log.xz
+        traces.gz             -> traces_scrubbed.gz
+        messages              -> messages_scrubbed
+        messages_scrubbed.log -> messages_scrubbed.log
+
+    Directories and tar archives are named via append_scrubbed(); this
+    covers every single-file output path."""
+    comp = compressed_opener(os.path.basename(path))
+    comp_ext = path[-len(comp[0]):] if comp else ''
+    stem = path[:-len(comp_ext)] if comp_ext else path
+    root, ext = os.path.splitext(stem)
+    return append_scrubbed(root) + ext + comp_ext
+
 _SCRUB_INFO_HEADER = (
     "#" + "-" * 93 + "\n"
     "# INFO: This file was processed by supportutils-scrub to remove sensitive data. Review before sharing.\n"

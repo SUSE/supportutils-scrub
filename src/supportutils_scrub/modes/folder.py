@@ -25,7 +25,7 @@ from supportutils_scrub.verify import verify_scrubbed_folder
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers, is_supportconfig_folder,
     extract_and_map_domains, extract_hostnames, extract_usernames,
-    extract_serials, rename_extraction_paths, dataset_paths,
+    extract_serials, rename_extraction_paths, dataset_paths, PhaseTimer,
 )
 from supportutils_scrub.audit import (
     save_mappings, print_enc_note, audit_record, write_audit_log, write_report,
@@ -59,6 +59,7 @@ def run_folder_mode(args, logger):
     if not quiet and keyword_scrubber is None and (args.keywords or args.keyword_file):
         print("[!] Keyword obfuscation disabled (no keywords loaded)")
 
+    timer = PhaseTimer()
     try:
         report_files, scrubbed_path = copy_folder_to_scrubbed(args.supportconfig_path[0])
         if not quiet:
@@ -66,6 +67,7 @@ def run_folder_mode(args, logger):
     except Exception as e:
         print(f"[!] Error copying folder: {e}")
         raise
+    timer.mark('copy')
 
     def _cleanup_on_signal(signum, frame):
         try:
@@ -89,6 +91,7 @@ def run_folder_mode(args, logger):
 
     if expand_nested_archives(scrubbed_path, logger):
         report_files = walk_supportconfig(scrubbed_path)
+    timer.mark('unpack-nested')
 
     is_sc = is_supportconfig_folder(report_files)
     scan_files = report_files if is_sc else []
@@ -122,6 +125,7 @@ def run_folder_mode(args, logger):
         serial_dict = extract_serials(report_files, mappings)
         serial_scrubber = SerialScrubber(mappings=mappings)
         serial_scrubber.serial_dict = serial_dict
+    timer.mark('pre-scan')
 
     scrubbers = [
         ip_scrubber, ipv6_scrubber, mac_scrubber, keyword_scrubber,
@@ -197,6 +201,7 @@ def run_folder_mode(args, logger):
         dataset_dict['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
         dataset_dict['tld_map'] = tld_map
         combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
+    timer.mark('scrub')
 
     if profile:
         print(file_processor.format_profile(), file=sys.stderr if quiet else sys.stdout)
@@ -264,6 +269,8 @@ def run_folder_mode(args, logger):
                 print(f"    ... and {len(verify_findings)-20} more (see --report for full details)", file=vout)
         else:
             print("[✓] VERIFY: No sensitive data found in scrubbed output.", file=vout)
+        timer.mark('verify')
+    print(timer.summary(), file=sys.stderr)
 
     if quiet:
         print(scrubbed_path)

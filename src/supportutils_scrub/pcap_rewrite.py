@@ -5,6 +5,8 @@ import shutil
 import subprocess
 import os
 
+from supportutils_scrub.processor import scrubbed_output_name
+
 def _only_ipv4_pairs(subnet_dict):
     """Return [(src_cidr, dst_cidr), ...] for valid IPv4 CIDR pairs only."""
     pairs = []
@@ -42,10 +44,9 @@ def _compose_ipmap_arg(pairs):
 
 def _dest_paths(out_dir, fin):
     base = os.path.basename(fin)
-    root, ext = os.path.splitext(base)
-    if not ext:
-        ext = ".pcap"
-    fout = os.path.join(out_dir, f"{root}_scrubbed{ext}")
+    if not os.path.splitext(base)[1]:
+        base += ".pcap"
+    fout = os.path.join(out_dir, scrubbed_output_name(base))
     tmp  = f"{fout}.tmp"
     return tmp, fout
 

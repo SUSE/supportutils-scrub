@@ -3,6 +3,7 @@
 import os
 import sys
 import re
+import time
 import logging
 import shutil
 from supportutils_scrub.config import DEFAULT_CONFIG_PATH
@@ -174,6 +175,28 @@ def init_scrubbers(args, config, logger):
         sys.exit(1)
 
     return mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber
+
+
+class PhaseTimer:
+    """Wall-clock time per pipeline phase. The one-line summary shows where
+    a run actually spends its time: only the scrub (and verify) phases scale
+    with --jobs; extract/copy/pre-scan/repack are serial and bound the total
+    no matter how many workers are configured."""
+
+    def __init__(self):
+        self._t0 = time.perf_counter()
+        self.phases = []
+
+    def mark(self, name):
+        now = time.perf_counter()
+        self.phases.append((name, now - self._t0))
+        self._t0 = now
+
+    def summary(self):
+        total = sum(s for _, s in self.phases)
+        parts = [f"{n} {s:.1f}s" for n, s in self.phases if s >= 0.05]
+        parts.append(f"total {total:.1f}s")
+        return "[i] Phase times: " + " | ".join(parts)
 
 
 def scrub_name(name, hostname_dict, domain_dict=None):

@@ -20,7 +20,7 @@ from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
-from supportutils_scrub.processor import FileProcessor
+from supportutils_scrub.processor import FileProcessor, scrubbed_output_name, append_scrubbed
 from supportutils_scrub.extractor import (
     extract_supportconfig, create_txz, walk_supportconfig,
     copy_folder_to_scrubbed, strip_archive_ext, is_archive_path,
@@ -31,7 +31,7 @@ from supportutils_scrub.verify import verify_scrubbed_folder
 from supportutils_scrub.pipeline import (
     warn_private_ip, extract_and_map_domains, extract_hostnames,
     extract_usernames, extract_serials, rename_extraction_paths,
-    scrub_name, dataset_paths,
+    scrub_name, dataset_paths, PhaseTimer,
 )
 from supportutils_scrub.audit import (
     load_mappings_file, get_secure_tmp_base, save_mappings,
@@ -40,7 +40,7 @@ from supportutils_scrub.audit import (
 
 
 def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrubber,
-                logger, verbose_flag, include_ldap=True):
+                logger, verbose_flag, include_ldap=True, timer=None):
     """Pre-scan, build scrubbers, and scrub a directory tree in place.
 
     Shared by archive, folder, and file handlers so a mixed run keeps one
@@ -48,6 +48,8 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
     report_files, updated mappings, per-file hits, the verify mapping, and the
     hostname/domain dicts + tld_map (needed for output naming)."""
     expand_nested_archives(clean_folder_path, logger)
+    if timer:
+        timer.mark('unpack-nested')
     report_files = walk_supportconfig(clean_folder_path)
 
     additional_domains = re.split(r'[,\s;]+', args.domain) if args.domain else []
@@ -63,6 +65,8 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
     serial_dict = extract_serials(report_files, current_mappings)
     serial_scrubber = SerialScrubber(mappings=current_mappings)
     serial_scrubber.serial_dict = serial_dict
+    if timer:
+        timer.mark('pre-scan')
 
     scrubbers = [
         IPScrubber(config, mappings=current_mappings),
@@ -124,6 +128,8 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
         if profile:
             print(file_processor.format_profile())
 
+    if timer:
+        timer.mark('scrub')
     return (clean_folder_path, report_files, updated_mappings, report_file_hits,
             combined_mappings_for_verify, hostname_dict, domain_dict, tld_map)
 
@@ -160,16 +166,19 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
     signal.signal(signal.SIGINT,  _archive_cleanup_on_signal)
     signal.signal(signal.SIGTERM, _archive_cleanup_on_signal)
 
+    timer = PhaseTimer()
     try:
         try:
             report_files, clean_folder_path = extract_supportconfig(archive_path, logger, extract_base=extract_base)
         except Exception as e:
             print(f"[!] Error during extraction of {archive_path}: {e}")
             raise
+        timer.mark('extract')
 
         (clean_folder_path, report_files, updated_mappings, report_file_hits,
          combined_mappings_for_verify, hostname_dict, domain_dict, tld_map) = _scrub_tree(
-            clean_folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag)
+            clean_folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag,
+            timer=timer)
 
         archive_basename = os.path.basename(archive_path)
         archive_name_no_ext = strip_archive_ext(archive_basename)
@@ -177,9 +186,10 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
         out_dir = getattr(args, 'output_dir', None) or os.path.dirname(os.path.abspath(archive_path))
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
-        new_txz_file_path = os.path.join(out_dir, scrubbed_archive_name + "_scrubbed.txz")
+        new_txz_file_path = os.path.join(out_dir, append_scrubbed(scrubbed_archive_name) + ".txz")
 
         create_txz(clean_folder_path, new_txz_file_path)
+        timer.mark('repack')
         print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
 
         verify_findings = []
@@ -189,6 +199,7 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
                 config=config,
                 check_allowlist=True, check_patterns=True,
                 check_identity=False, jobs=getattr(args, 'jobs', 1))
+            timer.mark('verify')
             if verify_findings:
                 print(f"[!] VERIFY: {len(verify_findings)} potential leak(s) found in scrubbed output:")
                 for f in verify_findings[:20]:
@@ -206,6 +217,7 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
                 shutil.rmtree(clean_folder_path)
             except Exception as e:
                 print(f"[!] Could not remove temp folder {clean_folder_path}: {e}")
+        print(timer.summary(), file=sys.stderr)
 
     try:
         stat = os.stat(new_txz_file_path)
@@ -237,10 +249,13 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
 
 def process_one_folder(folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
     """Scrub a directory in place to <name>_scrubbed/ (original untouched)."""
+    timer = PhaseTimer()
     report_files, clean_folder_path = copy_folder_to_scrubbed(folder_path)
+    timer.mark('copy')
     (clean_folder_path, report_files, updated_mappings, report_file_hits,
      combined_mappings_for_verify, hostname_dict, domain_dict, tld_map) = _scrub_tree(
-        clean_folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag)
+        clean_folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag,
+        timer=timer)
     print(f"[✓] Scrubbed folder written to: {clean_folder_path}")
 
     verify_findings = []
@@ -258,6 +273,9 @@ def process_one_folder(folder_path, current_mappings, args, config, keyword_scru
                 print(f"    ... and {len(verify_findings)-20} more (see --report for full details)")
         else:
             print("[✓] VERIFY: No sensitive data found in scrubbed output.")
+    if getattr(args, 'verify', False):
+        timer.mark('verify')
+    print(timer.summary(), file=sys.stderr)
 
     try:
         owner = pwd.getpwuid(os.stat(clean_folder_path).st_uid).pw_name
@@ -279,12 +297,13 @@ def process_one_file(file_path, current_mappings, args, config, keyword_scrubber
     No supportconfig structure to pre-scan, so it relies on the shared mapping
     built from other inputs plus the self-discovering scrubbers (ip/ipv6/mac/
     email/password/cloud_token/ldap)."""
-    base = os.path.basename(file_path)
-    root, ext = os.path.splitext(base)
+    base = scrub_name(os.path.basename(file_path),
+                      current_mappings.get('hostname', {}),
+                      domain_dict=current_mappings.get('domain', {}))
     out_dir = getattr(args, 'output_dir', None) or os.path.dirname(os.path.abspath(file_path))
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "{}_scrubbed{}".format(root, ext))
+    out_path = os.path.join(out_dir, scrubbed_output_name(base))
     shutil.copyfile(file_path, out_path)
 
     serial_scrubber = SerialScrubber(mappings=current_mappings)

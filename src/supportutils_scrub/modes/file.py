@@ -12,9 +12,9 @@ from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
-from supportutils_scrub.processor import FileProcessor, compressed_opener
+from supportutils_scrub.processor import FileProcessor, compressed_opener, scrubbed_output_name
 from supportutils_scrub.pipeline import (
-    warn_private_ip, init_scrubbers,
+    warn_private_ip, init_scrubbers, scrub_name,
     extract_and_map_domains, extract_hostnames, extract_usernames,
     dataset_paths,
 )
@@ -27,11 +27,6 @@ def run_file_mode(args, logger):
     verbose_flag = args.verbose
     input_path = args.supportconfig_path[0]
     comp = compressed_opener(os.path.basename(input_path))
-    if comp:
-        ext, _opener = comp
-        output_path = input_path[:-len(ext)] + '_scrubbed' + input_path[-len(ext):]
-    else:
-        output_path = input_path + '_scrubbed'
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     config = args._preloaded_config
@@ -66,6 +61,9 @@ def run_file_mode(args, logger):
     domain_dict, tld_map = extract_and_map_domains([], additional_domains, mappings)
     username_dict = extract_usernames([], additional_usernames, mappings)
     hostname_dict = extract_hostnames([], additional_hostnames, mappings)
+
+    out_base = scrub_name(os.path.basename(input_path), hostname_dict, domain_dict=domain_dict)
+    output_path = os.path.join(os.path.dirname(input_path), scrubbed_output_name(out_base))
 
     scrubbers = [
         ip_scrubber, ipv6_scrubber, mac_scrubber, keyword_scrubber,
