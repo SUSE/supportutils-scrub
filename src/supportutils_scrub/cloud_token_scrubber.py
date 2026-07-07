@@ -35,6 +35,13 @@ _IDENTITY_TAG_RE = re.compile(
     r'(<identity>|identity:\s*)(eyJ[A-Za-z0-9_+/=-]{20,})'
 )
 
+# Public key comments (user@host) identify accounts and foreign hosts that
+# the hostname scrubber can't learn from this system's /etc/hosts.
+_SSH_PUBKEY_RE = re.compile(
+    r'\b((?:ssh-(?:rsa|ed25519|dss)|ecdsa-sha2-nistp\d+)\s+[A-Za-z0-9+/=]{40,})'
+    r'[ \t]+(?!SCRUBBED_)([^\s"\']+)'
+)
+
 
 class CloudTokenScrubber(Scrubber):
     name = 'cloud_token'
@@ -107,5 +114,9 @@ class CloudTokenScrubber(Scrubber):
         if 'bearer' in tl or 'authorization' in tl or 'x-auth-token' in tl or 'token' in tl:
             text = _BEARER_RE.sub(
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'BEARER'), text)
+
+        if 'ssh-rsa' in text or 'ssh-ed25519' in text or 'ecdsa-sha2-' in text or 'ssh-dss' in text:
+            text = _SSH_PUBKEY_RE.sub(
+                lambda m: m.group(1) + ' ' + self._get_fake(m.group(2), 'SSH_COMMENT'), text)
 
         return text
