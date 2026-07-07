@@ -180,7 +180,7 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
                 clean_folder_path, combined_mappings_for_verify,
                 config=config,
                 check_allowlist=True, check_patterns=True,
-                check_identity=False)
+                check_identity=False, jobs=getattr(args, 'jobs', 1))
             if verify_findings:
                 print(f"[!] VERIFY: {len(verify_findings)} potential leak(s) found in scrubbed output:")
                 for f in verify_findings[:20]:
@@ -240,7 +240,8 @@ def process_one_folder(folder_path, current_mappings, args, config, keyword_scru
         verify_findings = verify_scrubbed_folder(
             clean_folder_path, combined_mappings_for_verify,
             original_folder=folder_path, config=config,
-            check_allowlist=True, check_patterns=True, check_identity=True)
+            check_allowlist=True, check_patterns=True, check_identity=True,
+            jobs=getattr(args, 'jobs', 1))
         if verify_findings:
             print(f"[!] VERIFY: {len(verify_findings)} potential leak(s) found in scrubbed output:")
             for f in verify_findings[:20]:

@@ -246,7 +246,7 @@ def run_folder_mode(args, logger):
             scrubbed_path, combined_mappings_for_verify,
             original_folder=original_path, config=config,
             check_allowlist=True, check_patterns=True,
-            check_identity=True)
+            check_identity=True, jobs=getattr(args, 'jobs', 1))
         vout = out
         if verify_findings:
             print(f"[!] VERIFY: {len(verify_findings)} potential leak(s) found in scrubbed output:", file=vout)

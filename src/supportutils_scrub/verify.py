@@ -414,10 +414,156 @@ def _build_terms(mappings: dict):
 # Public API
 # ---------------------------------------------------------------------------
 
+def _scan_one_file(fpath_fname, scan_ctx):
+    fpath, fname = fpath_fname
+    rel = os.path.relpath(fpath, scan_ctx['folder_path'])
+    file_findings = []
+    comp = compressed_opener(fname)
+    _open = comp[1] if comp else open
+    try:
+        with _open(fpath, 'rt', encoding='utf-8', errors='ignore') as f:
+            for lineno, line in enumerate(f, 1):
+
+                if scan_ctx['combined_re']:
+                    for m in scan_ctx['combined_re'].finditer(line):
+                        val = m.group(0)
+                        label = scan_ctx['match_labels'].get(val)
+                        if label:
+                            file_findings.append({
+                                'file': rel, 'line': lineno,
+                                'category': label, 'value': val,
+                            })
+                for real_val, label in scan_ctx['substring_terms']:
+                    if real_val in line:
+                        file_findings.append({
+                            'file': rel, 'line': lineno,
+                            'category': label, 'value': real_val,
+                        })
+
+                if scan_ctx['check_allowlist'] and '.' in line:
+                    for m in _IP_RE.finditer(line):
+                        ip_str = m.group(1)
+                        if _is_safe_ipv4(ip_str, scan_ctx['safe_nets']):
+                            continue
+                        if _looks_like_version_context(line, m.start()):
+                            continue
+                        file_findings.append({
+                            'file': rel, 'line': lineno,
+                            'category': 'unlisted IPv4',
+                            'value': ip_str,
+                        })
+
+                if scan_ctx['check_allowlist'] and ':' in line:
+                    for m in _MAC_RE.finditer(line):
+                        mac_str = m.group(1)
+                        if not _is_safe_mac(mac_str):
+                            file_findings.append({
+                                'file': rel, 'line': lineno,
+                                'category': 'unlisted MAC',
+                                'value': mac_str,
+                            })
+
+                if scan_ctx['check_patterns']:
+                    if '@' in line:
+                        for m in _EMAIL_RE.finditer(line):
+                            email = m.group(1)
+                            if any(email.endswith(s) for s in _SYSTEMD_SUFFIXES):
+                                continue
+                            domain = email.split('@')[1].lower()
+                            tld = domain.rsplit('.', 1)[-1] if '.' in domain else domain
+                            if domain not in _SAFE_EMAIL_DOMAINS \
+                                    and tld not in _FAKE_EMAIL_TLDS:
+                                file_findings.append({
+                                    'file': rel, 'line': lineno,
+                                    'category': 'email address',
+                                    'value': email,
+                                })
+
+                        _fake_realms = {'LDAP', 'KRB5', 'KERBEROS', 'LOCAL', 'FILE', 'PROXY'}
+                        for m in _KERBEROS_RE.finditer(line):
+                            realm = m.group(2)
+                            if realm in _fake_realms:
+                                continue
+                            file_findings.append({
+                                'file': rel, 'line': lineno,
+                                'category': 'Kerberos principal',
+                                'value': m.group(0),
+                            })
+
+                    if 'SCRUBBED_' not in line:
+                        for hint in scan_ctx['secret_hints']:
+                            if hint in line:
+                                for pat, label in _SECRET_PATTERNS:
+                                    if pat.search(line):
+                                        snippet = line.strip()[:80]
+                                        file_findings.append({
+                                            'file': rel, 'line': lineno,
+                                            'category': label,
+                                            'value': snippet,
+                                        })
+                                break
+
+                    if '=' in line and ('CN=' in line or 'DC=' in line
+                                        or 'OU=' in line or 'cn=' in line
+                                        or 'dc=' in line or 'ou=' in line):
+                        for m in _LDAP_DN_RE.finditer(line):
+                            dn_val = m.group(0)
+                            if 'example' in dn_val.lower():
+                                continue
+                            if 'sysdb' in dn_val.lower():
+                                continue
+                            if _FAKE_VALUE_RE.search(dn_val) or \
+                                    re.search(r'DC=domain_\d+', dn_val, re.IGNORECASE):
+                                continue
+                            file_findings.append({
+                                'file': rel, 'line': lineno,
+                                'category': 'LDAP DN',
+                                'value': dn_val[:80],
+                            })
+
+                if scan_ctx['identity_lower']:
+                    line_lower = line.lower()
+                    for token, token_low in scan_ctx['identity_lower'].items():
+                        if token_low in line_lower:
+                            file_findings.append({
+                                'file': rel, 'line': lineno,
+                                'category': 'system identity',
+                                'value': token,
+                            })
+
+    except Exception:
+        pass
+    return file_findings
+
+
+def _scan_batch(payload):
+    batch, scan_ctx = payload
+    out = []
+    for item in batch:
+        out.extend(_scan_one_file(item, scan_ctx))
+    return out
+
+
+def _verify_batches(file_list, n):
+    """Split (path, name) items into size-balanced buckets."""
+    def _size(item):
+        try:
+            return os.path.getsize(item[0])
+        except OSError:
+            return 0
+    buckets = [[] for _ in range(max(1, n))]
+    loads = [0] * len(buckets)
+    for item in sorted(file_list, key=_size, reverse=True):
+        i = loads.index(min(loads))
+        buckets[i].append(item)
+        loads[i] += _size(item)
+    return [b for b in buckets if b]
+
+
 def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
                            config=None,
                            check_allowlist=True, check_patterns=True,
-                           check_identity=True):
+                           check_identity=True, jobs=None):
     """
     Walk folder_path and check every text file for remaining sensitive data.
 
@@ -477,7 +623,7 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
                 file_list.append((os.path.join(root, fname), fname))
 
     import sys
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ProcessPoolExecutor, as_completed
 
     scan_ctx = {
         'folder_path': folder_path,
@@ -492,138 +638,29 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
     }
 
     total_files = len(file_list)
-    completed = [0]
+    workers = max(1, jobs) if jobs else min(8, os.cpu_count() or 4)
 
-    def _scan_one_file(fpath_fname):
-        fpath, fname = fpath_fname
-        rel = os.path.relpath(fpath, scan_ctx['folder_path'])
-        file_findings = []
-        comp = compressed_opener(fname)
-        _open = comp[1] if comp else open
-        try:
-            with _open(fpath, 'rt', encoding='utf-8', errors='ignore') as f:
-                for lineno, line in enumerate(f, 1):
-
-                    if scan_ctx['combined_re']:
-                        for m in scan_ctx['combined_re'].finditer(line):
-                            val = m.group(0)
-                            label = scan_ctx['match_labels'].get(val)
-                            if label:
-                                file_findings.append({
-                                    'file': rel, 'line': lineno,
-                                    'category': label, 'value': val,
-                                })
-                    for real_val, label in scan_ctx['substring_terms']:
-                        if real_val in line:
-                            file_findings.append({
-                                'file': rel, 'line': lineno,
-                                'category': label, 'value': real_val,
-                            })
-
-                    if scan_ctx['check_allowlist'] and '.' in line:
-                        for m in _IP_RE.finditer(line):
-                            ip_str = m.group(1)
-                            if _is_safe_ipv4(ip_str, scan_ctx['safe_nets']):
-                                continue
-                            if _looks_like_version_context(line, m.start()):
-                                continue
-                            file_findings.append({
-                                'file': rel, 'line': lineno,
-                                'category': 'unlisted IPv4',
-                                'value': ip_str,
-                            })
-
-                    if scan_ctx['check_allowlist'] and ':' in line:
-                        for m in _MAC_RE.finditer(line):
-                            mac_str = m.group(1)
-                            if not _is_safe_mac(mac_str):
-                                file_findings.append({
-                                    'file': rel, 'line': lineno,
-                                    'category': 'unlisted MAC',
-                                    'value': mac_str,
-                                })
-
-                    if scan_ctx['check_patterns']:
-                        if '@' in line:
-                            for m in _EMAIL_RE.finditer(line):
-                                email = m.group(1)
-                                if any(email.endswith(s) for s in _SYSTEMD_SUFFIXES):
-                                    continue
-                                domain = email.split('@')[1].lower()
-                                tld = domain.rsplit('.', 1)[-1] if '.' in domain else domain
-                                if domain not in _SAFE_EMAIL_DOMAINS \
-                                        and tld not in _FAKE_EMAIL_TLDS:
-                                    file_findings.append({
-                                        'file': rel, 'line': lineno,
-                                        'category': 'email address',
-                                        'value': email,
-                                    })
-
-                            _fake_realms = {'LDAP', 'KRB5', 'KERBEROS', 'LOCAL', 'FILE', 'PROXY'}
-                            for m in _KERBEROS_RE.finditer(line):
-                                realm = m.group(2)
-                                if realm in _fake_realms:
-                                    continue
-                                file_findings.append({
-                                    'file': rel, 'line': lineno,
-                                    'category': 'Kerberos principal',
-                                    'value': m.group(0),
-                                })
-
-                        if 'SCRUBBED_' not in line:
-                            for hint in scan_ctx['secret_hints']:
-                                if hint in line:
-                                    for pat, label in _SECRET_PATTERNS:
-                                        if pat.search(line):
-                                            snippet = line.strip()[:80]
-                                            file_findings.append({
-                                                'file': rel, 'line': lineno,
-                                                'category': label,
-                                                'value': snippet,
-                                            })
-                                    break
-
-                        if '=' in line and ('CN=' in line or 'DC=' in line
-                                            or 'OU=' in line or 'cn=' in line
-                                            or 'dc=' in line or 'ou=' in line):
-                            for m in _LDAP_DN_RE.finditer(line):
-                                dn_val = m.group(0)
-                                if 'example' in dn_val.lower():
-                                    continue
-                                if 'sysdb' in dn_val.lower():
-                                    continue
-                                if _FAKE_VALUE_RE.search(dn_val) or \
-                                        re.search(r'DC=domain_\d+', dn_val, re.IGNORECASE):
-                                    continue
-                                file_findings.append({
-                                    'file': rel, 'line': lineno,
-                                    'category': 'LDAP DN',
-                                    'value': dn_val[:80],
-                                })
-
-                    if scan_ctx['identity_lower']:
-                        line_lower = line.lower()
-                        for token, token_low in scan_ctx['identity_lower'].items():
-                            if token_low in line_lower:
-                                file_findings.append({
-                                    'file': rel, 'line': lineno,
-                                    'category': 'system identity',
-                                    'value': token,
-                                })
-
-        except Exception:
-            pass
-        return file_findings
-
-    max_workers = min(8, os.cpu_count() or 4)
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_scan_one_file, item): item for item in file_list}
-        for future in as_completed(futures):
-            fpath, fname = futures[future]
-            completed[0] += 1
-            sys.stderr.write(f"\r  Verifying {completed[0]}/{total_files} {fname:<60}")
+    if workers == 1 or total_files <= 1:
+        done = 0
+        for item in file_list:
+            findings.extend(_scan_one_file(item, scan_ctx))
+            done += 1
+            sys.stderr.write(f"\r  Verifying {done}/{total_files}")
             sys.stderr.flush()
-            findings.extend(future.result())
+    else:
+        # The scan is CPU-bound regex work, so processes, not threads: a
+        # thread pool serializes on the GIL and pins a single core no matter
+        # how many threads it spawns. Size-balanced batches keep the pickled
+        # scan context per task cheap and still give coarse progress.
+        done = 0
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_scan_batch, (batch, scan_ctx)): len(batch)
+                       for batch in _verify_batches(file_list, workers * 4)}
+            for future in as_completed(futures):
+                done += futures[future]
+                sys.stderr.write(f"\r  Verifying {done}/{total_files}")
+                sys.stderr.flush()
+                findings.extend(future.result())
 
     sys.stderr.write(f"\r  Verifying {total_files}/{total_files} done.{' ' * 60}\n")
     sys.stderr.flush()
