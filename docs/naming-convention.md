@@ -80,6 +80,21 @@ in place.
 | `capture.pcap` | `capture_scrubbed.pcap` |
 | `capture` | `capture_scrubbed.pcap` |
 
+## `--unpacked` (opt-in variant)
+
+The default behavior above preserves compression and repacks archives.
+With `--unpacked` the output stays fully unpacked instead; the naming rules
+are otherwise identical:
+
+| Input | Output with `--unpacked` |
+|---|---|
+| `scc_myhost_250101.txz` | `scc_host001_250101_scrubbed/` folder — no `.txz` is created |
+| inner `messages-20250101.xz` / `.gz` / `.bz2` | `messages-20250101` — written plain, compression extension dropped |
+| inner `sar20250101.xz` | `sar20250101` |
+| single file `messages.log.xz` | `messages_scrubbed.log` — plain |
+
+Nested tars are always unpacked, with or without the flag.
+
 ## stdin
 
 Output goes to stdout; no file is created.

@@ -102,6 +102,10 @@ def parse_args():
         help="Streaming stdin mode: buffer the first 500 lines to build entity maps, "
              "then scrub and flush each subsequent line immediately. "
              "Use for live pipes such as: journalctl -f | supportutils-scrub --stream")
+    parser.add_argument("--unpacked", action="store_true",
+        help="Leave the scrubbed output fully unpacked: archives are not repacked "
+             "into a _scrubbed.txz (the _scrubbed/ folder is the output) and "
+             "compressed files (.gz/.xz/.bz2) are written back plain.")
 
     return parser.parse_args()
 

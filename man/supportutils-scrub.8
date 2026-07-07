@@ -121,6 +121,9 @@ Use this flag when piping a live log source that does not produce EOF, such as \
 .B Limitation:
 Entities that first appear after the 500-line bootstrap window may not be detected and scrubbed. Use \fB\-\-hostname\fR, \fB\-\-domain\fR, or \fB\-\-username\fR to declare known entities explicitly when using streaming mode.
 .TP
+\fB\-\-unpacked\fR
+Leave the scrubbed output fully unpacked. Archives are not repacked into a \fI_scrubbed.txz\fR; the \fI_scrubbed/\fR folder is the output. Compressed files (\fI.gz\fR, \fI.xz\fR, \fI.bz2\fR) inside the tree, and compressed single-file inputs, are written back plain with the compression extension dropped (e.g. \fImessages.log.xz\fR becomes \fImessages_scrubbed.log\fR). Nested tar archives are always unpacked, with or without this flag. Useful for reviewing the scrubbed result before sharing.
+.TP
 \fB\-\-output\-dir\fR \fIDIR\fR
 Write the scrubbed archive to DIR instead of alongside the input file.
 .TP

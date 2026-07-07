@@ -143,7 +143,8 @@ def run_folder_mode(args, logger):
     scrubbers = [s for s in scrubbers if s is not None]
 
     try:
-        file_processor = FileProcessor(config, scrubbers, profile=getattr(args, 'profile', False))
+        file_processor = FileProcessor(config, scrubbers, profile=getattr(args, 'profile', False),
+                                       decompress=getattr(args, 'unpacked', False))
     except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
@@ -167,7 +168,8 @@ def run_folder_mode(args, logger):
         frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
         dataset_dict, _hits = scrub_in_parallel(
             report_files, frozen_seed, config, jobs, logger,
-            verbose=verbose_flag, include_ldap=True)
+            verbose=verbose_flag, include_ldap=True,
+            decompress=getattr(args, 'unpacked', False))
         dataset_dict['tld_map'] = tld_map
         combined_mappings_for_verify = dataset_dict
     else:

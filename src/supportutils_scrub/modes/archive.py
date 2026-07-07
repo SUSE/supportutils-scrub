@@ -20,7 +20,9 @@ from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
-from supportutils_scrub.processor import FileProcessor, scrubbed_output_name, append_scrubbed
+from supportutils_scrub.processor import (
+    FileProcessor, scrubbed_output_name, append_scrubbed, compressed_opener,
+)
 from supportutils_scrub.extractor import (
     extract_supportconfig, create_txz, walk_supportconfig,
     copy_folder_to_scrubbed, strip_archive_ext, is_archive_path,
@@ -100,11 +102,13 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
         frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
         updated_mappings, report_file_hits = scrub_in_parallel(
             report_files, frozen_seed, config, jobs, logger,
-            verbose=verbose_flag, include_ldap=include_ldap)
+            verbose=verbose_flag, include_ldap=include_ldap,
+            decompress=getattr(args, 'unpacked', False))
         updated_mappings['tld_map'] = tld_map
         combined_mappings_for_verify = updated_mappings
     else:
-        file_processor = FileProcessor(config, scrubbers, profile=profile)
+        file_processor = FileProcessor(config, scrubbers, profile=profile,
+                                       decompress=getattr(args, 'unpacked', False))
         logger.info("Scrubbing:")
         for report_file in report_files:
             basename = os.path.basename(report_file)
@@ -167,6 +171,8 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
     signal.signal(signal.SIGTERM, _archive_cleanup_on_signal)
 
     timer = PhaseTimer()
+    unpacked = getattr(args, 'unpacked', False)
+    keep_folder = False
     try:
         try:
             report_files, clean_folder_path = extract_supportconfig(archive_path, logger, extract_base=extract_base)
@@ -186,11 +192,23 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
         out_dir = getattr(args, 'output_dir', None) or os.path.dirname(os.path.abspath(archive_path))
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
-        new_txz_file_path = os.path.join(out_dir, append_scrubbed(scrubbed_archive_name) + ".txz")
 
-        create_txz(clean_folder_path, new_txz_file_path)
-        timer.mark('repack')
-        print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
+        if unpacked:
+            # --unpacked: the scrubbed folder is the output; no repack. Move it
+            # out of tmpfs (--secure-tmp) or into --output-dir if needed.
+            dest = os.path.join(out_dir, append_scrubbed(scrubbed_archive_name))
+            if os.path.abspath(dest) != os.path.abspath(clean_folder_path):
+                if os.path.exists(dest):
+                    shutil.rmtree(dest)
+                shutil.move(clean_folder_path, dest)
+                clean_folder_path = dest
+            keep_folder = True
+            print(f"[✓] Scrubbed folder written to: {clean_folder_path}")
+        else:
+            new_txz_file_path = os.path.join(out_dir, append_scrubbed(scrubbed_archive_name) + ".txz")
+            create_txz(clean_folder_path, new_txz_file_path)
+            timer.mark('repack')
+            print(f"[✓] Scrubbed archive written to: {new_txz_file_path}")
 
         verify_findings = []
         if getattr(args, 'verify', False):
@@ -212,16 +230,17 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
     finally:
         signal.signal(signal.SIGINT,  _prev_sigint)
         signal.signal(signal.SIGTERM, _prev_sigterm)
-        if clean_folder_path and os.path.exists(clean_folder_path):
+        if not keep_folder and clean_folder_path and os.path.exists(clean_folder_path):
             try:
                 shutil.rmtree(clean_folder_path)
             except Exception as e:
                 print(f"[!] Could not remove temp folder {clean_folder_path}: {e}")
         print(timer.summary(), file=sys.stderr)
 
+    output_path = new_txz_file_path or clean_folder_path
     try:
-        stat = os.stat(new_txz_file_path)
-        archive_size_mb = stat.st_size / (1024 * 1024)
+        stat = os.stat(output_path)
+        archive_size_mb = (stat.st_size / (1024 * 1024)) if new_txz_file_path else 0
         archive_owner = pwd.getpwuid(stat.st_uid).pw_name
     except Exception:
         archive_size_mb = 0
@@ -231,13 +250,13 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
 
     stats = {
         'archive_path': archive_path,
-        'output_path': new_txz_file_path,
+        'output_path': output_path,
         'files': len(report_files),
         'size_mb': archive_size_mb,
         'owner': archive_owner,
         'report_data': {
             'input':  archive_path,
-            'output': new_txz_file_path,
+            'output': output_path,
             'files_total': len(report_files),
             'file_hits': report_file_hits,
         },
@@ -323,9 +342,14 @@ def process_one_file(file_path, current_mappings, args, config, keyword_scrubber
         serial_scrubber,
     ]
     scrubbers = [s for s in scrubbers if s is not None]
-    fp = FileProcessor(config, scrubbers)
+    unpacked = getattr(args, 'unpacked', False)
+    fp = FileProcessor(config, scrubbers, decompress=unpacked)
     logger.info(f"Scrubbing file: {base}")
     fp.process_file(out_path, logger, verbose_flag)
+    comp = compressed_opener(os.path.basename(out_path))
+    if unpacked and comp:
+        # process_file wrote the plain file and removed the compressed copy
+        out_path = out_path[:-len(comp[0])]
     print(f"[✓] Scrubbed file written to: {out_path}")
 
     ip_s = fp['ip']

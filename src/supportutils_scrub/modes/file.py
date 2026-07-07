@@ -62,7 +62,10 @@ def run_file_mode(args, logger):
     username_dict = extract_usernames([], additional_usernames, mappings)
     hostname_dict = extract_hostnames([], additional_hostnames, mappings)
 
+    unpacked = getattr(args, 'unpacked', False)
     out_base = scrub_name(os.path.basename(input_path), hostname_dict, domain_dict=domain_dict)
+    if comp and unpacked:
+        out_base = out_base[:-len(comp[0])]
     output_path = os.path.join(os.path.dirname(input_path), scrubbed_output_name(out_base))
 
     scrubbers = [
@@ -93,8 +96,9 @@ def run_file_mode(args, logger):
     else:
         final_content = scrubbed_text
 
+    _wopen = open if unpacked else _open
     try:
-        with _open(output_path, 'wt', encoding='utf-8') as f:
+        with _wopen(output_path, 'wt', encoding='utf-8') as f:
             f.write(final_content)
     except Exception as e:
         print(f"[!] Cannot write {output_path}: {e}")

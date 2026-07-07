@@ -5,11 +5,20 @@ exactly once, before the file extension, with a compression extension
 outermost. Changing an expected value here is a breaking change for
 users and must not happen casually.
 """
+import gzip
+import lzma
+
 import pytest
 
-from supportutils_scrub.processor import scrubbed_output_name, append_scrubbed
+from supportutils_scrub.processor import FileProcessor, scrubbed_output_name, append_scrubbed
 from supportutils_scrub.pipeline import scrub_name
 from supportutils_scrub.pcap_rewrite import _dest_paths
+
+
+class _Logger:
+    def info(self, msg): pass
+    def error(self, msg): pass
+    def warning(self, msg): pass
 
 
 SINGLE_FILE_CASES = [
@@ -79,3 +88,52 @@ def test_hostname_obfuscated_in_output_name():
     domain_dict = {"example.com": "domain_0"}
     base = scrub_name("myhost.example.com.log", hostname_dict, domain_dict=domain_dict)
     assert scrubbed_output_name(base) == "host001.domain_0_scrubbed.log"
+
+
+# --- --unpacked: compression is dropped instead of preserved -----------------
+
+UNPACKED_SINGLE_FILE_CASES = [
+    # (input, compression ext stripped before naming) -> plain output name
+    ("messages.log.xz", ".xz", "messages_scrubbed.log"),
+    ("boot.log.bz2", ".bz2", "boot_scrubbed.log"),
+    ("traces.gz", ".gz", "traces_scrubbed"),
+]
+
+
+@pytest.mark.parametrize("given,comp_ext,expected", UNPACKED_SINGLE_FILE_CASES)
+def test_unpacked_single_file_names(given, comp_ext, expected):
+    assert scrubbed_output_name(given[:-len(comp_ext)]) == expected
+
+
+def test_unpacked_decompresses_in_tree_files(tmp_path):
+    # inside a folder/archive tree, --unpacked writes compressed files back
+    # plain (same name minus the compression extension) and removes the original
+    gz = tmp_path / "boot.log.gz"
+    with gzip.open(gz, "wt") as f:
+        f.write("hello\n")
+    xz = tmp_path / "messages.log.xz"
+    with lzma.open(xz, "wt") as f:
+        f.write("world\n")
+
+    fp = FileProcessor(None, [], decompress=True)
+    fp.process_file(str(gz), _Logger(), False)
+    fp.process_file(str(xz), _Logger(), False)
+
+    assert not gz.exists()
+    assert (tmp_path / "boot.log").read_text() == "hello\n"
+    assert not xz.exists()
+    assert (tmp_path / "messages.log").read_text() == "world\n"
+
+
+def test_default_keeps_compression(tmp_path):
+    # without --unpacked, compressed files keep their name and format
+    gz = tmp_path / "boot.log.gz"
+    with gzip.open(gz, "wt") as f:
+        f.write("hello\n")
+
+    fp = FileProcessor(None, [])
+    fp.process_file(str(gz), _Logger(), False)
+
+    assert gz.exists()
+    with gzip.open(gz, "rt") as f:
+        assert f.read() == "hello\n"

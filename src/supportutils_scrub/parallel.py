@@ -156,11 +156,11 @@ def _get_ctx(ctx_path):
     ctx = _CTX.get(ctx_path)
     if ctx is None:
         with open(ctx_path, 'rb') as f:
-            frozen, config, include_ldap, verbose = pickle.load(f)
+            frozen, config, include_ldap, verbose, decompress = pickle.load(f)
         logger = SupportutilsScrubLogger(log_level="verbose" if verbose else "normal")
         scrubbers = _build_chain(frozen, config, deterministic=True,
                                  include_ldap=include_ldap)
-        fp = FileProcessor(config, scrubbers)
+        fp = FileProcessor(config, scrubbers, decompress=decompress)
         base_keys = {s.name: frozenset(s.mapping) for s in fp.scrubbers}
         ctx = (fp, base_keys, logger, verbose)
         _CTX[ctx_path] = ctx
@@ -297,7 +297,7 @@ def _balanced_batches(files, n):
 
 
 def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
-                      verbose=False, include_ldap=True):
+                      verbose=False, include_ldap=True, decompress=False):
     """Scrub report_files across `jobs` processes.
 
     frozen_seed: a mappings dict pre-populated with the globally-coordinated
@@ -368,7 +368,7 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
         try:
             # mkstemp = mode 0600; the file holds real->fake mappings.
             with os.fdopen(fd, 'wb') as f:
-                pickle.dump((frozen, config, include_ldap, verbose), f,
+                pickle.dump((frozen, config, include_ldap, verbose, decompress), f,
                             protocol=pickle.HIGHEST_PROTOCOL)
 
             futures = []

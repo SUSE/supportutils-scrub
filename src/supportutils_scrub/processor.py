@@ -77,10 +77,14 @@ _CONFIG_GATES = {
 
 
 class FileProcessor:
-    def __init__(self, config, scrubbers, profile=False, learn_only=False):
+    def __init__(self, config, scrubbers, profile=False, learn_only=False, decompress=False):
         self.config = config
         self.scrubbers = list(scrubbers)
         self._by_name = {s.name: s for s in self.scrubbers}
+
+        # decompress (--unpacked): write compressed files (.gz/.xz/.bz2) back
+        # plain, dropping the compression extension, instead of recompressing.
+        self.decompress = decompress
 
         # learn_only: call each scrubber's learn() (discover/allocate without
         # rebuilding the text) instead of scrub(). For the parallel pre-pass,
@@ -158,13 +162,14 @@ class FileProcessor:
 
                 scrubbed_first_line = self._scrub_content(first_line, base_name, logger)
 
-                if scrubbed_first_line != first_line and not dry_run:
+                if (scrubbed_first_line != first_line or self.decompress) and not dry_run:
                     with lzma.open(file_path, mode="rt", encoding="utf-8", errors="ignore") as f:
                         f.readline()
                         rest = f.read()
                     plain_path = file_path[:-3]
+                    header = _SCRUB_INFO_HEADER if scrubbed_first_line != first_line else ""
                     with open(plain_path, mode="w", encoding="utf-8") as out_f:
-                        out_f.write(_SCRUB_INFO_HEADER + scrubbed_first_line + rest)
+                        out_f.write(header + scrubbed_first_line + rest)
                     os.remove(file_path)
 
             elif is_sar_plain_file:
@@ -187,7 +192,16 @@ class FileProcessor:
                 # (e.g. MAC skipping modules.txt) still apply.
                 scrubbed_text = self._scrub_content(original_text, base_name[:-len(ext)], logger)
 
-                if scrubbed_text != original_text and not dry_run:
+                plain_path = file_path[:-len(ext)]
+                # A plain sibling (boot.log next to boot.log.gz) must not be
+                # overwritten by the decompressed copy; keep such files
+                # compressed instead.
+                if self.decompress and not dry_run and not os.path.exists(plain_path):
+                    header = _SCRUB_INFO_HEADER if scrubbed_text != original_text else ""
+                    with open(plain_path, mode="w", encoding="utf-8") as out_f:
+                        out_f.write(header + scrubbed_text)
+                    os.remove(file_path)
+                elif scrubbed_text != original_text and not dry_run:
                     with opener(file_path, mode="wt", encoding="utf-8") as out_f:
                         out_f.write(_SCRUB_INFO_HEADER + scrubbed_text)
 
