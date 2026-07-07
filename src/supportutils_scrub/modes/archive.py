@@ -142,6 +142,14 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
     _prev_sigterm = signal.getsignal(signal.SIGTERM)
     def _archive_cleanup_on_signal(signum, frame):
         try:
+            # Stop pool workers first: os._exit skips executor shutdown, and
+            # orphaned workers would keep scrubbing into the tree we delete.
+            import multiprocessing
+            for child in multiprocessing.active_children():
+                try:
+                    child.terminate()
+                except Exception:
+                    pass
             sys.stderr.write(f"\n[!] Interrupted — cleaning up {clean_folder_path}\n")
             sys.stderr.flush()
             if clean_folder_path and os.path.exists(clean_folder_path):

@@ -69,6 +69,14 @@ def run_folder_mode(args, logger):
 
     def _cleanup_on_signal(signum, frame):
         try:
+            # Stop pool workers first: os._exit skips executor shutdown, and
+            # orphaned workers would keep scrubbing into the tree we delete.
+            import multiprocessing
+            for child in multiprocessing.active_children():
+                try:
+                    child.terminate()
+                except Exception:
+                    pass
             sys.stderr.write(f"\n[!] Interrupted — removing partial output {scrubbed_path}\n")
             sys.stderr.flush()
             if os.path.exists(scrubbed_path):
