@@ -354,10 +354,13 @@ def _parse_hardware_txt(folder, identity):
 
 # Skip our own fake replacement values in mapping keys.
 # Used with both match() (anchored) and search() (anywhere, e.g. inside LDAP DNs).
+# Counter-style fakes are decimal; --jobs runs use 12-hex-char dhash values.
 _FAKE_VALUE_RE = re.compile(
-    r'(?:hostname_\d+|user_\d+|domain_\d+|keyword_\d+|cn_\d+|ou_\d+'
-    r'|email_\d+@scrubbed\.local'
-    r'|scrubbed_pass_\d+|SCRUBBED_\w+_\d+|SERIAL_\d+'
+    r'(?:hostname_\d+|user_\d+|domain_\d+|keyword_\d+'
+    r'|cn_(?:\d+|[0-9a-f]{12})|ou_(?:\d+|[0-9a-f]{12})'
+    r'|email_(?:\d+|[0-9a-f]{12})@scrubbed\.local'
+    r'|scrubbed_pass_(?:\d+|[0-9a-f]{12})|SCRUBBED_\w+_(?:\d+|[0-9a-f]{12})'
+    r'|SERIAL_\d+'
     r'|00:1[Aa]:2[Bb]:[0-9A-Fa-f:]+|00000000-0000-)'
 )
 
@@ -429,6 +432,11 @@ def _scan_one_file(fpath_fname, scan_ctx):
                         val = m.group(0)
                         label = scan_ctx['match_labels'].get(val)
                         if label:
+                            # Scrub leaves dotted quads in version context alone;
+                            # agree with that instead of flagging them.
+                            if label == 'IPv4 address' and \
+                                    _looks_like_version_context(line, m.start()):
+                                continue
                             file_findings.append({
                                 'file': rel, 'line': lineno,
                                 'category': label, 'value': val,

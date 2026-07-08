@@ -30,7 +30,8 @@ _AZURE_REGIONS = {
 }
 
 _FAKE_VALUE_RE = re.compile(
-    r'^(?:hostname_\d+|user_\d+|domain_\d+|cn_\d+|ou_\d+|keyword_\d+)'
+    r'^(?:hostname_\d+|user_\d+|domain_\d+|keyword_\d+'
+    r'|cn_(?:\d+|[0-9a-f]{12})|ou_(?:\d+|[0-9a-f]{12}))'
     r'(?:\.[a-z]{2,})?$',
     re.IGNORECASE,
 )
