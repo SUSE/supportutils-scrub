@@ -181,22 +181,64 @@ class PhaseTimer:
     """Wall-clock time per pipeline phase. The one-line summary shows where
     a run actually spends its time: only the scrub (and verify) phases scale
     with --jobs; extract/copy/pre-scan/repack are serial and bound the total
-    no matter how many workers are configured."""
+    no matter how many workers are configured.
 
-    def __init__(self):
+    With echo=True (--verbose) each mark is printed to stderr as it happens,
+    so a stalled run shows which phase it is stuck in."""
+
+    def __init__(self, echo=False):
         self._t0 = time.perf_counter()
+        self._start = self._t0
         self.phases = []
+        self.echo = echo
 
     def mark(self, name):
         now = time.perf_counter()
         self.phases.append((name, now - self._t0))
         self._t0 = now
+        if self.echo:
+            print(f"[i] {name}: {self.phases[-1][1]:.1f}s (elapsed {now - self._start:.1f}s)",
+                  file=sys.stderr)
 
     def summary(self):
         total = sum(s for _, s in self.phases)
         parts = [f"{n} {s:.1f}s" for n, s in self.phases if s >= 0.05]
         parts.append(f"total {total:.1f}s")
         return "[i] Phase times: " + " | ".join(parts)
+
+    def table(self):
+        """Multi-line phase breakdown with shares and peak memory (--verbose)."""
+        total = sum(s for _, s in self.phases) or 1e-9
+        lines = ["", " Phase performance", " " + "-" * 38,
+                 f" {'phase':<16}{'seconds':>10}{'share':>10}",
+                 " " + "-" * 38]
+        for name, secs in self.phases:
+            lines.append(f" {name:<16}{secs:>10.1f}{100 * secs / total:>9.1f}%")
+        lines.append(" " + "-" * 38)
+        lines.append(f" {'total':<16}{total:>10.1f}")
+        try:
+            import resource
+            rss_self = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+            rss_kids = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
+            lines.append(f" peak memory: {rss_self:.0f} MB main"
+                         f" / {rss_kids:.0f} MB largest child (workers, xz)")
+        except Exception:
+            pass
+        lines.append("")
+        return "\n".join(lines)
+
+
+def slowest_files_report(file_times, top=10):
+    """Lines naming the files the scrub phase spent the most time on
+    (--verbose). file_times: [(basename, seconds)]."""
+    worst = sorted(file_times, key=lambda x: x[1], reverse=True)[:top]
+    worst = [(base, secs) for base, secs in worst if secs >= 0.1]
+    if not worst:
+        return ""
+    lines = ["[i] Slowest files (scrub):"]
+    for base, secs in worst:
+        lines.append(f"      {secs:>8.2f}s  {base}")
+    return "\n".join(lines)
 
 
 def scrub_name(name, hostname_dict, domain_dict=None):

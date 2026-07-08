@@ -29,6 +29,7 @@
 
 import os
 import sys
+import time
 import pickle
 import shutil
 import tempfile
@@ -186,6 +187,7 @@ def _scrub_batch(payload):
     fp, base_keys, logger, verbose = _get_ctx(ctx_path)
 
     hits = {}
+    times = []
     # Per-file output from process_file is noisy when interleaved; silence it.
     devnull = open(os.devnull, 'w')
     saved_stdout = sys.stdout
@@ -193,7 +195,9 @@ def _scrub_batch(payload):
     try:
         for path in batch:
             before = {s.name: len(s.mapping) for s in fp.scrubbers}
+            t0 = time.perf_counter()
             fp.process_file(path, logger, verbose)
+            times.append((os.path.basename(path), time.perf_counter() - t0))
             grew = [name for name, prev in before.items() if len(fp[name].mapping) > prev]
             if grew:
                 hits[os.path.basename(path)] = grew
@@ -202,7 +206,7 @@ def _scrub_batch(payload):
         devnull.close()
 
     diffs, extra = _map_diffs(fp, base_keys)
-    return diffs, hits, extra
+    return diffs, hits, extra, times
 
 
 def _scrub_chunk(payload):
@@ -211,6 +215,7 @@ def _scrub_chunk(payload):
     ctx_path, path, idx, start, end = payload
     fp, base_keys, logger, verbose = _get_ctx(ctx_path)
 
+    t0 = time.perf_counter()
     with open(path, 'rb') as f:
         f.seek(start)
         data = f.read(end - start)
@@ -225,7 +230,8 @@ def _scrub_chunk(payload):
         pf.write(scrubbed)
 
     diffs, extra = _map_diffs(fp, base_keys)
-    return path, idx, part_path, scrubbed != text, diffs, extra, grew
+    return (path, idx, part_path, scrubbed != text, diffs, extra, grew,
+            time.perf_counter() - t0)
 
 
 def _chunk_bounds(path, jobs):
@@ -305,7 +311,8 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
         ip/ipv6/mac/email/...). This function adds the ip/ipv6/mac maps via a
         discover/replay pre-pass, then fans the full chain out to workers.
 
-    Returns (merged_mappings, file_hits).
+    Returns (merged_mappings, file_hits, file_times) where file_times is
+    [(basename, wall seconds)] per scrubbed file (chunked files summed).
     """
     jobs = max(1, jobs)
 
@@ -365,6 +372,8 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
         fd, ctx_path = tempfile.mkstemp(prefix='supportutils-scrub-ctx-', suffix='.pkl')
         merged = {k: dict(v) for k, v in frozen.items() if isinstance(v, dict)}
         file_hits = {}
+        file_times = []
+        chunk_times = {}  # path -> summed chunk seconds
         try:
             # mkstemp = mode 0600; the file holds real->fake mappings.
             with os.fdopen(fd, 'wb') as f:
@@ -385,15 +394,16 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
                         (path, ex.submit(_scrub_chunk, (ctx_path, path, idx, start, end))))
 
             for fut in futures:
-                diffs, hits, extra = fut.result()
+                diffs, hits, extra, times = fut.result()
                 for name, d in diffs.items():
                     merged.setdefault(name, {}).update(d)
                 merged.setdefault('ipv6_subnet', {}).update(extra.get('ipv6_subnet', {}))
                 file_hits.update(hits)
+                file_times.extend(times)
 
             for fut_path, fut in chunk_futures:
                 try:
-                    path, idx, part_path, changed, diffs, extra, grew = fut.result()
+                    path, idx, part_path, changed, diffs, extra, grew, secs = fut.result()
                 except Exception as e:
                     # Same failure mode as the serial path: the file is left
                     # unscrubbed. Log loudly and skip its assembly.
@@ -402,6 +412,7 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
                     continue
                 chunk_parts.setdefault(path, []).append((idx, part_path))
                 chunk_changed[path] = chunk_changed.get(path, False) or changed
+                chunk_times[path] = chunk_times.get(path, 0.0) + secs
                 for name, d in diffs.items():
                     merged.setdefault(name, {}).update(d)
                 merged.setdefault('ipv6_subnet', {}).update(extra.get('ipv6_subnet', {}))
@@ -418,8 +429,11 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
             except OSError:
                 pass
 
+    for path, secs in chunk_times.items():
+        file_times.append((os.path.basename(path), secs))
+
     # IPv4 subnet/state are authoritative from the pre-pass; ipv6_subnet is
     # the union of the (deterministic, hence consistent) worker allocations.
     merged['subnet'] = frozen['subnet']
     merged['state'] = frozen['state']
-    return merged, file_hits
+    return merged, file_hits, file_times

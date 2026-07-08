@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import json
+import time
 import shutil
 import signal
 from datetime import datetime
@@ -26,6 +27,7 @@ from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers, is_supportconfig_folder,
     extract_and_map_domains, extract_hostnames, extract_usernames,
     extract_serials, rename_extraction_paths, dataset_paths, PhaseTimer,
+    slowest_files_report,
 )
 from supportutils_scrub.audit import (
     save_mappings, print_enc_note, audit_record, write_audit_log, write_report,
@@ -59,7 +61,7 @@ def run_folder_mode(args, logger):
     if not quiet and keyword_scrubber is None and (args.keywords or args.keyword_file):
         print("[!] Keyword obfuscation disabled (no keywords loaded)")
 
-    timer = PhaseTimer()
+    timer = PhaseTimer(echo=verbose_flag)
     try:
         report_files, scrubbed_path = copy_folder_to_scrubbed(args.supportconfig_path[0])
         if not quiet:
@@ -166,7 +168,7 @@ def run_folder_mode(args, logger):
         frozen_seed['user'] = username_dict
         frozen_seed['serial'] = serial_scrubber.serial_dict if serial_scrubber else {}
         frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
-        dataset_dict, _hits = scrub_in_parallel(
+        dataset_dict, _hits, file_times = scrub_in_parallel(
             report_files, frozen_seed, config, jobs, logger,
             verbose=verbose_flag, include_ldap=True,
             decompress=getattr(args, 'unpacked', False))
@@ -175,6 +177,7 @@ def run_folder_mode(args, logger):
     else:
         if not quiet:
             logger.info("Scrubbing:")
+        file_times = []
         _devnull = open(os.devnull, 'w') if quiet else None
         try:
             for file_idx, report_file in enumerate(report_files, 1):
@@ -186,9 +189,11 @@ def run_folder_mode(args, logger):
                     sys.stdout = _devnull
                 elif not re.match(r"^sa\d{8}(\.xz)?$", basename):
                     print(f"        {basename}")
+                t0 = time.perf_counter()
                 try:
                     file_processor.process_file(report_file, logger, verbose_flag)
                 finally:
+                    file_times.append((basename, time.perf_counter() - t0))
                     if quiet:
                         sys.stdout = _saved_stdout
             if quiet:
@@ -208,6 +213,10 @@ def run_folder_mode(args, logger):
         dataset_dict['tld_map'] = tld_map
         combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
     timer.mark('scrub')
+    if verbose_flag and file_times:
+        report = slowest_files_report(file_times)
+        if report:
+            print(report, file=sys.stderr)
 
     if profile:
         print(file_processor.format_profile(), file=sys.stderr if quiet else sys.stdout)
@@ -276,7 +285,10 @@ def run_folder_mode(args, logger):
         else:
             print("[✓] VERIFY: No sensitive data found in scrubbed output.", file=vout)
         timer.mark('verify')
-    print(timer.summary(), file=sys.stderr)
+    if verbose_flag:
+        print(timer.table(), file=sys.stderr)
+    else:
+        print(timer.summary(), file=sys.stderr)
 
     if quiet:
         print(scrubbed_path)

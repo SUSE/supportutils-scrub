@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import json
+import time
 import shutil
 import signal
 import pwd
@@ -33,7 +34,7 @@ from supportutils_scrub.verify import verify_scrubbed_folder
 from supportutils_scrub.pipeline import (
     warn_private_ip, extract_and_map_domains, extract_hostnames,
     extract_usernames, extract_serials, rename_extraction_paths,
-    scrub_name, dataset_paths, PhaseTimer,
+    scrub_name, dataset_paths, PhaseTimer, slowest_files_report,
 )
 from supportutils_scrub.audit import (
     load_mappings_file, get_secure_tmp_base, save_mappings,
@@ -100,7 +101,7 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
         frozen_seed['user'] = username_dict
         frozen_seed['serial'] = serial_dict
         frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
-        updated_mappings, report_file_hits = scrub_in_parallel(
+        updated_mappings, report_file_hits, file_times = scrub_in_parallel(
             report_files, frozen_seed, config, jobs, logger,
             verbose=verbose_flag, include_ldap=include_ldap,
             decompress=getattr(args, 'unpacked', False))
@@ -110,12 +111,15 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
         file_processor = FileProcessor(config, scrubbers, profile=profile,
                                        decompress=getattr(args, 'unpacked', False))
         logger.info("Scrubbing:")
+        file_times = []
         for report_file in report_files:
             basename = os.path.basename(report_file)
             if not re.match(r"^sa\d{8}(\.xz)?$", basename) and not getattr(args, 'quiet', False):
                 print(f"        {basename}")
             before = {s.name: len(s.mapping) for s in file_processor.scrubbers}
+            t0 = time.perf_counter()
             file_processor.process_file(report_file, logger, verbose_flag)
+            file_times.append((basename, time.perf_counter() - t0))
             hits = [name for name, prev in before.items()
                     if len(file_processor[name].mapping) > prev]
             if hits:
@@ -134,6 +138,10 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
 
     if timer:
         timer.mark('scrub')
+    if verbose_flag and file_times:
+        report = slowest_files_report(file_times)
+        if report:
+            print(report, file=sys.stderr)
     return (clean_folder_path, report_files, updated_mappings, report_file_hits,
             combined_mappings_for_verify, hostname_dict, domain_dict, tld_map)
 
@@ -170,7 +178,7 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
     signal.signal(signal.SIGINT,  _archive_cleanup_on_signal)
     signal.signal(signal.SIGTERM, _archive_cleanup_on_signal)
 
-    timer = PhaseTimer()
+    timer = PhaseTimer(echo=verbose_flag)
     unpacked = getattr(args, 'unpacked', False)
     keep_folder = False
     try:
@@ -180,6 +188,14 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
             print(f"[!] Error during extraction of {archive_path}: {e}")
             raise
         timer.mark('extract')
+        if verbose_flag:
+            try:
+                total_mb = sum(os.path.getsize(p) for p in report_files) / (1024 * 1024)
+            except OSError:
+                total_mb = 0
+            print(f"[i] debug: {len(report_files)} files, {total_mb:.0f} MB extracted, "
+                  f"jobs={getattr(args, 'jobs', 1)} of {os.cpu_count()} CPUs, "
+                  f"workdir={clean_folder_path}", file=sys.stderr)
 
         (clean_folder_path, report_files, updated_mappings, report_file_hits,
          combined_mappings_for_verify, hostname_dict, domain_dict, tld_map) = _scrub_tree(
@@ -237,7 +253,10 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
                 shutil.rmtree(clean_folder_path)
             except Exception as e:
                 print(f"[!] Could not remove temp folder {clean_folder_path}: {e}")
-        print(timer.summary(), file=sys.stderr)
+        if verbose_flag:
+            print(timer.table(), file=sys.stderr)
+        else:
+            print(timer.summary(), file=sys.stderr)
 
     output_path = new_txz_file_path or clean_folder_path
     try:
@@ -274,7 +293,7 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
 
 def process_one_folder(folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
     """Scrub a directory in place to <name>_scrubbed/ (original untouched)."""
-    timer = PhaseTimer()
+    timer = PhaseTimer(echo=verbose_flag)
     report_files, clean_folder_path = copy_folder_to_scrubbed(folder_path)
     timer.mark('copy')
     (clean_folder_path, report_files, updated_mappings, report_file_hits,
@@ -300,7 +319,10 @@ def process_one_folder(folder_path, current_mappings, args, config, keyword_scru
             print("[✓] VERIFY: No sensitive data found in scrubbed output.")
     if getattr(args, 'verify', False):
         timer.mark('verify')
-    print(timer.summary(), file=sys.stderr)
+    if verbose_flag:
+        print(timer.table(), file=sys.stderr)
+    else:
+        print(timer.summary(), file=sys.stderr)
 
     try:
         owner = pwd.getpwuid(os.stat(clean_folder_path).st_uid).pw_name
