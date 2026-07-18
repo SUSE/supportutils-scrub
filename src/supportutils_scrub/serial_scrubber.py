@@ -16,6 +16,14 @@ _SKIP_VALUES = frozenset({
 _NULL_UUID_RE = re.compile(r'^0{8}-0{4}-0{4}-0{4}-0{12}$')
 _UUID_RE      = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
 
+# Serials are matched as SUBSTRINGS across the whole capture, so a short or
+# punctuation-only DMI placeholder is catastrophic: "Serial Number: -" (a common
+# empty-field placeholder) would turn every hyphen in the capture -- dates, RPM
+# versions, iSCSI IQNs -- into SERIAL_N. A real serial / asset tag / part number is
+# several alphanumeric characters, so require at least this many alphanumerics and
+# reject values that carry no alphanumeric content at all.
+_MIN_SERIAL_ALNUM = 4
+
 _LABELED_RE = re.compile(
     r'^(?P<prefix>\s*(?:Serial\s+Number|Asset\s+Tag|Part\s+Number|UUID)\s*:\s*)(?P<value>\S[^\n]*)$',
     re.IGNORECASE | re.MULTILINE,
@@ -27,6 +35,10 @@ def _is_skip(value: str) -> bool:
     if v in _SKIP_VALUES:
         return True
     if _NULL_UUID_RE.match(value.strip()):
+        return True
+    # Placeholder / non-serial values ("-", ".", "0", "  "): too few alphanumeric
+    # characters to be a real identifier, and dangerous to substring-replace.
+    if len(re.sub(r'[^A-Za-z0-9]', '', value)) < _MIN_SERIAL_ALNUM:
         return True
     return False
 
