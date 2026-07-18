@@ -47,6 +47,7 @@ from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.serial_scrubber import SerialScrubber
+from supportutils_scrub.sid_scrubber import SIDScrubber
 from supportutils_scrub.processor import (
     FileProcessor, BINARY_SA_PATTERN, BINARY_OBJ_PATTERN,
     SAR_XZ_PATTERN, SAR_PLAIN_PATTERN, _SCRUB_INFO_HEADER,
@@ -71,6 +72,9 @@ def _build_chain(frozen, config, deterministic, include_ldap):
 
     serial = SerialScrubber(mappings=frozen)
     serial.serial_dict = dict(frozen.get('serial', {}))
+
+    sid = SIDScrubber(mappings=frozen)
+    sid.sid_dict = dict(frozen.get('sid', {}))
 
     chain = [
         IPScrubber(config, mappings=frozen),

@@ -146,6 +146,28 @@ def extract_serials(report_files, mappings):
     return scrubber.serial_dict
 
 
+def extract_sids(report_files, mappings):
+    """Discover SAP System IDs from SAP/HA-relevant files. Discovery patterns are
+    SAP-specific so scanning a broad set is safe; the scrub pass then substitutes the
+    SID across ALL files. Not gated on is_sc -- crm_reports leak rsc_SAP_<SID> too."""
+    from supportutils_scrub.sid_scrubber import SIDScrubber
+    scrubber = SIDScrubber(mappings=mappings)
+    named = {'basic-environment.txt', 'ha.txt', 'systemd.txt', 'ps.txt',
+             'fs-diskio.txt', 'open-files.txt', 'cib.xml', 'pacemaker.log'}
+
+    def _relevant(name):
+        n = name.lower()
+        return n in named or 'sap' in n or 'crm' in n or 'hana' in n or 'pacemaker' in n
+    for fpath in report_files:
+        if _relevant(os.path.basename(fpath)):
+            try:
+                with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                    scrubber.pre_scan(f.read())
+            except Exception:
+                pass
+    return scrubber.sid_dict
+
+
 def init_scrubbers(args, config, logger):
     mappings = {}
     mapping_keywords = []

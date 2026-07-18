@@ -16,6 +16,7 @@ from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.serial_scrubber import SerialScrubber
+from supportutils_scrub.sid_scrubber import SIDScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
@@ -33,7 +34,7 @@ from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
 from supportutils_scrub.verify import verify_scrubbed_folder
 from supportutils_scrub.pipeline import (
     warn_private_ip, extract_and_map_domains, extract_hostnames,
-    extract_usernames, extract_serials, rename_extraction_paths,
+    extract_usernames, extract_serials, extract_sids, rename_extraction_paths,
     scrub_name, dataset_paths, PhaseTimer, slowest_files_report,
 )
 from supportutils_scrub.audit import (
@@ -68,6 +69,9 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
     serial_dict = extract_serials(report_files, current_mappings)
     serial_scrubber = SerialScrubber(mappings=current_mappings)
     serial_scrubber.serial_dict = serial_dict
+    sid_dict = extract_sids(report_files, current_mappings)
+    sid_scrubber = SIDScrubber(mappings=current_mappings)
+    sid_scrubber.sid_dict = sid_dict
     if timer:
         timer.mark('pre-scan')
 
@@ -84,7 +88,7 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
     scrubbers += [
         UsernameScrubber(username_dict),
         PasswordScrubber(mappings=current_mappings), CloudTokenScrubber(mappings=current_mappings),
-        serial_scrubber,
+        serial_scrubber, sid_scrubber,
     ]
     scrubbers = [s for s in scrubbers if s is not None]
 
@@ -100,6 +104,7 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
         frozen_seed['domain'] = domain_dict
         frozen_seed['user'] = username_dict
         frozen_seed['serial'] = serial_dict
+        frozen_seed['sid'] = sid_dict
         frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
         updated_mappings, report_file_hits, file_times = scrub_in_parallel(
             report_files, frozen_seed, config, jobs, logger,
@@ -355,6 +360,8 @@ def process_one_file(file_path, current_mappings, args, config, keyword_scrubber
 
     serial_scrubber = SerialScrubber(mappings=current_mappings)
     serial_scrubber.serial_dict = dict(current_mappings.get('serial', {}))
+    sid_scrubber = SIDScrubber(mappings=current_mappings)
+    sid_scrubber.sid_dict = dict(current_mappings.get('sid', {}))
     scrubbers = [
         IPScrubber(config, mappings=current_mappings),
         IPv6Scrubber(config, mappings=current_mappings),
@@ -367,7 +374,7 @@ def process_one_file(file_path, current_mappings, args, config, keyword_scrubber
         UsernameScrubber(dict(current_mappings.get('user', {}))),
         PasswordScrubber(mappings=current_mappings),
         CloudTokenScrubber(mappings=current_mappings),
-        serial_scrubber,
+        serial_scrubber, sid_scrubber,
     ]
     scrubbers = [s for s in scrubbers if s is not None]
     unpacked = getattr(args, 'unpacked', False)

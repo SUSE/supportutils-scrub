@@ -14,6 +14,7 @@ from supportutils_scrub.domain_scrubber import DomainScrubber
 from supportutils_scrub.hostname_scrubber import HostnameScrubber
 from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.serial_scrubber import SerialScrubber
+from supportutils_scrub.sid_scrubber import SIDScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
@@ -26,7 +27,7 @@ from supportutils_scrub.verify import verify_scrubbed_folder
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers, is_supportconfig_folder,
     extract_and_map_domains, extract_hostnames, extract_usernames,
-    extract_serials, rename_extraction_paths, dataset_paths, PhaseTimer,
+    extract_serials, extract_sids, rename_extraction_paths, dataset_paths, PhaseTimer,
     slowest_files_report,
 )
 from supportutils_scrub.audit import (
@@ -131,6 +132,11 @@ def run_folder_mode(args, logger):
         serial_dict = extract_serials(report_files, mappings)
         serial_scrubber = SerialScrubber(mappings=mappings)
         serial_scrubber.serial_dict = serial_dict
+    # SID discovery is NOT gated on is_sc: crm_report/hb_report bundles carry
+    # rsc_SAP_<SID> and /usr/sap/<SID> too, and discovery is SAP-context-specific.
+    sid_dict = extract_sids(report_files, mappings)
+    sid_scrubber = SIDScrubber(mappings=mappings)
+    sid_scrubber.sid_dict = sid_dict
     timer.mark('pre-scan')
 
     scrubbers = [
@@ -140,7 +146,7 @@ def run_folder_mode(args, logger):
         LdapDnScrubber(mappings=mappings),
         UsernameScrubber(username_dict),
         PasswordScrubber(mappings=mappings), CloudTokenScrubber(mappings=mappings),
-        serial_scrubber,
+        serial_scrubber, sid_scrubber,
     ]
     scrubbers = [s for s in scrubbers if s is not None]
 
@@ -167,6 +173,7 @@ def run_folder_mode(args, logger):
         frozen_seed['domain'] = domain_dict
         frozen_seed['user'] = username_dict
         frozen_seed['serial'] = serial_scrubber.serial_dict if serial_scrubber else {}
+        frozen_seed['sid'] = sid_scrubber.sid_dict if sid_scrubber else {}
         frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
         dataset_dict, _hits, file_times = scrub_in_parallel(
             report_files, frozen_seed, config, jobs, logger,
