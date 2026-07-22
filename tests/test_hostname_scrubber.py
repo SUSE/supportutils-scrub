@@ -26,3 +26,41 @@ class TestHostnameScrub:
     def test_mapping_property(self):
         s = HostnameScrubber({"a": "b"})
         assert s.mapping == {"a": "b"}
+
+
+def test_product_default_hostnames_never_learned(tmp_path):
+    """uyuni-server / uyuni-db etc. are the mgradm container defaults on
+    EVERY Multi-Linux Manager installation: real hostnames in a container
+    capture, but product identity, not customer identity. They must never
+    be auto-learned as scrub targets (an operator can still pass them
+    explicitly via additional hostnames)."""
+    from supportutils_scrub.hostname_scrubber import (HostnameScrubber,
+                                                      WELL_KNOWN_HOSTNAMES)
+    assert {"uyuni-server", "uyuni-db", "uyuni-proxy"} <= WELL_KNOWN_HOSTNAMES
+
+    f = tmp_path / "network.txt"
+    f.write_text(
+        "# /etc/hosts\n"
+        "127.0.0.1 localhost\n"
+        "10.0.0.5 uyuni-server uyuni-server.mgr.internal\n"
+        "10.0.0.6 uyuni-db\n"
+        "10.0.0.7 susemgr01 susemgr01.customer.example\n"
+        "# /etc/host.conf\n")
+    learned = HostnameScrubber.extract_hostnames_from_hosts(str(f))
+    assert "susemgr01" in learned                 # real customer host: learned
+    assert "uyuni-server" not in learned          # product default: kept
+    assert "uyuni-db" not in learned
+    assert "localhost" not in learned
+
+
+def test_product_default_not_learned_from_text():
+    from supportutils_scrub.hostname_scrubber import HostnameScrubber
+    text = ("2026-07-14T02:05:01+00:00 uyuni-server systemd[1]: started\n"
+            "2026-07-14T02:05:02+00:00 uyuni-server taskomatic: run\n"
+            "2026-07-14T02:05:03+00:00 uyuni-server taskomatic: done\n"
+            "2026-07-14T02:06:01+00:00 custhost42 sshd[9]: session\n"
+            "2026-07-14T02:06:02+00:00 custhost42 sshd[9]: session\n"
+            "2026-07-14T02:06:03+00:00 custhost42 sshd[9]: session\n")
+    learned = HostnameScrubber.extract_hostnames_from_text(text)
+    assert "custhost42" in learned
+    assert "uyuni-server" not in learned

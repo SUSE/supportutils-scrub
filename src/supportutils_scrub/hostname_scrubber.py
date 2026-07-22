@@ -4,6 +4,32 @@ import re
 from supportutils_scrub.scrubber import Scrubber
 from supportutils_scrub.trie_re import build_trie_pattern
 
+# Loopback names that never identify anyone.
+LOOPBACK_HOSTNAMES = {
+    "localhost", "ipv6-localhost", "ipv6-loopback",
+    "ipv6-localnet", "ipv6-mcastprefix", "ipv6-allnodes",
+    "ipv6-allrouters", "ipv6-allhosts",
+    "ip6-localhost", "ip6-loopback",
+    "ip6-localnet", "ip6-mcastprefix", "ip6-allnodes",
+    "ip6-allrouters", "ip6-allhosts",
+}
+
+# Hostnames that identify a PRODUCT, not a customer. Containerized SUSE
+# Multi-Linux Manager / Uyuni creates its podman containers with these
+# literal names on every installation (mgradm defaults), so they appear as
+# real hostnames in container captures. Obfuscating them destroys the
+# product context of paths and logs while protecting nothing: every
+# deployment in the world shares them.
+PRODUCT_DEFAULT_HOSTNAMES = {
+    "uyuni-server", "uyuni-db", "uyuni-proxy", "uyuni-hub-xmlrpc",
+}
+
+# Never LEARNED as scrub targets. A hostname passed explicitly by the
+# operator (--hostname / additional hostnames) is still honored: this set
+# only stops automatic learning.
+WELL_KNOWN_HOSTNAMES = LOOPBACK_HOSTNAMES | PRODUCT_DEFAULT_HOSTNAMES
+
+
 class HostnameScrubber(Scrubber):
     name = 'hostname'
 
@@ -38,14 +64,7 @@ class HostnameScrubber(Scrubber):
     @staticmethod
     def extract_hostnames_from_hosts(file_path):
         hostnames = []
-        excluded_hostnames = {
-            "localhost", "ipv6-localhost", "ipv6-loopback",
-            "ipv6-localnet", "ipv6-mcastprefix", "ipv6-allnodes",
-            "ipv6-allrouters", "ipv6-allhosts",
-            "ip6-localhost", "ip6-loopback",
-            "ip6-localnet", "ip6-mcastprefix", "ip6-allnodes",
-            "ip6-allrouters", "ip6-allhosts",
-        }
+        excluded_hostnames = WELL_KNOWN_HOSTNAMES
         with open(file_path, 'r') as file:
             in_hosts_section = False
             for line in file:
@@ -73,14 +92,7 @@ class HostnameScrubber(Scrubber):
     @staticmethod
     def extract_hostnames_from_hostname_section(file_path):
         hostnames = []
-        excluded_hostnames = {
-            "localhost", "ipv6-localhost", "ipv6-loopback",
-            "ipv6-localnet", "ipv6-mcastprefix", "ipv6-allnodes",
-            "ipv6-allrouters", "ipv6-allhosts",
-            "ip6-localhost", "ip6-loopback",
-            "ip6-localnet", "ip6-mcastprefix", "ip6-allnodes",
-            "ip6-allrouters", "ip6-allhosts",
-        }
+        excluded_hostnames = WELL_KNOWN_HOSTNAMES
         with open(file_path, 'r') as file:
             in_hostname_section = False
             for line in file:
@@ -102,11 +114,7 @@ class HostnameScrubber(Scrubber):
     @staticmethod
     def extract_hostnames_from_text(text):
         """Extract hostnames from NFS server lines and RFC 5424 syslog timestamps."""
-        excluded = {
-            "localhost", "ipv6-localhost", "ipv6-loopback",
-            "ipv6-localnet", "ipv6-mcastprefix", "ipv6-allnodes",
-            "ipv6-allrouters", "ipv6-allhosts",
-        }
+        excluded = WELL_KNOWN_HOSTNAMES
         hostnames = set()
 
         for m in re.finditer(r'nfs: server ([\w][\w.-]*)', text):
