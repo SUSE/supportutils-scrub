@@ -21,7 +21,7 @@
 %endif
 
 Name:           supportutils-scrub
-Version:        1.5
+Version:        1.6
 Release:        0
 Summary:        Utility to sanitize and remove sensitive data from supportconfig tarballs
 License:        GPL-2.0-only
@@ -92,7 +92,6 @@ find %{buildroot}%{_prefix}/lib/supportutils-scrub -name "*.py" -exec chmod 0644
 %endif
 %dir %{_prefix}/lib/supportutils-scrub
 %dir %{_prefix}/lib/supportutils-scrub/supportutils_scrub
-%dir %{_prefix}/lib/supportutils-scrub/supportutils_scrub/modes
 %{_prefix}/lib/supportutils-scrub/supportutils_scrub/*
 %{_mandir}/man8/supportutils-scrub.8.gz
 %{_mandir}/man5/supportutils-scrub.conf.5.gz

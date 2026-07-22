@@ -1,6 +1,41 @@
+-------------------------------------------------------------------
+Wed Jul 22 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
 
-  + scrub domain part of FQDN hostnames in output archive and folder name
-
+- Update to version 1.6
+  + Performance: --jobs N process-parallel scrubbing; parallel IP learn
+    pre-pass; large files scrubbed in line-aligned chunks; trie-regex
+    keyword/serial passes; indexed IP lookup; parallel xz repack;
+    verify now uses worker processes instead of GIL-bound threads
+  + New --unpacked: leave scrubbed output fully unpacked, write
+    compressed files back plain, skip the repack
+  + New --profile: per-scrubber timing breakdown
+  + Verbose: live phase times, slowest files, and a performance table
+    with peak memory under --verbose
+  + Inputs: scrub a mix of supportconfigs, crm/hb reports (incl
+    .tar.bz2), folders, and plain files in one run with shared mappings
+  + Nested tar archives unpacked recursively and scrubbed in place
+  + Single-file compressed logs (.gz/.xz/.bz2) scrubbed instead of
+    passed through as raw bytes
+  + SAP: scrub SAP System IDs (usr/sap, sapmnt, rsc_SAP_<SID>,
+    SAPSYSTEMNAME, <sid>adm)
+  + Hostname: case-insensitive matching across underscore and digit
+    boundaries; learn internal-TLD domains from hosts/resolv.conf;
+    never auto-learn product-default container names (uyuni family);
+    hostname_preserve config option
+  + Hostname: scrub domain part of FQDN hostnames in output archive
+    and folder names; rename hostname-bearing paths and file names
+  + Email scrubber runs before hostname/domain so local parts do not
+    survive; ssh public key user@host comments scrubbed
+  + IP: contiguous netmasks left alone; IPv6 glued to a bare port
+    matched; own fake output never re-scrubbed
+  + Serial: short punctuation placeholders no longer obfuscated
+  + Verify: no longer flags the tool's own deterministic hex fakes or
+    dotted version strings the scrubber deliberately left alone
+  + Extract: strip only a genuine single wrapper directory, never
+    flatten multi-root archives
+  + Output naming standardized as a frozen contract (docs + tests)
+  + Default: private IP addresses left unobfuscated unless enabled
+  + bin: self-locate the package from a git checkout, no PYTHONPATH
 
 -------------------------------------------------------------------
 Fri Apr 18 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>

@@ -1,5 +1,5 @@
-SCRIPT_VERSION = "1.5"
-SCRIPT_DATE = "2026-04-18"
+SCRIPT_VERSION = "1.6"
+SCRIPT_DATE = "2026-07-22"
 
 EXIT_OK           = 0   # success
 EXIT_ERROR        = 1   # fatal error
