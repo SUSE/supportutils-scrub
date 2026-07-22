@@ -4,7 +4,14 @@ import sys
 import os
 
 try:
-    sys.path.insert(0, '/usr/lib/supportutils-scrub/')
+    # Self-locate: a git checkout carries the package in ../src relative to
+    # this launcher, so running from ANY checkout works without PYTHONPATH.
+    # The RPM install path stays as a fallback for packaged deployments.
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _src = os.path.join(os.path.dirname(_here), 'src')
+    if os.path.isdir(os.path.join(_src, 'supportutils_scrub')):
+        sys.path.insert(0, _src)
+    sys.path.insert(1, '/usr/lib/supportutils-scrub/')
     from supportutils_scrub.main import main
 except KeyboardInterrupt:
     raise SystemExit()
