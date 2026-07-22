@@ -25,6 +25,39 @@ def is_archive_path(path: str) -> bool:
     return path.lower().endswith(_ARCHIVE_SUFFIXES)
 
 
+def _common_top_level(members):
+    """The single top-level directory that contains EVERY file member, or None.
+
+    Only such a genuine wrapper (the scc_host_date/ folder of a normal
+    supportconfig archive) may be stripped on extraction. The old logic took
+    the FIRST member's first path component and basename-flattened every
+    member that did not match it, so a multi-root archive (e.g. a bundle
+    packed without a wrapper: spacewalk-debug/..., conf/..., logs) lost its
+    whole directory structure on extract.
+    """
+    tops = set()
+    for m in members:
+        name = (m.name or "").strip("/")
+        if not name:
+            continue
+        if "/" not in name:
+            if m.isdir():
+                tops.add(name)
+                continue
+            return None          # a file at the archive root: nothing to strip
+        tops.add(name.split("/", 1)[0])
+    return tops.pop() if len(tops) == 1 else None
+
+
+def _member_relative_path(member, top_level):
+    """Extraction path for a member: wrapper stripped when one exists,
+    the member's own path PRESERVED otherwise (never basename-flattened)."""
+    name = (member.name or "").lstrip("/")
+    if top_level and name.startswith(top_level + "/"):
+        return name[len(top_level) + 1:]
+    return name
+
+
 def _is_safe_path(target_dir: str, member_name: str) -> bool:
     """Return True if member_name extracts safely within target_dir."""
     norm = os.path.normpath(member_name)
@@ -130,22 +163,14 @@ def extract_xz_archive(archive_path, logger, extract_base=None):
 
     with tarfile.open(archive_path, 'r:xz') as tar:
         members = tar.getmembers()
-        top_level = None
-        for member in members:
-            top = member.name.split('/')[0]
-            if top:
-                top_level = top
-                break
+        top_level = _common_top_level(members)
 
         for member in members:
             if member.issym() or member.islnk():
                 continue
             if member.isdir():
                 continue
-            if top_level and member.name.startswith(top_level + '/'):
-                relative_path = member.name[len(top_level) + 1:]
-            else:
-                relative_path = os.path.basename(member.name)
+            relative_path = _member_relative_path(member, top_level)
             if not relative_path:
                 continue
             if not _is_safe_path(clean_folder_path, relative_path):
@@ -185,12 +210,7 @@ def extract_tgz_archive(archive_path, logger, extract_base=None, mode="r:gz"):
 
     with tarfile.open(archive_path, mode) as tar:
         members = tar.getmembers()
-        top_level = None
-        for member in members:
-            top = member.name.split('/')[0]
-            if top:
-                top_level = top
-                break
+        top_level = _common_top_level(members)
 
         for member in members:
             if member.issym() or member.islnk():
@@ -198,10 +218,7 @@ def extract_tgz_archive(archive_path, logger, extract_base=None, mode="r:gz"):
             if member.isdir():
                 continue
 
-            if top_level and member.name.startswith(top_level + '/'):
-                relative_path = member.name[len(top_level) + 1:]
-            else:
-                relative_path = os.path.basename(member.name)
+            relative_path = _member_relative_path(member, top_level)
 
             if not relative_path:
                 continue
