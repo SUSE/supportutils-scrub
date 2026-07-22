@@ -17,6 +17,10 @@
 - **Consistency Across Runs**: Mapping files (plain or encrypted) can be saved and reloaded to guarantee the same fake values are reused across different runs or supportconfigs.
 - **Multi-Layer Post-Scrub Verification** (v1.3+): `--verify` performs a deep scan of the scrubbed output using five verification layers: (1) mapping-based checks, (2) IPv4 allowlist — flags any IP not in the fake pools, (3) MAC allowlist — flags any MAC not using the fake OUI, (4) pattern scan — detects emails, private keys, API tokens, JWTs, passwords, LDAP DNs, and Kerberos principals independent of the mapping, (5) identity extraction (folder mode) — parses the original supportconfig for hostname, IPs, MACs, DNS servers, and serials, then verifies none survive in the scrubbed output. Exits with code 3 if leaks are found.
 - **Coverage & Verification Report** (v1.3+): `--report` writes a JSON file listing which files contained each data category and, when combined with `--verify`, includes the full list of verification findings — useful for compliance evidence and auditing.
+- **Parallel Scrubbing** (v1.6+): `--jobs N` scrubs and verifies with N worker processes (`--jobs auto` uses all CPUs). On large supportconfigs this cuts total runtime roughly by the worker count; big files are split into chunks so a single huge `messages.txt` no longer pins one core.
+- **Unpacked Output** (v1.6+): `--unpacked` skips the repack — the `_scrubbed/` folder is the output, and compressed files inside the tree are written back plain. Faster, much lower peak memory, and convenient for reviewing the result before sharing.
+- **SAP System ID Obfuscation** (v1.6+): SAP SIDs are detected in paths (`/usr/sap/<SID>`, `/sapmnt/<SID>`), cluster resource names (`rsc_SAP_<SID>`), environment variables (`SAPSYSTEMNAME`), and `<sid>adm` usernames, and replaced consistently.
+- **Performance Diagnostics** (v1.6+): `--verbose` prints live phase times, the slowest files, and a final phase table with peak memory; `--profile` gives a per-scrubber timing breakdown.
 
 ## Installation
 
@@ -77,8 +81,8 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
 ```
 =============================================================================
           Obfuscation Utility - supportutils-scrub
-                      Version : 1.5
-                 Release Date : 2026-04-01
+                      Version : 1.6
+                 Release Date : 2026-07-22
 
  supportutils-scrub masks sensitive information from SUSE supportconfig
  tarballs, directories, plain files, and network captures. It replaces
@@ -237,8 +241,12 @@ IPv4 subnet rewrite rules (most-specific first):
 - `--keywords KEYWORDS`: Additional keywords to obfuscate
 - `--keyword-file FILE`: File containing keywords to obfuscate (one per line)
 - `--output-dir DIR`: Write the scrubbed archive to DIR instead of alongside the input file.
-- `--report FILE`: Write a JSON report to FILE. Includes coverage data and, with `--verify`, the full list of verification findings.
-- `--verify`: Multi-layer post-scrub verification: mapping checks, IP/MAC allowlists, pattern scan (emails, secrets, keys), and identity extraction. Exits with code 3 if leaks found.
+- `--report`: Write a JSON coverage/verify report next to the mapping file. Includes coverage data and, with `--verify`, the full list of verification findings.
+- `--verify`: Multi-layer post-scrub verification: mapping checks, IP/MAC allowlists, pattern scan (emails, secrets, keys), and identity extraction. Runs with `--jobs` workers. Exits with code 3 if leaks found.
+- `--jobs N`, `-j N`: Scrub and verify with N worker processes (`auto` = all CPUs). Default 1 (serial). Parallel mode uses deterministic hash-based fake values, so fakes differ from serial mode but stay consistent across the archive.
+- `--unpacked`: Leave the scrubbed output fully unpacked — the `_scrubbed/` folder is the output, no `.txz` repack. Compressed files (`.gz`/`.xz`/`.bz2`) inside the tree are written back plain.
+- `--profile`: Measure and print where scrub time is spent (per-scrubber totals, throughput, slowest files). Forces serial mode.
+- `--report-file FILE`: As `--report`, but write to an explicit path (implies `--report`).
 - `--stream`: Streaming stdin mode. Buffers the first 500 lines to build entity maps, then scrubs and flushes each subsequent line immediately. Required for live pipes such as `journalctl -f`. Without this flag, stdin mode waits for EOF before producing any output.
 
 ### PCAP Processing
@@ -262,7 +270,7 @@ Default: `/etc/supportutils-scrub/supportutils-scrub.conf`
 
 ```ini
 # Obfuscation controls
-obfuscate_private_ip = yes    # Set 'no' to leave private IPs (10.x, 172.16.x, 192.168.x, ULA, link-local) untouched
+obfuscate_private_ip = no     # Set 'yes' to also obfuscate private IPs (10.x, 172.16.x, 192.168.x, ULA, link-local)
 obfuscate_public_ip = yes
 obfuscate_domain = yes
 obfuscate_username = yes
@@ -270,6 +278,10 @@ obfuscate_hostname = yes
 obfuscate_mac = yes
 obfuscate_ipv6 = yes
 obfuscate_serial = yes
+
+# Hostnames that must never be obfuscated (extends the built-in preserve set:
+# localhost and product-default container names like uyuni-server)
+# hostname_preserve = build-host,repo-mirror
 
 # Security controls
 secure_tmp = no               # Set 'yes' to extract to /dev/shm (RAM only)
@@ -451,8 +463,23 @@ Write a JSON report including coverage data and (with `--verify`) the full list 
 
 ```bash
 supportutils-scrub /var/log/scc_node1.txz \
-    --verify --report /var/tmp/scrub_report_$(date +%Y%m%d).json
+    --verify --report-file /var/tmp/scrub_report_$(date +%Y%m%d).json
 ```
+
+## Performance (v1.6+)
+
+For large supportconfigs, run scrub and verify across multiple worker processes:
+
+```bash
+supportutils-scrub /var/log/scc_bignode.txz --jobs 8 --verify --secure-tmp
+```
+
+On a 26 MB archive this cuts a ~9-minute serial run (scrub + verify) to about 2.5 minutes on 8 workers. Notes:
+
+- `--jobs` accelerates both the scrub and the `--verify` phases; extract and repack stay serial.
+- `--unpacked` skips the xz repack entirely (the `_scrubbed/` folder is the output) and reduces peak memory several-fold — the repack is the most memory-hungry phase.
+- `--secure-tmp` (tmpfs extraction) has no measurable performance cost; the pipeline is CPU-bound.
+- Use `--verbose` to see live phase times, the slowest files, and a final phase table with peak memory; use `--profile` for a per-scrubber breakdown (forces serial mode).
 
 ## Disclaimer
 

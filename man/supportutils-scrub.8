@@ -67,6 +67,10 @@ All obfuscations are performed consistently, ensuring that sensitive information
 .IP \(bu 2
 \fBPassword value obfuscation:\fR Replaces password values in configuration lines (e.g., password=secret) while preserving the key prefix. Values already redacted by supportconfig are skipped.
 .IP \(bu 2
+\fBSAP System ID obfuscation:\fR SAP SIDs found in paths (/usr/sap/<SID>, /sapmnt/<SID>), cluster resource names (rsc_SAP_<SID>), SAPSYSTEMNAME variables, and <sid>adm usernames are replaced consistently.
+.IP \(bu 2
+\fBParallel processing:\fR \fB\-\-jobs\fR scrubs and verifies with multiple worker processes; large files are chunked across workers.
+.IP \(bu 2
 \fBConsistent multi-archive obfuscation:\fR Shared mappings across all archives in one run.
 .IP \(bu 2
 \fBtcprewrite Integration:\fR Exports mappings compatible with tcprewrite for pcap file obfuscation.
@@ -80,7 +84,13 @@ All obfuscations are performed consistently, ensuring that sensitive information
 Specify the path to the configuration file. Defaults to \fI/etc/supportutils-scrub/supportutils-scrub.conf\fR.
 .TP
 \fB\-\-verbose\fR
-Enable verbose output with more detailed logging information.
+Enable verbose output with more detailed logging information. Also prints performance diagnostics to standard error: each pipeline phase (extract, pre-scan, scrub, repack/move, verify) is reported live as it completes, the slowest files of the scrub phase are listed, and a final phase table shows per-phase seconds, percentage share, and peak memory. Useful for troubleshooting long-running scrubs.
+.TP
+\fB\-\-jobs\fR \fIN\fR, \fB\-j\fR \fIN\fR
+Scrub and verify with \fIN\fR worker processes; \fIauto\fR uses all CPUs. Default is 1 (serial). Large files are split into line-aligned chunks so a single big file does not pin one core. Parallel mode allocates fake values with deterministic hashes, so the fake values differ from a serial run but remain consistent within and across the archives of the run.
+.TP
+\fB\-\-profile\fR
+Measure and print where scrub time is spent: per-scrubber totals, throughput, and the slowest files. Forces serial mode (implies \fB\-\-jobs\fR 1). For a cheaper per-phase overview that works with parallel mode, use \fB\-\-verbose\fR.
 .TP
 \fB\-\-mappings\fR \fIFILE\fR
 Load an existing obfuscation mapping file before processing. Accepts both plain \fI*.json\fR and encrypted \fI*.json.enc\fR files — prompts for the passphrase automatically when the file is encrypted. Ensures that any previously assigned fake values are reused for consistency.
@@ -169,6 +179,11 @@ Scrubs the archive, additionally replacing all occurrences of \fIexample.com\fR 
 .TP
 \fBsupportutils-scrub\fR scc_node1.txz scc_node2.txz crm_report.txz
 Processes all three archives in one run. Mappings are chained automatically: any IP, hostname, or username seen in node1 receives the same fake value in node2 and the crm_report. A single mapping file is written at the end.
+
+.SS Large archive, parallel with verification
+.TP
+\fBsupportutils-scrub\fR /var/log/scc_bignode.txz \-\-jobs 8 \-\-verify \-\-secure\-tmp
+Scrubs and verifies with 8 worker processes, extracting to RAM. On large supportconfigs this is several times faster than the serial default.
 
 .SS Folder mode
 .TP

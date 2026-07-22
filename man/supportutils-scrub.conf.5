@@ -1,4 +1,4 @@
-.TH SUPPORTUTILS-SCRUB.CONF 5 "23 Feb 2026"
+.TH SUPPORTUTILS-SCRUB.CONF 5 "22 Jul 2026" "supportutils-scrub 1.6"
 .SH NAME
 supportutils-scrub.conf \- Configuration file for supportutils-scrub
 .SH SYNOPSIS
@@ -59,6 +59,27 @@ Specifies whether MAC addresses should be obfuscated.
 .PD 0
 .IP * 2
 \fBValues\fR: \fIyes\fR or \fIno\fR (default: yes)
+.PD
+.TP
+.B obfuscate_serial
+Specifies whether hardware serial numbers and system UUIDs (from dmidecode output) should be obfuscated.
+.PD 0
+.IP * 2
+\fBValues\fR: \fIyes\fR or \fIno\fR (default: yes)
+.PD
+.TP
+.B hostname_preserve
+Comma-separated list of hostnames that must never be obfuscated. Extends the built-in preserve set (localhost names and product-default container names such as \fIuyuni-server\fR); the built-ins cannot be removed.
+.PD 0
+.IP * 2
+\fBDefault\fR: empty
+.PD
+.TP
+.B dataset_dir
+Directory where mapping files, audit logs, and reports are written.
+.PD 0
+.IP * 2
+\fBDefault\fR: \fI/var/tmp\fR
 .PD
 .TP
 .B verbose
