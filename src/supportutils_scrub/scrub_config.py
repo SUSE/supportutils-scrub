@@ -31,6 +31,7 @@ class ScrubConfig:
         pool_192_168='100.112.0.0/12',
         pool_169_254='100.79.0.0/16',
         default_infer_prefixlen=24,
+        hostname_preserve='',
     ):
         self.obfuscate_private_ip = obfuscate_private_ip
         self.obfuscate_public_ip = obfuscate_public_ip
@@ -53,6 +54,9 @@ class ScrubConfig:
         self.pool_192_168 = pool_192_168
         self.pool_169_254 = pool_169_254
         self.default_infer_prefixlen = default_infer_prefixlen
+        # extra never-scrub hostnames (comma-separated), merged on
+        # top of the built-in product-default + loopback sets
+        self.hostname_preserve = hostname_preserve
 
     @classmethod
     def from_dict(cls, d):

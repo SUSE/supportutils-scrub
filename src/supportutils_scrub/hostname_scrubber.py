@@ -21,19 +21,47 @@ LOOPBACK_HOSTNAMES = {
 # product context of paths and logs while protecting nothing: every
 # deployment in the world shares them.
 PRODUCT_DEFAULT_HOSTNAMES = {
-    "uyuni-server", "uyuni-db", "uyuni-proxy", "uyuni-hub-xmlrpc",
+    # the product name itself: a host literally named 'uyuni' would, once
+    # learned, corrupt every uyuni-* package and path name via the token
+    # boundary match
+    "uyuni",
+    # mgradm server-side containers
+    "uyuni-server", "uyuni-db", "uyuni-hub-xmlrpc", "uyuni-hub",
+    # proxy pod containers
+    "uyuni-proxy", "uyuni-proxy-httpd", "uyuni-proxy-salt-broker",
+    "uyuni-proxy-squid", "uyuni-proxy-ssh", "uyuni-proxy-tftpd",
 }
 
-# Never LEARNED as scrub targets. A hostname passed explicitly by the
-# operator (--hostname / additional hostnames) is still honored: this set
-# only stops automatic learning.
+# Never scrubbed, PERIOD: excluded from automatic learning AND filtered out
+# of any hostname mapping at scrub time, so entries carried in from legacy
+# mapping files (or passed as additional hostnames) cannot resurrect them.
+# The config key `hostname_preserve` (comma-separated) EXTENDS this set;
+# nothing can remove the built-ins.
 WELL_KNOWN_HOSTNAMES = LOOPBACK_HOSTNAMES | PRODUCT_DEFAULT_HOSTNAMES
+
+
+def preserved_hostnames(config=None):
+    """The full preserve set: built-ins plus the config's hostname_preserve
+    extension, lowercased."""
+    extra = ""
+    if config is not None:
+        extra = getattr(config, "hostname_preserve", "") or ""
+    names = {n.strip().lower() for n in extra.split(",") if n.strip()}
+    return {n.lower() for n in WELL_KNOWN_HOSTNAMES} | names
 
 
 class HostnameScrubber(Scrubber):
     name = 'hostname'
 
-    def __init__(self, hostname_dict):
+    def __init__(self, hostname_dict, config=None):
+        # Enforce the preserve set at SCRUB time, not only at learn time: a
+        # legacy mapping file may already contain e.g. uyuni-server from a
+        # run before the product-name rule existed, and shared mappings are
+        # reused across re-scrubs. Dropped here, such an entry neither
+        # rewrites text nor reappears in the mapping written back out.
+        preserved = preserved_hostnames(config)
+        hostname_dict = {k: v for k, v in (hostname_dict or {}).items()
+                         if k.lower() not in preserved}
         self.hostname_dict = hostname_dict
         self._re = None
         self._lookup = {}
@@ -54,10 +82,37 @@ class HostnameScrubber(Scrubber):
     def mapping(self):
         return self.hostname_dict
 
+    # Preserved strings are protected against CORRUPTION too, not only
+    # direct replacement: a learned hostname that happens to be a substring
+    # with a token boundary (a customer host literally named "server" would
+    # turn "uyuni-server" into "uyuni-hostname_N") must not touch them.
+    # Occurrences are masked with sentinels before substitution and restored
+    # after. The mask pattern is compiled once per process.
+    _PRESERVE_RE = None
+
+    @classmethod
+    def _preserve_re(cls):
+        if cls._PRESERVE_RE is None:
+            names = sorted(PRODUCT_DEFAULT_HOSTNAMES, key=len, reverse=True)
+            cls._PRESERVE_RE = re.compile(
+                r'(?<![A-Za-z0-9])(?:' + '|'.join(re.escape(n) for n in names)
+                + r')(?![A-Za-z0-9])', re.IGNORECASE)
+        return cls._PRESERVE_RE
+
     def scrub(self, text):
         if not self._re:
             return text
-        return self._re.sub(lambda m: self._lookup[m.group(0).lower()], text)
+        pre = self._preserve_re()
+        saved = []
+        if pre.search(text):
+            def _mask(m):
+                saved.append(m.group(0))
+                return f"\x00PRESERVED{len(saved) - 1}\x00"
+            text = pre.sub(_mask, text)
+        text = self._re.sub(lambda m: self._lookup[m.group(0).lower()], text)
+        for i, original in enumerate(saved):
+            text = text.replace(f"\x00PRESERVED{i}\x00", original)
+        return text
     
 
 

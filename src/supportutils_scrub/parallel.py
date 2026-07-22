@@ -85,7 +85,7 @@ def _build_chain(frozen, config, deterministic, include_ldap):
         # rewritten the address no longer matches EMAIL_RE and the local
         # part (often firstname.lastname) would survive.
         EmailScrubber(mappings=frozen, deterministic=deterministic),
-        HostnameScrubber(dict(frozen.get('hostname', {}))),
+        HostnameScrubber(dict(frozen.get('hostname', {})), config=config),
         DomainScrubber(dict(frozen.get('domain', {}))),
     ]
     if include_ldap:

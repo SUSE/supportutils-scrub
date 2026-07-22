@@ -64,3 +64,55 @@ def test_product_default_not_learned_from_text():
     learned = HostnameScrubber.extract_hostnames_from_text(text)
     assert "custhost42" in learned
     assert "uyuni-server" not in learned
+
+
+def test_preserved_strings_never_scrubbed_even_from_legacy_mapping():
+    """The absolute guarantee: uyuni-server/db/proxy and friends are never
+    rewritten, even when a legacy shared-mapping file already contains them
+    as scrub targets (mappings are reused across re-scrubs)."""
+    from supportutils_scrub.hostname_scrubber import HostnameScrubber
+    legacy = {"uyuni-server": "hostname_10", "uyuni-db": "hostname_11",
+              "custhost42": "hostname_12"}
+    s = HostnameScrubber(legacy)
+    out = s.scrub("uyuni-server-container-80056a0c on custhost42 with uyuni-db")
+    assert "uyuni-server-container-80056a0c" in out     # untouched
+    assert "uyuni-db" in out
+    assert "custhost42" not in out                      # real host still scrubbed
+    assert "hostname_12" in out
+    # and the dropped entries do not reappear in the mapping written out
+    assert "uyuni-server" not in s.mapping
+    assert "custhost42" in s.mapping
+
+
+def test_preserved_strings_not_corrupted_by_substring_hosts():
+    """A learned hostname that is a boundary-substring of a preserved string
+    (host literally named 'server') must not corrupt 'uyuni-server'."""
+    from supportutils_scrub.hostname_scrubber import HostnameScrubber
+    s = HostnameScrubber({"server": "hostname_0", "uyuni": "hostname_1"})
+    out = s.scrub("uyuni-server started; server rebooted; uyuni node up; "
+                  "uyuni-common-libs installed")
+    assert "uyuni-server started" in out                # preserved intact
+    assert "hostname_0 rebooted" in out                 # bare 'server' scrubbed
+    assert "uyuni node up" in out                       # product name preserved
+    assert "uyuni-common-libs installed" in out         # package names intact
+
+
+def test_preserved_strings_case_insensitive():
+    from supportutils_scrub.hostname_scrubber import HostnameScrubber
+    s = HostnameScrubber({"UYUNI-SERVER": "hostname_9"})
+    assert s.scrub("UYUNI-SERVER and Uyuni-Server") == \
+        "UYUNI-SERVER and Uyuni-Server"
+
+
+def test_hostname_preserve_config_extends_set():
+    from supportutils_scrub.hostname_scrubber import (HostnameScrubber,
+                                                      preserved_hostnames)
+
+    class _Cfg:
+        hostname_preserve = "mycorp-gateway, Another-Name"
+
+    names = preserved_hostnames(_Cfg())
+    assert "mycorp-gateway" in names and "another-name" in names
+    assert "uyuni-server" in names                      # built-ins always kept
+    s = HostnameScrubber({"mycorp-gateway": "hostname_5"}, config=_Cfg())
+    assert s.scrub("mycorp-gateway up") == "mycorp-gateway up"
