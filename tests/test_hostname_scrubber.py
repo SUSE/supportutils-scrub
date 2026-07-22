@@ -116,3 +116,30 @@ def test_hostname_preserve_config_extends_set():
     assert "uyuni-server" in names                      # built-ins always kept
     s = HostnameScrubber({"mycorp-gateway": "hostname_5"}, config=_Cfg())
     assert s.scrub("mycorp-gateway up") == "mycorp-gateway up"
+
+
+def test_scrub_name_preserves_product_dir_names():
+    """File/dir RENAMING is a separate code path from text scrubbing; the
+    preserve guarantee must hold there too, including against legacy mapping
+    entries and substring corruption (the served-path regression: the
+    uyuni-server container dir came back as hostname_N even though text
+    scrubbing preserved the name)."""
+    from supportutils_scrub.pipeline import scrub_name
+    legacy = {"uyuni-server": "hostname_10", "server": "hostname_0",
+              "custhost42": "hostname_12"}
+    assert scrub_name("uyuni-server-container-80056a0c", legacy) == \
+        "uyuni-server-container-80056a0c"
+    assert scrub_name("custhost42-report.txz", legacy) == \
+        "hostname_12-report.txz"
+
+
+def test_extract_hostnames_drops_legacy_preserved_entries(tmp_path):
+    from supportutils_scrub.pipeline import extract_hostnames
+    mappings = {"hostname": {"uyuni-server": "hostname_10",
+                             "custhost42": "hostname_12"}}
+    d = extract_hostnames([], [], mappings)
+    assert "uyuni-server" not in d
+    assert d["custhost42"] == "hostname_12"
+    # counter continuity: a NEW hostname gets a number past the legacy ones
+    d2 = extract_hostnames([], ["newhost77"], mappings)
+    assert d2["newhost77"] != "hostname_10"     # never reuses a dropped alias

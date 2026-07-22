@@ -94,8 +94,16 @@ def extract_and_map_domains(report_files, additional_domains, mappings):
 
 
 def extract_hostnames(report_files, additional_hostnames, mappings):
-    hostname_dict = mappings.get('hostname', {})
-    counter = len(hostname_dict)
+    # Preserved product strings (uyuni-server family, loopback names) are
+    # dropped HERE, at the single source of the working dict: a legacy
+    # mapping file recorded before the preserve rule existed must not
+    # resurrect them, in text scrubbing OR in file/dir renaming.
+    from supportutils_scrub.hostname_scrubber import preserved_hostnames
+    _preserved = preserved_hostnames()
+    raw = mappings.get('hostname', {})
+    hostname_dict = {k: v for k, v in raw.items()
+                     if k.lower() not in _preserved}
+    counter = len(raw)
     all_hostnames = []
 
     for f in report_files:
@@ -264,11 +272,23 @@ def slowest_files_report(file_times, top=10):
 
 
 def scrub_name(name, hostname_dict, domain_dict=None):
+    # Preserved product strings survive renaming verbatim, protected against
+    # substring corruption the same way HostnameScrubber.scrub protects text.
+    from supportutils_scrub.hostname_scrubber import HostnameScrubber
+    pre = HostnameScrubber._preserve_re()
+    saved = []
+    if pre.search(name):
+        def _mask(m):
+            saved.append(m.group(0))
+            return f"\x00P{len(saved) - 1}\x00"
+        name = pre.sub(_mask, name)
     if domain_dict:
         for real, fake in sorted(domain_dict.items(), key=lambda x: len(x[0]), reverse=True):
             name = name.replace(real, fake)
     for real, fake in sorted(hostname_dict.items(), key=lambda x: len(x[0]), reverse=True):
         name = name.replace(real, fake)
+    for i, original in enumerate(saved):
+        name = name.replace(f"\x00P{i}\x00", original)
     return name
 
 
