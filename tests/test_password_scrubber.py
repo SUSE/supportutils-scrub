@@ -54,3 +54,68 @@ class TestPasswordScrub:
         s = _make()
         out = s.scrub('password: "AnsiblePass1"')
         assert "AnsiblePass1" not in out
+
+
+class TestCliSecretScrub:
+    def test_gpg_passphrase_space_form(self):
+        s = _make()
+        out = s.scrub("gpg --batch --passphrase Hunter2secret --sign a.txt")
+        assert "Hunter2secret" not in out
+        assert "--passphrase scrubbed_pass_" in out
+
+    def test_passphrase_equals_form(self):
+        s = _make()
+        out = s.scrub("openssl enc --passphrase=S3cr3t!x")
+        assert "S3cr3t!x" not in out
+
+    def test_quoted_value_with_spaces(self):
+        s = _make()
+        out = s.scrub('gpg --passphrase "my secret phrase" file')
+        assert "my secret phrase" not in out
+        assert '--passphrase "scrubbed_pass_' in out
+
+    def test_credentials_equals(self):
+        s = _make()
+        out = s.scrub("mount -o credentials=RealCifsPw1,rw //srv/share /mnt")
+        assert "RealCifsPw1" not in out
+        assert ",rw" in out
+
+    def test_following_flag_untouched(self):
+        s = _make()
+        text = "gpg --password --stdin"
+        assert s.scrub(text) == text
+
+    def test_shell_var_untouched(self):
+        s = _make()
+        text = "gpg --passphrase $GPGPASS file"
+        assert s.scrub(text) == text
+
+    def test_placeholder_untouched(self):
+        s = _make()
+        text = "gpg --passphrase <passphrase> file"
+        assert s.scrub(text) == text
+
+    def test_password_file_option_untouched(self):
+        s = _make()
+        text = "tool --password-file /etc/secret"
+        assert s.scrub(text) == text
+
+    def test_flag_cluster_untouched(self):
+        s = _make()
+        text = "ss -plnt ; tar -pxvf a.tar ; mkdir -p /tmp/x"
+        assert s.scrub(text) == text
+
+    def test_passphrase_config_form(self):
+        s = _make()
+        out = s.scrub("passphrase: LongSecret99")
+        assert "LongSecret99" not in out
+
+    def test_same_value_same_token(self):
+        s = _make()
+        out = s.scrub("password=RepeatMe123 and --password RepeatMe123")
+        assert out.count("scrubbed_pass_1") == 2
+
+    def test_ocr_ps_output_line(self):
+        s = _make()
+        out = s.scrub("user 4242 0.0 gpg --pinentry-mode loopback --passphrase Tr0ub4dor&3 -d backup.gpg")
+        assert "Tr0ub4dor" not in out

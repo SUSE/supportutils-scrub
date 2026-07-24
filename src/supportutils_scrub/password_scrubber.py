@@ -3,11 +3,27 @@ import re
 from supportutils_scrub.scrubber import Scrubber
 
 _PASSWORD_RE = re.compile(
-    r'(?i)(\b(?:password|passwd)\s*[:=]\s*["\']?)'
+    r'(?i)(\b(?:password|passwd|passphrase)\s*[:=]\s*["\']?)'
     r'(?!\*REMOVED)'
     r'(?!scrubbed_pass_)'
     r'([A-Za-z0-9+/]{8,})'
 )
+
+# Command-line secrets. Values passed as CLI options survive into ps/history
+# dumps and OCR'd terminal screenshots, and the config-style pattern above
+# never matches them (no ':'/'=' after the keyword in "--passphrase VALUE").
+# Quoted values may contain spaces; unquoted values stop at whitespace and
+# closing punctuation. A value that is itself a flag (--password --stdin),
+# a placeholder (***, *REMOVED*, <password>), a shell variable ($PASS) or an
+# already-scrubbed token is left alone. The bare "-p" short option is NOT
+# matched: attached letters are usually a flag cluster (ss -plnt, tar -pxvf).
+_CLI_SECRET_RE = re.compile(
+    r'(?i)(?P<prefix>--(?:passphrase|password|passwd|pass)[= ]|\bcredentials=)'
+    r'(?:(?P<q>["\'])(?P<qval>[^"\']{2,}?)(?P=q)'
+    r'|(?P<val>[^\s"\';,)]{2,}))'
+)
+
+_PLACEHOLDER_LEAD = ('*', '<', '$', '-')
 
 
 class PasswordScrubber(Scrubber):
@@ -39,8 +55,16 @@ class PasswordScrubber(Scrubber):
     def scrub(self, text):
         """Replaces password values in text. Returns scrubbed text."""
         def _replace(m):
-            prefix = m.group(1)   
-            value = m.group(2)    
+            prefix = m.group(1)
+            value = m.group(2)
             return prefix + self._get_fake_password(value)
 
-        return _PASSWORD_RE.sub(_replace, text)
+        def _replace_cli(m):
+            value = m.group('qval') or m.group('val')
+            if value.startswith(_PLACEHOLDER_LEAD) or value.startswith('scrubbed_pass_'):
+                return m.group(0)
+            quote = m.group('q') or ''
+            return m.group('prefix') + quote + self._get_fake_password(value) + quote
+
+        text = _PASSWORD_RE.sub(_replace, text)
+        return _CLI_SECRET_RE.sub(_replace_cli, text)
