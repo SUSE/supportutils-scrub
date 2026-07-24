@@ -26,7 +26,8 @@ from supportutils_scrub.extractor import (
 from supportutils_scrub.verify import verify_scrubbed_folder
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers, is_supportconfig_folder,
-    extract_and_map_domains, extract_hostnames, extract_usernames,
+    extract_and_map_domains, extract_hostnames,
+    extract_hostnames_from_adopted_paths, extract_usernames,
     extract_serials, extract_sids, rename_extraction_paths, dataset_paths, PhaseTimer,
     slowest_files_report,
 )
@@ -112,6 +113,10 @@ def run_folder_mode(args, logger):
     additional_hostnames = []
     if args.hostname:
         additional_hostnames = re.split(r'[,\s;]+', args.hostname)
+    # adopted-node names live in the tree structure, not the primary
+    # network.txt; harvested regardless of is_sc so plain crm_report/hb_report
+    # bundles get their node dirs mapped too (collector-adoption bypass fix)
+    additional_hostnames.extend(extract_hostnames_from_adopted_paths(scrubbed_path))
     hostname_dict = extract_hostnames(scan_files, additional_hostnames, mappings)
 
     want_report = bool(getattr(args, 'report', False)) or bool(getattr(args, 'report_file', None))

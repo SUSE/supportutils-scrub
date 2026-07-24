@@ -119,6 +119,61 @@ def extract_hostnames(report_files, additional_hostnames, mappings):
     return hostname_dict
 
 
+# Collector-adoption bypass fix: node identities carried by DIRECTORY
+# STRUCTURE never reach hostname_dict when they are absent from the primary
+# host's network.txt (crm_report per-node dirs, nested supportconfigs whose
+# hosts file does not list themselves). Confirmed leaks twice in the field:
+# a crm_report node dir and an adopted MLM supportconfig both kept the real
+# customer FQDN in their directory name while file contents were scrubbed.
+_NODE_DIR_MARKERS = ("sysinfo.txt", "cib.xml", "ha-log.txt", "pengine")
+_SCC_DIR_RE = re.compile(r"^scc_([A-Za-z][A-Za-z0-9._-]*?)(?:_\d{6}[_\d]*)?$")
+_UNAME_LINE_RE = re.compile(r"^Linux\s+([A-Za-z][A-Za-z0-9._-]*)", re.M)
+
+
+def _plausible_hostname(name, preserved):
+    return (len(name) >= 3 and any(c.isalpha() for c in name)
+            and name.lower() not in preserved
+            and not name.lower().endswith((".txt", ".log", ".xml", ".gz")))
+
+
+def extract_hostnames_from_adopted_paths(root):
+    """Harvest node names from tree STRUCTURE: crm_report node dirs (the dir
+    basename IS the node name), nested scc_<host>_<stamp> dirs, and every
+    nested basic-environment.txt uname line. For dotted names the short first
+    label is harvested too, so bare-shortname mentions map consistently."""
+    from supportutils_scrub.hostname_scrubber import preserved_hostnames
+    preserved = preserved_hostnames()
+    found = []
+
+    def _add(name):
+        if _plausible_hostname(name, preserved):
+            found.append(name)
+            if "." in name:
+                short = name.split(".", 1)[0]
+                if _plausible_hostname(short, preserved):
+                    found.append(short)
+
+    for base, dirs, files in os.walk(root):
+        fset = set(files) | set(dirs)
+        if any(m in fset for m in _NODE_DIR_MARKERS):
+            _add(os.path.basename(base))
+        for d in dirs:
+            m = _SCC_DIR_RE.match(d)
+            if m:
+                _add(m.group(1))
+        if "basic-environment.txt" in files:
+            try:
+                with open(os.path.join(base, "basic-environment.txt"),
+                          encoding="utf-8", errors="ignore") as fh:
+                    m = _UNAME_LINE_RE.search(fh.read(65536))
+                if m:
+                    _add(m.group(1))
+            except OSError:
+                pass
+    # longest first so FQDNs map before their short forms
+    return sorted(set(found), key=len, reverse=True)
+
+
 def extract_usernames(report_files, additional_usernames, mappings):
     username_dict = mappings.get('user', {})
     counter = len(username_dict)

@@ -34,6 +34,7 @@ from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
 from supportutils_scrub.verify import verify_scrubbed_folder
 from supportutils_scrub.pipeline import (
     warn_private_ip, extract_and_map_domains, extract_hostnames,
+    extract_hostnames_from_adopted_paths,
     extract_usernames, extract_serials, extract_sids, rename_extraction_paths,
     scrub_name, dataset_paths, PhaseTimer, slowest_files_report,
 )
@@ -61,6 +62,8 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
     additional_usernames = re.split(r'[,\s;]+', args.username) if args.username else []
     username_dict = extract_usernames(report_files, additional_usernames, current_mappings)
     additional_hostnames = re.split(r'[,\s;]+', args.hostname) if args.hostname else []
+    # collector-adoption bypass fix: node names carried by tree structure
+    additional_hostnames.extend(extract_hostnames_from_adopted_paths(clean_folder_path))
     hostname_dict = extract_hostnames(report_files, additional_hostnames, current_mappings)
 
     clean_folder_path = rename_extraction_paths(clean_folder_path, hostname_dict, domain_dict=domain_dict)
