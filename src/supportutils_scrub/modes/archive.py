@@ -37,6 +37,7 @@ from supportutils_scrub.pipeline import (
     extract_hostnames_from_adopted_paths,
     extract_usernames, extract_serials, extract_sids, rename_extraction_paths,
     scrub_name, dataset_paths, PhaseTimer, slowest_files_report,
+    report_format_mismatches,
 )
 from supportutils_scrub.audit import (
     load_mappings_file, get_secure_tmp_base, save_mappings,
@@ -146,6 +147,7 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
 
     if timer:
         timer.mark('scrub')
+    report_format_mismatches(clean_folder_path)
     if verbose_flag and file_times:
         report = slowest_files_report(file_times)
         if report:

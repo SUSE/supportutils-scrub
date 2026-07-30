@@ -1,4 +1,26 @@
 -------------------------------------------------------------------
+Thu Jul 30 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
+
+- Compressed single-file logs: a name can no longer describe a format
+  its content does not have
+  + Rewritten .gz/.xz/.bz2 logs are written to a temporary file, read
+    back, and validated as a complete stream before they replace the
+    original; a rewrite that cannot preserve the format leaves the
+    file untouched and says so instead of failing silently
+  + A file whose compression extension does not match its content is
+    scrubbed as the plain text it is and the misleading extension is
+    dropped, so consumers that follow the extension can read it
+  + A compressed file with a non-text payload is left byte-identical
+    instead of being mangled into text
+  + A stream that ends before its end-of-stream marker is salvaged,
+    scrubbed, and rewritten as a complete stream
+  + Bytes that are not valid UTF-8 survive the round trip instead of
+    being dropped
+  + Every run reports leftover extension/content mismatches, and
+    verify no longer skips a compressed file it cannot decompress
+  + Worker processes no longer duplicate log lines
+
+-------------------------------------------------------------------
 Wed Jul 22 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
 
 - Update to version 1.6

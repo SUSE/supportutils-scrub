@@ -14,7 +14,8 @@ from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.processor import (
     FileProcessor, compressed_opener, scrubbed_output_name,
-    strip_compression_ext, _SCRUB_INFO_HEADER,
+    strip_compression_ext, read_compressed_text, write_compressed_text,
+    _SCRUB_INFO_HEADER,
 )
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers, scrub_name,
@@ -30,6 +31,7 @@ def run_file_mode(args, logger):
     verbose_flag = args.verbose
     input_path = args.supportconfig_path[0]
     comp = compressed_opener(os.path.basename(input_path))
+    drop_ext = False
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     config = args._preloaded_config
@@ -44,13 +46,30 @@ def run_file_mode(args, logger):
     if keyword_scrubber is None and (args.keywords or args.keyword_file):
         print("[!] Keyword obfuscation disabled (no keywords loaded)")
 
-    _open = comp[1] if comp else open
-    try:
-        with _open(input_path, 'rt', encoding='utf-8', errors='ignore') as f:
-            text = f.read()
-    except Exception as e:
-        print(f"[!] Cannot read {input_path}: {e}")
-        sys.exit(1)
+    # A compressed input is read through its decompressor; if the name lies
+    # about the content, it is scrubbed as the plain text it really is and the
+    # misleading extension is dropped from the output name.
+    text = None
+    if comp:
+        text, status = read_compressed_text(input_path, comp[0], comp[1])
+        if status == 'binary':
+            print(f"[!] {os.path.basename(input_path)}: {comp[0][1:]} payload is not text — "
+                  f"nothing to scrub")
+            sys.exit(1)
+        if status == 'truncated':
+            print(f"[!] {os.path.basename(input_path)}: {comp[0][1:]} stream ends early — "
+                  f"scrubbing the readable prefix, the damaged tail is dropped")
+        elif status == 'not-a-stream':
+            print(f"[!] {os.path.basename(input_path)}: not a {comp[0][1:]} stream despite "
+                  f"the extension — scrubbed as plain text")
+            drop_ext, comp, text = True, None, None
+    if text is None:
+        try:
+            with open(input_path, 'rt', encoding='utf-8', errors='ignore') as f:
+                text = f.read()
+        except Exception as e:
+            print(f"[!] Cannot read {input_path}: {e}")
+            sys.exit(1)
 
     additional_domains = list(re.split(r'[,\s;]+', args.domain) if args.domain else [])
     additional_domains += DomainScrubber.extract_domains_from_text(text)
@@ -67,7 +86,7 @@ def run_file_mode(args, logger):
 
     unpacked = getattr(args, 'unpacked', False)
     out_base = scrub_name(os.path.basename(input_path), hostname_dict, domain_dict=domain_dict)
-    if unpacked:
+    if unpacked or drop_ext:
         out_base = strip_compression_ext(out_base)
     output_path = os.path.join(os.path.dirname(input_path), scrubbed_output_name(out_base))
 
@@ -94,13 +113,19 @@ def run_file_mode(args, logger):
     else:
         final_content = scrubbed_text
 
-    _wopen = open if unpacked else _open
-    try:
-        with _wopen(output_path, 'wt', encoding='utf-8') as f:
-            f.write(final_content)
-    except Exception as e:
-        print(f"[!] Cannot write {output_path}: {e}")
-        sys.exit(1)
+    if comp and not unpacked:
+        # write_compressed_text validates the stream it wrote before keeping it
+        if not write_compressed_text(output_path, comp[0], comp[1],
+                                     final_content, logger):
+            sys.exit(1)
+    else:
+        try:
+            with open(output_path, 'wt', encoding='utf-8',
+                      errors='surrogateescape') as f:
+                f.write(final_content)
+        except Exception as e:
+            print(f"[!] Cannot write {output_path}: {e}")
+            sys.exit(1)
 
     print(f"[✓] Scrubbed file written to: {output_path}")
 

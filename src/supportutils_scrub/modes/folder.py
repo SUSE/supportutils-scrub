@@ -29,7 +29,7 @@ from supportutils_scrub.pipeline import (
     extract_and_map_domains, extract_hostnames,
     extract_hostnames_from_adopted_paths, extract_usernames,
     extract_serials, extract_sids, rename_extraction_paths, dataset_paths, PhaseTimer,
-    slowest_files_report,
+    slowest_files_report, report_format_mismatches,
 )
 from supportutils_scrub.audit import (
     save_mappings, print_enc_note, audit_record, write_audit_log, write_report,
@@ -225,6 +225,7 @@ def run_folder_mode(args, logger):
         dataset_dict['tld_map'] = tld_map
         combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
     timer.mark('scrub')
+    report_format_mismatches(scrubbed_path)
     if verbose_flag and file_times:
         report = slowest_files_report(file_times)
         if report:

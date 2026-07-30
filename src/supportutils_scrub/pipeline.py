@@ -326,6 +326,28 @@ def slowest_files_report(file_times, top=10):
     return "\n".join(lines)
 
 
+def report_format_mismatches(root, file=None):
+    """Check the scrubbed tree for names that lie about their content and warn.
+
+    Postcondition of every run: no file carries a .gz/.xz/.bz2 extension its
+    content does not match, so a consumer that follows the extension can always
+    read it. Scrubbing never creates such a file (see
+    processor.FileProcessor._process_compressed); this catches the leftovers —
+    a mismatch whose honest name was already taken, or a rewrite we refused."""
+    from supportutils_scrub.processor import find_format_mismatches
+    out = file or sys.stderr
+    bad = find_format_mismatches(root)
+    if not bad:
+        return 0
+    print(f"[!] FORMAT: {len(bad)} file(s) carry a compression extension their "
+          f"content does not match:", file=out)
+    for path, ext in bad[:10]:
+        print(f"      {os.path.relpath(path, root)} (not a {ext[1:]} stream)", file=out)
+    if len(bad) > 10:
+        print(f"      ... and {len(bad) - 10} more", file=out)
+    return len(bad)
+
+
 def scrub_name(name, hostname_dict, domain_dict=None):
     # Preserved product strings survive renaming verbatim, protected against
     # substring corruption the same way HostnameScrubber.scrub protects text.

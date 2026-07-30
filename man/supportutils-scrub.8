@@ -69,6 +69,8 @@ All obfuscations are performed consistently, ensuring that sensitive information
 .IP \(bu 2
 \fBSAP System ID obfuscation:\fR SAP SIDs found in paths (/usr/sap/<SID>, /sapmnt/<SID>), cluster resource names (rsc_SAP_<SID>), SAPSYSTEMNAME variables, and <sid>adm usernames are replaced consistently.
 .IP \(bu 2
+\fBCompressed logs kept readable:\fR Rotated logs compressed on their own (\fI.gz\fR, \fI.xz\fR, \fI.bz2\fR) are decompressed, scrubbed, and written back in the same format; the rewritten stream is read back and validated before it replaces the original, so a name never ends up describing a format its content does not have. A file that carries a compression extension its content does not match is scrubbed as the plain text it is and the misleading extension is dropped. A compressed file with a non\-text payload is left untouched, and a stream that ends early is rewritten from the part that could be salvaged. Every such case is reported on stderr.
+.IP \(bu 2
 \fBParallel processing:\fR \fB\-\-jobs\fR scrubs and verifies with multiple worker processes; large files are chunked across workers.
 .IP \(bu 2
 \fBConsistent multi-archive obfuscation:\fR Shared mappings across all archives in one run.

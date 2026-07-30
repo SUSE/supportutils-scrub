@@ -3,7 +3,7 @@ import os
 import re
 import ipaddress
 
-from supportutils_scrub.processor import compressed_opener
+from supportutils_scrub.processor import compressed_opener, compression_magic_ok
 
 _CATEGORIES = [
     ('ip',       'IPv4 address',  'ip'),
@@ -422,6 +422,10 @@ def _scan_one_file(fpath_fname, scan_ctx):
     rel = os.path.relpath(fpath, scan_ctx['folder_path'])
     file_findings = []
     comp = compressed_opener(fname)
+    # A name that lies about its content must still be scanned: reading it
+    # through the decompressor would raise and silently skip the file.
+    if comp and not compression_magic_ok(fpath, comp[0]):
+        comp = None
     _open = comp[1] if comp else open
     try:
         with _open(fpath, 'rt', encoding='utf-8', errors='ignore') as f:

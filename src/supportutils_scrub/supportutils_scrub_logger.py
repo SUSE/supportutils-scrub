@@ -6,11 +6,14 @@ class SupportutilsScrubLogger:
         self.logger.propagate = False
         self.logger.setLevel(logging.DEBUG)
 
-        formatter = logging.Formatter("%(levelname)s: %(message)s")
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(self._get_log_level(log_level))
-        console_handler.setFormatter(formatter)
-        self.logger.addHandler(console_handler)
+        # One handler for the named logger, however many instances are built:
+        # a worker process constructs one per task context, and a second
+        # handler would print every message twice.
+        if not self.logger.handlers:
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+            self.logger.addHandler(console_handler)
+        self.set_log_level(log_level)
 
     def _get_log_level(self, log_level):
         if log_level == "quiet":
