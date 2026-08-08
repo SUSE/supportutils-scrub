@@ -19,6 +19,13 @@ _SAFE_DOMAINS = {
     'localhost', 'localhost.localdomain', 'localdomain',
 }
 
+# Local parts that are already a pseudonym. URL userinfo is scrubbed earlier in
+# the chain, and "SCRUBBED_LOGIN_1@repo.example.com" then matches EMAIL_RE
+# exactly — without this guard the address would be re-scrubbed as a whole,
+# collapsing a login and the host it authenticates against into one value and
+# taking the host out of the domain scrubber's hands.
+_SCRUBBED_LOCAL_PREFIXES = ('SCRUBBED_', 'scrubbed_', 'email_')
+
 
 class EmailScrubber(Scrubber):
     name = 'email'
@@ -54,6 +61,8 @@ class EmailScrubber(Scrubber):
         def _replace(m):
             email = m.group(1)
             if any(email.endswith(s) for s in _SKIP_SUFFIXES):
+                return email
+            if email.startswith(_SCRUBBED_LOCAL_PREFIXES):
                 return email
             domain = email.split('@')[1].lower()
             if domain in _SAFE_DOMAINS:

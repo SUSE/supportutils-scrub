@@ -16,6 +16,7 @@ from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.serial_scrubber import SerialScrubber
 from supportutils_scrub.sid_scrubber import SIDScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
+from supportutils_scrub.auth_scrubber import AuthScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
@@ -144,12 +145,20 @@ def run_folder_mode(args, logger):
     sid_scrubber.sid_dict = sid_dict
     timer.mark('pre-scan')
 
+    email_scrubber = EmailScrubber(mappings=mappings)
+    username_scrubber = UsernameScrubber(username_dict)
     scrubbers = [
         ip_scrubber, ipv6_scrubber, mac_scrubber, keyword_scrubber,
-        EmailScrubber(mappings=mappings),
+        # Ahead of the email scrubber on purpose: in a URL the userinfo and
+        # host together (user@host) match an email address exactly, so if
+        # email ran first it would swallow both and the login would stop
+        # being distinguishable from the host it authenticates against.
+        AuthScrubber(mappings=mappings, email_scrubber=email_scrubber,
+                     username_scrubber=username_scrubber),
+        email_scrubber,
         HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
         LdapDnScrubber(mappings=mappings),
-        UsernameScrubber(username_dict),
+        username_scrubber,
         PasswordScrubber(mappings=mappings), CloudTokenScrubber(mappings=mappings),
         serial_scrubber, sid_scrubber,
     ]

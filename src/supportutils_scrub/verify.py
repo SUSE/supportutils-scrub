@@ -1,4 +1,5 @@
 # verify.py
+import base64
 import os
 import re
 import ipaddress
@@ -181,6 +182,34 @@ _SECRET_PATTERNS = [
     # Skip values already redacted by supportconfig or our scrubber
     (re.compile(r'(?i)\b(?:password|passwd)\s*=\s*["\']?(?!\*REMOVED)(?!scrubbed_pass_)([A-Za-z0-9+/]{8,})'), 'password value'),
 ]
+
+# An HTTP Basic credential that survived scrubbing. The scrubbed form is still
+# valid base64 of "login:secret", so the test cannot be "does it decode" — it
+# is whether the login half is one of the pseudonyms a scrubber allocates.
+# The trailing lookahead stops the base64 class from matching the leading
+# letters of a wholesale replacement such as "Basic SCRUBBED_BASIC_1".
+_BASIC_CRED_RE = re.compile(
+    r'(?i)(?:proxy-)?authorization"?\s*[:=]\s*"?basic[ \t]+'
+    r'([A-Za-z0-9+/]+={0,2})(?![A-Za-z0-9+/=_-])'
+)
+_SCRUBBED_LOGIN_PREFIXES = ('SCRUBBED_', 'scrubbed_', 'email_')
+
+
+def _basic_is_credential(blob):
+    """True when a Basic blob still carries a real login.
+
+    Anything that does not decode to printable "login:secret" is left alone:
+    the scrubber replaces undecodable blobs wholesale, so a non-decoding value
+    here is noise rather than a leak, and flagging it would fire on every file.
+    """
+    try:
+        decoded = base64.b64decode(blob, validate=True).decode('utf-8')
+    except Exception:
+        return False
+    if ':' not in decoded or not decoded.isprintable():
+        return False
+    return not decoded.startswith(_SCRUBBED_LOGIN_PREFIXES)
+
 
 # LDAP / Kerberos patterns
 _LDAP_DN_RE = re.compile(r'(?:CN|OU|DC|O|L|ST|C)=[^,\s]{2,}(?:,\s*(?:CN|OU|DC|O|L|ST|C)=[^,\s]{2,}){2,}', re.IGNORECASE)
@@ -376,7 +405,8 @@ def _build_terms(mappings: dict):
     # Collect all fake values so we skip them if they appear as keys
     all_fake_values = set()
     for cat_key in ('ip', 'ipv6', 'mac', 'domain', 'hostname', 'user',
-                    'keyword', 'serial', 'email', 'password', 'cloud_token'):
+                    'keyword', 'serial', 'email', 'password', 'cloud_token',
+                    'auth'):
         for fake_val in mappings.get(cat_key, {}).values():
             all_fake_values.add(fake_val)
 
@@ -514,6 +544,15 @@ def _scan_one_file(fpath_fname, scan_ctx):
                                             'value': snippet,
                                         })
                                 break
+
+                    if 'asic' in line and 'uthorization' in line:
+                        for m in _BASIC_CRED_RE.finditer(line):
+                            if _basic_is_credential(m.group(1)):
+                                file_findings.append({
+                                    'file': rel, 'line': lineno,
+                                    'category': 'HTTP Basic credential',
+                                    'value': line.strip()[:80],
+                                })
 
                     if '=' in line and ('CN=' in line or 'DC=' in line
                                         or 'OU=' in line or 'cn=' in line

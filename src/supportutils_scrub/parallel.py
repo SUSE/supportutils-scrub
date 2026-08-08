@@ -12,7 +12,7 @@
 #      (IPScrubber.replay) in file order — same maps as a serial learn pass.
 #   2. Frozen dict scrubbers (hostname/domain/username/serial/keyword) are pure
 #      read-only and safe as-is.
-#   3. The late lazy scrubbers (email/password/cloud_token/ldap) run in workers
+#   3. The late lazy scrubbers (auth/email/password/cloud_token/ldap) run in workers
 #      with deterministic=True so each worker independently produces the same
 #      fake for the same input. Merging the per-worker dicts is then a union.
 #
@@ -43,6 +43,7 @@ from supportutils_scrub.hostname_scrubber import HostnameScrubber
 from supportutils_scrub.domain_scrubber import DomainScrubber
 from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
+from supportutils_scrub.auth_scrubber import AuthScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
@@ -76,25 +77,38 @@ def _build_chain(frozen, config, deterministic, include_ldap):
     sid = SIDScrubber(mappings=frozen)
     sid.sid_dict = dict(frozen.get('sid', {}))
 
+    # Named so the auth scrubber can delegate to them: a login it decodes out
+    # of a Basic header has to land on the same pseudonym as the same identity
+    # written in clear elsewhere in the capture.
+    email = EmailScrubber(mappings=frozen, deterministic=deterministic)
+    username = UsernameScrubber(dict(frozen.get('user', {})))
+    # Ahead of the email scrubber on purpose: in a URL the userinfo and host
+    # together (user@host) match an email address exactly, so if email ran
+    # first it would swallow both and the login would stop being
+    # distinguishable from the host it authenticates against.
+    auth = AuthScrubber(mappings=frozen, deterministic=deterministic,
+                        email_scrubber=email, username_scrubber=username)
+
     chain = [
         IPScrubber(config, mappings=frozen),
         IPv6Scrubber(config, mappings=frozen, deterministic=deterministic),
         MACScrubber(config, mappings=frozen, deterministic=deterministic),
         keyword,
+        auth,
         # Email must run before hostname/domain: once the domain part is
         # rewritten the address no longer matches EMAIL_RE and the local
         # part (often firstname.lastname) would survive.
-        EmailScrubber(mappings=frozen, deterministic=deterministic),
+        email,
         HostnameScrubber(dict(frozen.get('hostname', {})), config=config),
         DomainScrubber(dict(frozen.get('domain', {}))),
     ]
     if include_ldap:
         chain.append(LdapDnScrubber(mappings=frozen, deterministic=deterministic))
     chain += [
-        UsernameScrubber(dict(frozen.get('user', {}))),
+        username,
         PasswordScrubber(mappings=frozen, deterministic=deterministic),
         CloudTokenScrubber(mappings=frozen, deterministic=deterministic),
-        serial,
+        serial, sid,
     ]
     return [s for s in chain if s is not None]
 

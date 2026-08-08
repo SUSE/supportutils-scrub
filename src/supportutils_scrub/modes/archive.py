@@ -18,6 +18,7 @@ from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.serial_scrubber import SerialScrubber
 from supportutils_scrub.sid_scrubber import SIDScrubber
 from supportutils_scrub.email_scrubber import EmailScrubber
+from supportutils_scrub.auth_scrubber import AuthScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
@@ -79,18 +80,26 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
     if timer:
         timer.mark('pre-scan')
 
+    email_scrubber = EmailScrubber(mappings=current_mappings)
+    username_scrubber = UsernameScrubber(username_dict)
     scrubbers = [
         IPScrubber(config, mappings=current_mappings),
         IPv6Scrubber(config, mappings=current_mappings),
         MACScrubber(config, mappings=current_mappings),
         keyword_scrubber,
-        EmailScrubber(mappings=current_mappings),
+        # Ahead of the email scrubber on purpose: in a URL the userinfo and
+        # host together (user@host) match an email address exactly, so if
+        # email ran first it would swallow both and the login would stop
+        # being distinguishable from the host it authenticates against.
+        AuthScrubber(mappings=current_mappings, email_scrubber=email_scrubber,
+                     username_scrubber=username_scrubber),
+        email_scrubber,
         HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
     ]
     if include_ldap:
         scrubbers.append(LdapDnScrubber(mappings=current_mappings))
     scrubbers += [
-        UsernameScrubber(username_dict),
+        username_scrubber,
         PasswordScrubber(mappings=current_mappings), CloudTokenScrubber(mappings=current_mappings),
         serial_scrubber, sid_scrubber,
     ]
@@ -367,16 +376,24 @@ def process_one_file(file_path, current_mappings, args, config, keyword_scrubber
     serial_scrubber.serial_dict = dict(current_mappings.get('serial', {}))
     sid_scrubber = SIDScrubber(mappings=current_mappings)
     sid_scrubber.sid_dict = dict(current_mappings.get('sid', {}))
+    email_scrubber = EmailScrubber(mappings=current_mappings)
+    username_scrubber = UsernameScrubber(dict(current_mappings.get('user', {})))
     scrubbers = [
         IPScrubber(config, mappings=current_mappings),
         IPv6Scrubber(config, mappings=current_mappings),
         MACScrubber(config, mappings=current_mappings),
         keyword_scrubber,
-        EmailScrubber(mappings=current_mappings),
+        # Ahead of the email scrubber on purpose: in a URL the userinfo and
+        # host together (user@host) match an email address exactly, so if
+        # email ran first it would swallow both and the login would stop
+        # being distinguishable from the host it authenticates against.
+        AuthScrubber(mappings=current_mappings, email_scrubber=email_scrubber,
+                     username_scrubber=username_scrubber),
+        email_scrubber,
         HostnameScrubber(dict(current_mappings.get('hostname', {}))),
         DomainScrubber(dict(current_mappings.get('domain', {}))),
         LdapDnScrubber(mappings=current_mappings),
-        UsernameScrubber(dict(current_mappings.get('user', {}))),
+        username_scrubber,
         PasswordScrubber(mappings=current_mappings),
         CloudTokenScrubber(mappings=current_mappings),
         serial_scrubber, sid_scrubber,
