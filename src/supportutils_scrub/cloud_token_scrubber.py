@@ -78,9 +78,21 @@ class CloudTokenScrubber(Scrubber):
         Each pattern is gated by a cheap substring check so we don't run nine
         regexes over every file — most files contain none of these markers.
         """
+        # The lowered copy is only needed for the gate checks; drop it before
+        # the subs run so peak memory is not one full extra copy of the text.
         tl = text.lower()
+        has_jwt = 'eyj' in tl
+        has_aws_secret = any(k in tl for k in ('aws_secret_access_key',
+                                               'secretaccesskey',
+                                               'aws_session_token',
+                                               'sessiontoken'))
+        has_account_key = 'accountkey' in tl
+        has_sas = 'sig=' in tl or 'sv=' in tl or 'srt=' in tl
+        has_bearer = ('bearer' in tl or 'authorization' in tl
+                      or 'x-auth-token' in tl or 'token' in tl)
+        del tl
 
-        if 'eyj' in tl:
+        if has_jwt:
             text = _JWT_RE.sub(
                 lambda m: self._get_fake(m.group(1), 'JWT'), text)
             text = _IDENTITY_TAG_RE.sub(
@@ -94,16 +106,15 @@ class CloudTokenScrubber(Scrubber):
             text = _AWS_TEMP_KEY_RE.sub(
                 lambda m: self._get_fake(m.group(1), 'AWS_TEMP'), text)
 
-        if any(k in tl for k in ('aws_secret_access_key', 'secretaccesskey',
-                                 'aws_session_token', 'sessiontoken')):
+        if has_aws_secret:
             text = _AWS_SECRET_RE.sub(
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'AWS_SECRET'), text)
 
-        if 'accountkey' in tl:
+        if has_account_key:
             text = _AZURE_CONNSTR_RE.sub(
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'AZURE_KEY'), text)
 
-        if 'sig=' in tl or 'sv=' in tl or 'srt=' in tl:
+        if has_sas:
             text = _AZURE_SAS_RE.sub(
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'AZURE_SAS'), text)
 
@@ -111,7 +122,7 @@ class CloudTokenScrubber(Scrubber):
             text = _GCP_PRIVKEY_RE.sub(
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'GCP_PRIVKEY') + '"', text)
 
-        if 'bearer' in tl or 'authorization' in tl or 'x-auth-token' in tl or 'token' in tl:
+        if has_bearer:
             text = _BEARER_RE.sub(
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'BEARER'), text)
 

@@ -178,8 +178,14 @@ class HostnameScrubber(Scrubber):
         return hostnames
 
     @staticmethod
-    def extract_hostnames_from_text(text):
-        """Extract hostnames from NFS server lines and RFC 5424 syslog timestamps."""
+    def extract_hostnames_from_text(text, syslog_counts=None):
+        """Extract hostnames from NFS server lines and RFC 5424 syslog timestamps.
+
+        When one document is scanned in segments, pass the same dict as
+        syslog_counts on every call: occurrence counts accumulate there instead
+        of being thresholded per segment (a host mentioned three times across
+        two segments would otherwise be missed), and the caller collects the
+        result via syslog_hosts_from_counts() after the last segment."""
         excluded = WELL_KNOWN_HOSTNAMES
         hostnames = set()
 
@@ -188,15 +194,19 @@ class HostnameScrubber(Scrubber):
             if len(short) >= 3 and short not in excluded:
                 hostnames.add(short)
 
-        counts = {}
+        counts = {} if syslog_counts is None else syslog_counts
         for m in re.finditer(
             r'^\d{4}-\d{2}-\d{2}T[\d:.+-]+\s+([\w][\w-]*)\b', text, re.MULTILINE
         ):
             h = m.group(1)
             if len(h) >= 3 and h not in excluded:
                 counts[h] = counts.get(h, 0) + 1
-        for h, count in counts.items():
-            if count >= 3:
-                hostnames.add(h)
+        if syslog_counts is None:
+            hostnames |= HostnameScrubber.syslog_hosts_from_counts(counts)
 
         return list(hostnames)
+
+    @staticmethod
+    def syslog_hosts_from_counts(counts):
+        """Hosts seen in enough RFC 5424 lines to count as this system's."""
+        return {h for h, count in counts.items() if count >= 3}

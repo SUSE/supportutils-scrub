@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import json
+import shutil
 from datetime import datetime
 
 from supportutils_scrub.main import SCRIPT_VERSION
@@ -15,8 +16,8 @@ from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.processor import (
     FileProcessor, compressed_opener, scrubbed_output_name,
-    strip_compression_ext, read_compressed_text, write_compressed_text,
-    _SCRUB_INFO_HEADER,
+    strip_compression_ext, compression_magic_ok, looks_binary,
+    _iter_line_segments, _SEG_BYTES, _TEXT_PROBE,
 )
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers, scrub_name,
@@ -47,39 +48,75 @@ def run_file_mode(args, logger):
     if keyword_scrubber is None and (args.keywords or args.keyword_file):
         print("[!] Keyword obfuscation disabled (no keywords loaded)")
 
-    # A compressed input is read through its decompressor; if the name lies
-    # about the content, it is scrubbed as the plain text it really is and the
+    # Cheap streaming checks before anything is read whole or copied: a
+    # payload that is not text is refused up front; a name that lies about
+    # the content is scrubbed as the plain text it really is and the
     # misleading extension is dropped from the output name.
-    text = None
     if comp:
-        text, status = read_compressed_text(input_path, comp[0], comp[1])
-        if status == 'binary':
-            print(f"[!] {os.path.basename(input_path)}: {comp[0][1:]} payload is not text — "
-                  f"nothing to scrub")
-            sys.exit(1)
-        if status == 'truncated':
-            print(f"[!] {os.path.basename(input_path)}: {comp[0][1:]} stream ends early — "
-                  f"scrubbing the readable prefix, the damaged tail is dropped")
-        elif status == 'not-a-stream':
-            print(f"[!] {os.path.basename(input_path)}: not a {comp[0][1:]} stream despite "
+        ext, opener = comp
+        if not compression_magic_ok(input_path, ext):
+            if looks_binary(input_path):
+                print(f"[!] {os.path.basename(input_path)}: neither a {ext[1:]} "
+                      f"stream nor text — nothing to scrub")
+                sys.exit(1)
+            print(f"[!] {os.path.basename(input_path)}: not a {ext[1:]} stream despite "
                   f"the extension — scrubbed as plain text")
-            drop_ext, comp, text = True, None, None
-    if text is None:
+            drop_ext, comp = True, None
+        else:
+            try:
+                with opener(input_path, 'rb') as f:
+                    head = f.read(_TEXT_PROBE)
+            except MemoryError:
+                raise
+            except Exception:
+                head = b''  # damaged head; the salvage path decides later
+            if b'\x00' in head:
+                print(f"[!] {os.path.basename(input_path)}: {ext[1:]} payload is not "
+                      f"text — nothing to scrub")
+                sys.exit(1)
+
+    additional_domains = list(re.split(r'[,\s;]+', args.domain) if args.domain else [])
+    additional_usernames = list(re.split(r'[,\s;]+', args.username) if args.username else [])
+    additional_hostnames = list(re.split(r'[,\s;]+', args.hostname) if args.hostname else [])
+
+    if comp:
+        # Pre-scan the payload segment by segment: a small .xz can hide a
+        # multi-GB log (28:1 has been seen in the field), so it is never
+        # decompressed into one string. Syslog hostname counts accumulate
+        # across segments so the >=3-occurrences threshold sees the whole
+        # document, same as a whole-text scan would.
+        ext, opener = comp
+        syslog_counts = {}
+
+        def _read_or_stop(f):
+            def _read(n):
+                try:
+                    return f.read(n)
+                except MemoryError:
+                    raise
+                except Exception:
+                    return b''  # damaged tail: pre-scan what is readable
+            return _read
+
+        with opener(input_path, 'rb') as f:
+            for seg in _iter_line_segments(_read_or_stop(f), _SEG_BYTES):
+                seg_text = seg.decode('utf-8', 'surrogateescape')
+                additional_domains += DomainScrubber.extract_domains_from_text(seg_text)
+                additional_usernames += UsernameScrubber.extract_usernames_from_text(seg_text)
+                additional_hostnames += HostnameScrubber.extract_hostnames_from_text(
+                    seg_text, syslog_counts=syslog_counts)
+        additional_hostnames += HostnameScrubber.syslog_hosts_from_counts(syslog_counts)
+    else:
         try:
             with open(input_path, 'rt', encoding='utf-8', errors='ignore') as f:
                 text = f.read()
         except Exception as e:
             print(f"[!] Cannot read {input_path}: {e}")
             sys.exit(1)
-
-    additional_domains = list(re.split(r'[,\s;]+', args.domain) if args.domain else [])
-    additional_domains += DomainScrubber.extract_domains_from_text(text)
-
-    additional_usernames = list(re.split(r'[,\s;]+', args.username) if args.username else [])
-    additional_usernames += UsernameScrubber.extract_usernames_from_text(text)
-
-    additional_hostnames = list(re.split(r'[,\s;]+', args.hostname) if args.hostname else [])
-    additional_hostnames += HostnameScrubber.extract_hostnames_from_text(text)
+        additional_domains += DomainScrubber.extract_domains_from_text(text)
+        additional_usernames += UsernameScrubber.extract_usernames_from_text(text)
+        additional_hostnames += HostnameScrubber.extract_hostnames_from_text(text)
+        del text
 
     domain_dict, tld_map = extract_and_map_domains([], additional_domains, mappings)
     username_dict = extract_usernames([], additional_usernames, mappings)
@@ -87,8 +124,10 @@ def run_file_mode(args, logger):
 
     unpacked = getattr(args, 'unpacked', False)
     out_base = scrub_name(os.path.basename(input_path), hostname_dict, domain_dict=domain_dict)
-    if unpacked or drop_ext:
+    if drop_ext:
         out_base = strip_compression_ext(out_base)
+    # A compressed output keeps its extension here even with --unpacked;
+    # FileProcessor(decompress=True) converts it and drops the extension.
     output_path = os.path.join(os.path.dirname(input_path), scrubbed_output_name(out_base))
 
     email_scrubber = EmailScrubber(mappings=mappings)
@@ -110,31 +149,45 @@ def run_file_mode(args, logger):
     scrubbers = [s for s in scrubbers if s is not None]
 
     try:
-        file_processor = FileProcessor(config, scrubbers)
+        file_processor = FileProcessor(config, scrubbers, decompress=unpacked)
     except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
 
-    scrubbed_text = file_processor.process_text(text, logger, verbose_flag)
+    # The scrub runs in place on a copy carrying the output name — the same
+    # path archive mode's process_one_file takes — so compressed payloads go
+    # through the streaming segment machinery instead of being read whole.
+    in_place = os.path.abspath(output_path) == os.path.abspath(input_path)
 
-    if scrubbed_text != text:
-        final_content = _SCRUB_INFO_HEADER + scrubbed_text
-    else:
-        final_content = scrubbed_text
+    if in_place and comp and unpacked:
+        # decompress=True would convert — and delete — the input file itself.
+        print(f"[!] {os.path.basename(input_path)} already carries _scrubbed and "
+              f"--unpacked would replace the input with its unpacked form — "
+              f"rename the input or drop --unpacked")
+        sys.exit(1)
 
-    if comp and not unpacked:
-        # write_compressed_text validates the stream it wrote before keeping it
-        if not write_compressed_text(output_path, comp[0], comp[1],
-                                     final_content, logger):
-            sys.exit(1)
-    else:
-        try:
-            with open(output_path, 'wt', encoding='utf-8',
-                      errors='surrogateescape') as f:
-                f.write(final_content)
-        except Exception as e:
-            print(f"[!] Cannot write {output_path}: {e}")
-            sys.exit(1)
+    final_plain = strip_compression_ext(output_path)
+    if comp and unpacked and final_plain != output_path and os.path.exists(final_plain):
+        # File mode overwrites its output target; without this, process_file's
+        # plain-sibling protection would keep the copy compressed instead.
+        os.remove(final_plain)
+
+    if not in_place:
+        shutil.copyfile(input_path, output_path)
+    ok = file_processor.process_file(output_path, logger, verbose_flag)
+    if not ok:
+        # Never leave input bytes under a _scrubbed name.
+        if not in_place:
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+        print(f"[!] Scrubbing failed for {input_path} — no output written "
+              f"(see messages above)")
+        sys.exit(1)
+    if not os.path.exists(output_path):
+        # --unpacked converted the copy to plain, dropping the extension
+        output_path = strip_compression_ext(output_path)
 
     print(f"[✓] Scrubbed file written to: {output_path}")
 

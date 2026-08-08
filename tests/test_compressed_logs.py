@@ -10,9 +10,10 @@ import os
 import pytest
 
 from supportutils_scrub.scrub_config import ScrubConfig
+from supportutils_scrub import processor as processor_mod
 from supportutils_scrub.processor import (
     FileProcessor, compression_magic_ok, find_format_mismatches,
-    read_compressed_text,
+    read_compressed_text, _SCRUB_INFO_HEADER,
 )
 from supportutils_scrub.ip_scrubber import IPScrubber
 
@@ -213,6 +214,150 @@ class TestTreePostcondition:
         (tmp_path / "bundle.tgz").write_bytes(b"not gzip at all")
 
         assert find_format_mismatches(str(tmp_path)) == []
+
+
+class TestSegmentedStreaming:
+    """Payloads larger than one segment stream through the scrubbers in
+    line-aligned pieces (a 120 MB salt .xz decompressing to 3.3 GB once took
+    a worker to 17 GB). Segment size is shrunk here so a few KB exercises the
+    multi-segment path."""
+
+    LINES = "".join(f"198.51.{i % 4}.{(i % 250) + 1} - - \"GET /page/{i}\"\n"
+                    for i in range(300))
+
+    @pytest.fixture(autouse=True)
+    def _small_segments(self, monkeypatch):
+        monkeypatch.setattr(processor_mod, '_SEG_BYTES', 256)
+
+    @pytest.mark.parametrize("ext,opener", FORMATS)
+    def test_round_trip_matches_the_whole_text_scrub(self, tmp_path, ext, opener):
+        path = tmp_path / f"access_log{ext}"
+        with opener(path, 'wt') as f:
+            f.write(self.LINES)
+
+        _scrub(path)
+
+        assert compression_magic_ok(str(path), ext)
+        with opener(path, 'rt') as f:
+            body = f.read()
+        assert "198.51." not in body
+        expected = _processor()._scrub_content(self.LINES, "access_log",
+                                               _FakeLogger())
+        assert body == _SCRUB_INFO_HEADER + expected
+
+    @pytest.mark.parametrize("ext,opener", FORMATS)
+    def test_nothing_to_scrub_is_not_rewritten(self, tmp_path, ext, opener):
+        path = tmp_path / f"quiet.log{ext}"
+        with opener(path, 'wt') as f:
+            f.write("nothing sensitive on this line\n" * 200)
+        before = path.read_bytes()
+
+        _scrub(path)
+
+        assert path.read_bytes() == before
+
+    def test_ip_prelearn_gives_whole_file_semantics(self, tmp_path):
+        # A bare IP in the FIRST segment must map by the subnet declared only
+        # in the LAST segment — the IP learn pre-pass is what makes
+        # segment-wise replacement match whole-text two-pass semantics.
+        # /16 on purpose: a /24 would coincide with default_infer_prefixlen
+        # and pass even without the pre-learn.
+        content = ("client 203.0.113.77 connected\n"
+                   + "nothing to see on this line\n" * 200
+                   + "route 203.0.0.0/16 via gateway\n")
+        path = tmp_path / "net.xz"
+        with lzma.open(path, 'wt') as f:
+            f.write(content)
+
+        _scrub(path)
+
+        with lzma.open(path, 'rt') as f:
+            body = f.read()
+        expected = _processor()._scrub_content(content, "net", _FakeLogger())
+        assert body == _SCRUB_INFO_HEADER + expected
+
+    def test_single_line_longer_than_a_segment(self, tmp_path):
+        line = "8.8.8.8 " + "x" * 5000 + "\n"
+        path = tmp_path / "oneline.xz"
+        with lzma.open(path, 'wt') as f:
+            f.write(line)
+
+        _scrub(path)
+
+        with lzma.open(path, 'rt') as f:
+            body = f.read()
+        assert "8.8.8.8" not in body
+        assert "x" * 5000 in body
+
+    def test_dry_run_learns_without_writing(self, tmp_path):
+        path = tmp_path / "big.xz"
+        with lzma.open(path, 'wt') as f:
+            f.write(self.LINES)
+        before = path.read_bytes()
+
+        fp = _processor()
+        fp.process_file(str(path), _FakeLogger(), False, dry_run=True)
+
+        assert path.read_bytes() == before
+        assert fp['ip'].mapping
+
+    def test_unpacked_writes_plain_with_header(self, tmp_path):
+        path = tmp_path / "big.gz"
+        with gzip.open(path, 'wt') as f:
+            f.write(self.LINES)
+
+        _scrub(path, decompress=True)
+
+        assert not path.exists()
+        body = (tmp_path / "big").read_text()
+        assert body.startswith("#---")
+        assert "198.51." not in body
+
+    @pytest.mark.parametrize("ext,opener", [('.gz', gzip.open), ('.xz', lzma.open)])
+    def test_truncated_stream_is_still_salvaged(self, tmp_path, ext, opener):
+        path = tmp_path / f"cut{ext}"
+        with opener(path, 'wt') as f:
+            f.write("8.8.8.8 request line\n" * 50000)
+        data = path.read_bytes()
+        path.write_bytes(data[:len(data) // 2])
+
+        logger = _scrub(path)
+
+        assert compression_magic_ok(str(path), ext)
+        with opener(path, 'rt') as f:
+            body = f.read()
+        assert body.count("\n") > 100
+        assert "8.8.8.8" not in body
+        assert any("ends before its end-of-stream" in e for e in logger.errors)
+
+    def test_no_scrubtmp_left_behind(self, tmp_path):
+        path = tmp_path / "big.xz"
+        with lzma.open(path, 'wt') as f:
+            f.write(self.LINES)
+
+        _scrub(path)
+
+        assert [p.name for p in tmp_path.iterdir()] == ["big.xz"]
+
+
+class TestMemoryErrorIsNotTruncation:
+    def test_read_compressed_text_reraises(self, tmp_path):
+        path = tmp_path / "a.xz"
+        with lzma.open(path, 'wt') as f:
+            f.write("healthy stream\n")
+
+        class _Boom:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n=-1):
+                raise MemoryError
+
+        with pytest.raises(MemoryError):
+            read_compressed_text(str(path), '.xz', lambda p, m: _Boom())
 
 
 class TestReadCompressedText:

@@ -66,6 +66,26 @@ def test_product_default_not_learned_from_text():
     assert "uyuni-server" not in learned
 
 
+def test_syslog_counts_accumulate_across_segments():
+    """Segment-wise scans share one counts dict, so a host whose three
+    mentions straddle a segment boundary is still learned."""
+    from supportutils_scrub.hostname_scrubber import HostnameScrubber
+    seg_a = ("2026-07-14T02:05:01+00:00 custhost42 sshd[9]: session\n"
+             "2026-07-14T02:05:02+00:00 custhost42 sshd[9]: session\n")
+    seg_b = "2026-07-14T02:06:01+00:00 custhost42 sshd[9]: session\n"
+
+    # Thresholded per call, neither segment alone reaches three mentions.
+    assert "custhost42" not in HostnameScrubber.extract_hostnames_from_text(seg_a)
+
+    counts = {}
+    learned = set()
+    for seg in (seg_a, seg_b):
+        learned |= set(HostnameScrubber.extract_hostnames_from_text(
+            seg, syslog_counts=counts))
+    learned |= HostnameScrubber.syslog_hosts_from_counts(counts)
+    assert "custhost42" in learned
+
+
 def test_preserved_strings_never_scrubbed_even_from_legacy_mapping():
     """The absolute guarantee: uyuni-server/db/proxy and friends are never
     rewritten, even when a legacy shared-mapping file already contains them

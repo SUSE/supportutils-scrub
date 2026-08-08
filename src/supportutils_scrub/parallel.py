@@ -128,7 +128,15 @@ class _IPDiscoverCollector:
         self.results = {}
 
     def learn(self, text):
-        self.results[self.current] = self._ip.discover(text)
+        # Accumulate, not assign: large compressed files are streamed and
+        # learn() fires once per segment of the same file.
+        cidrs, tokens = self._ip.discover(text)
+        prev = self.results.get(self.current)
+        if prev is None:
+            self.results[self.current] = (cidrs, tokens)
+        else:
+            prev[0].extend(cidrs)
+            prev[1].extend(tokens)
 
     def scrub(self, text):
         return text

@@ -5,6 +5,7 @@ import bz2
 import gzip
 import lzma
 import re
+import shutil
 import time
 import zlib
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
@@ -26,6 +27,34 @@ _COMPRESS_MAGIC = {'.gz': b'\x1f\x8b', '.xz': b'\xfd7zXZ\x00', '.bz2': b'BZh'}
 # it is binary and must not be text-scrubbed.
 _TEXT_PROBE = 64 * 1024
 _READ_CHUNK = 1024 * 1024
+
+# Compressed payloads are scrubbed in line-aligned segments of this size, so
+# peak memory is bounded by the segment (times the few copies re.sub makes),
+# not by the uncompressed size. Compression ratios on rotated logs reach 28:1
+# — a 120 MB salt master .xz held 3.3 GB, which as one str plus per-scrubber
+# copies took a --jobs worker past 17 GB and the machine into the OOM killer.
+_SEG_BYTES = 32 * 1024 * 1024
+
+
+def _iter_line_segments(read, seg_bytes):
+    """Yield decompressed bytes from read(n) in line-aligned segments of
+    roughly seg_bytes. Splitting only at newlines keeps every scrubber's view
+    intact (all patterns match within one line) and can never split a UTF-8
+    sequence; a single line longer than a segment is yielded whole."""
+    carry = b''
+    while True:
+        block = read(seg_bytes)
+        if not block:
+            break
+        buf = carry + block
+        cut = buf.rfind(b'\n')
+        if cut == -1:
+            carry = buf
+            continue
+        yield buf[:cut + 1]
+        carry = buf[cut + 1:]
+    if carry:
+        yield carry
 
 
 def compressed_opener(base_name):
@@ -96,11 +125,17 @@ def _salvage_decompressed(path, ext):
                 out.append(dec.decompress(block))
                 if getattr(dec, 'eof', False):
                     break
+    except MemoryError:
+        # Out of memory is not stream damage: pretending it is would rewrite
+        # a healthy file from a partial (or empty) salvage.
+        raise
     except Exception:
         pass
     if ext == '.gz':
         try:
             out.append(dec.flush())
+        except MemoryError:
+            raise
         except Exception:
             pass
     return b''.join(out)
@@ -137,6 +172,11 @@ def read_compressed_text(path, ext, opener):
                     break
                 chunks.append(chunk)
         data = b''.join(chunks)
+    except MemoryError:
+        # Out of memory must never be mistaken for a damaged stream: the
+        # 'truncated' path rewrites the file from whatever salvage produced,
+        # which on a memory-tight machine would truncate a healthy log.
+        raise
     except Exception:
         # Damaged tail: keep what does decompress. The rest is unreadable for
         # every consumer anyway, and scrubbing the readable prefix beats
@@ -308,17 +348,24 @@ class FileProcessor:
         # dry_run: run scrubbers to populate mappings but never write or delete
         # files. Used by the parallel pre-pass to build IP/IPv6/MAC maps with
         # the exact same file handling as the real run.
+        #
+        # Returns False when the file needed a scrubbed rewrite and did not
+        # get one (write failure, damaged beyond salvage, processing error) —
+        # its content may still hold unscrubbed data. Deliberate leaves
+        # (binary payloads, sa/obj removal, nothing matched) return True.
+        # Tree-walking callers ignore the result and rely on the logged
+        # warnings; file mode uses it to refuse shipping a bad lone output.
         base_name = os.path.basename(file_path)
 
         if BINARY_SA_PATTERN.match(base_name) or BINARY_OBJ_PATTERN.match(base_name):
             if dry_run:
-                return
+                return True
             print(f"        {base_name} [binary] (removed)")
             try:
                 os.remove(file_path)
             except Exception as e:
                 print(f"[!] Failed to remove binary file {file_path}: {e} ")
-            return
+            return True
 
         is_sar_xz_file   = bool(SAR_XZ_PATTERN.match(base_name))
         is_sar_plain_file = bool(SAR_PLAIN_PATTERN.match(base_name))
@@ -353,13 +400,15 @@ class FileProcessor:
 
             elif compressed_opener(base_name):
                 ext, opener = compressed_opener(base_name)
-                self._process_compressed(file_path, base_name, ext, opener, logger, dry_run)
+                return self._process_compressed(file_path, base_name, ext, opener, logger, dry_run)
 
             else:
-                self._process_plain(file_path, base_name, logger, dry_run)
+                return self._process_plain(file_path, base_name, logger, dry_run)
 
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {str(e)}")
+            return False
+        return True
 
     def _process_plain(self, file_path, base_name, logger, dry_run):
         with open(file_path, mode="r", encoding="utf-8", errors="ignore") as file:
@@ -370,28 +419,27 @@ class FileProcessor:
         if scrubbed_text != original_text and not dry_run:
             with open(file_path, mode="w", encoding="utf-8") as out_f:
                 out_f.write(_SCRUB_INFO_HEADER + scrubbed_text)
+        return True
 
     def _process_compressed(self, file_path, base_name, ext, opener, logger, dry_run):
         """Scrub a single-file compressed log, keeping name and content in
         agreement: what goes back under a .gz/.xz/.bz2 name is always a valid
-        stream of that format, or the file is not rewritten at all."""
-        original_text, status = read_compressed_text(file_path, ext, opener)
+        stream of that format, or the file is not rewritten at all.
+
+        Payloads larger than one segment are scrubbed in line-aligned
+        segments (_SEG_BYTES), so peak memory is bounded by the segment size
+        rather than the uncompressed size (see the _SEG_BYTES comment)."""
         # The parallel discovery pre-pass sees every file a second time; only
         # the pass that actually writes reports what it found.
         warn = logger.error if not dry_run else lambda msg: None
 
-        if status == 'binary':
-            warn(f"{base_name}: {ext[1:]} payload is not text — left unchanged "
-                 f"(text-scrubbing it would destroy the payload)")
-            return
-
-        if status == 'not-a-stream':
+        if not compression_magic_ok(file_path, ext):
             if looks_binary(file_path):
                 # Some other binary format under this name. Rewriting it as
                 # text would destroy it, so leave it for the tree-wide
                 # mismatch report to name.
                 warn(f"{base_name}: neither a {ext[1:]} stream nor text — left unchanged")
-                return
+                return True
             # The extension promises a stream the content does not have. Scrub
             # it as the plain text it really is, then drop the misleading
             # extension so consumers that follow the name can read it.
@@ -399,29 +447,252 @@ class FileProcessor:
                  f"scrubbed as plain text")
             self._process_plain(file_path, base_name, logger, dry_run)
             if dry_run:
-                return
+                return True
             plain_path = file_path[:-len(ext)]
             if os.path.exists(plain_path):
                 logger.error(f"{base_name}: misleading name kept, "
                              f"{os.path.basename(plain_path)} already exists")
             else:
                 os.rename(file_path, plain_path)
-            return
+            return True
 
-        if status == 'truncated' and not original_text:
+        outcome = self._scrub_compressed_stream(file_path, base_name, ext,
+                                                opener, logger, dry_run, warn)
+        if outcome == 'damaged':
+            return self._scrub_compressed_salvage(file_path, base_name, ext,
+                                                  opener, logger, dry_run, warn)
+        return outcome != 'failed'
+
+    def _scrub_compressed_stream(self, file_path, base_name, ext, opener,
+                                 logger, dry_run, warn):
+        """Scrub a healthy compressed stream, segment by segment. Returns
+        'done', 'damaged' when the stream ends before its end-of-stream
+        marker — the caller then redoes the file from what salvage recovers —
+        or 'failed' when a scrubbed rewrite was needed but could not be
+        written (the original is left in place, unscrubbed).
+
+        MemoryError is never swallowed here: running out of memory must not
+        be mistaken for a damaged stream, or a healthy file would be
+        rewritten from a partial salvage."""
+        stripped = base_name[:-len(ext)]
+        try:
+            with opener(file_path, 'rb') as f:
+                first_seg = f.read(_SEG_BYTES)
+                more = f.read(1)
+        except MemoryError:
+            raise
+        except Exception:
+            return 'damaged'
+
+        if b'\x00' in first_seg[:_TEXT_PROBE]:
+            warn(f"{base_name}: {ext[1:]} payload is not text — left unchanged "
+                 f"(text-scrubbing it would destroy the payload)")
+            return 'done'
+
+        if not more:
+            # The whole payload fits in one segment (nearly every file):
+            # whole-text scrub, semantics identical to the pre-streaming code.
+            text = first_seg.decode('utf-8', 'surrogateescape')
+            del first_seg
+            scrubbed = self._scrub_content(text, stripped, logger)
+            ok = self._finish_compressed(file_path, base_name, ext, opener,
+                                         logger, dry_run, text, scrubbed,
+                                         truncated=False)
+            return 'done' if ok else 'failed'
+        del first_seg
+
+        damage = []
+
+        def _guarded_read(f):
+            def _read(n):
+                try:
+                    return f.read(n)
+                except MemoryError:
+                    raise
+                except Exception:
+                    damage.append(True)
+                    return b''
+            return _read
+
+        # Pass 1 — learn. In learn_only mode every scrubber learns from every
+        # segment. Otherwise only the IP scrubber pre-learns: its scrub is
+        # two-pass (learn subnets, then replace), so segment-wise replacement
+        # must see the whole payload's subnets first to make the decisions a
+        # whole-file scrub would. Discover over all segments, then one replay
+        # — replaying per segment would allocate a bare IP's inferred subnet
+        # before a later segment's CIDR for it is known (the same
+        # discover-then-replay split the --jobs pre-pass uses). Other
+        # learners are deliberately left out: in parallel workers only
+        # deterministic allocators may learn, and the serial counter-based
+        # ones meet first occurrences in segment order anyway.
+        ip = self._by_name.get('ip')
+        pre_learn = (not self.learn_only and ip is not None
+                     and _CONFIG_GATES['ip'](self.config)
+                     and not (ip.skip_files and stripped in ip.skip_files))
+        if self.learn_only or pre_learn:
+            cidrs, tokens = [], []
+            with opener(file_path, 'rb') as f:
+                for seg in _iter_line_segments(_guarded_read(f), _SEG_BYTES):
+                    text = seg.decode('utf-8', 'surrogateescape')
+                    if self.learn_only:
+                        self._scrub_content(text, stripped, logger)
+                    else:
+                        try:
+                            c, t = ip.discover(text)
+                            cidrs.extend(c)
+                            tokens.extend(t)
+                        except Exception as e:
+                            logger.error(f"ip discover failed for {base_name}: {e}")
+            if damage:
+                return 'damaged'
+            if pre_learn:
+                try:
+                    ip.replay(cidrs, tokens)
+                except Exception as e:
+                    logger.error(f"ip replay failed for {base_name}: {e}")
+        if self.learn_only:
+            return 'done'
+
+        # Pass 2 — scrub and write. The temp file gets the info header up
+        # front; if nothing changed it is simply discarded, so an untouched
+        # file stays byte-identical.
+        plain_path = file_path[:-len(ext)]
+        # A plain sibling (boot.log next to boot.log.gz) must not be
+        # overwritten by the decompressed copy; keep such files compressed.
+        to_plain = self.decompress and not os.path.exists(plain_path)
+        tmp = (plain_path if to_plain else file_path) + '.scrubtmp'
+        changed = False
+        wrote = 0
+        out_fh = gz_inner = None
+        try:
+            try:
+                if not dry_run:
+                    if to_plain:
+                        out_fh = open(tmp, 'w', encoding='utf-8',
+                                      errors='surrogateescape')
+                        write = out_fh.write
+                    elif ext == '.gz':
+                        # gzip stores the original name in the header; writing
+                        # through gzip.open(tmp) would record the temp name.
+                        out_fh = open(tmp, 'wb')
+                        gz_inner = gzip.GzipFile(
+                            filename=base_name[:-len(ext)], mode='wb',
+                            fileobj=out_fh)
+                        write = gz_inner.write
+                    else:
+                        out_fh = opener(tmp, 'wb')
+                        write = out_fh.write
+                    if not to_plain:
+                        header = _SCRUB_INFO_HEADER.encode('utf-8')
+                        write(header)
+                        wrote += len(header)
+
+                with opener(file_path, 'rb') as f:
+                    for seg in _iter_line_segments(_guarded_read(f), _SEG_BYTES):
+                        text = seg.decode('utf-8', 'surrogateescape')
+                        scrubbed = self._scrub_content(text, stripped, logger)
+                        if scrubbed != text:
+                            changed = True
+                        del text
+                        if dry_run:
+                            continue
+                        if to_plain:
+                            write(scrubbed)
+                        else:
+                            data = scrubbed.encode('utf-8', 'surrogateescape')
+                            write(data)
+                            wrote += len(data)
+            finally:
+                if gz_inner is not None:
+                    gz_inner.close()
+                if out_fh is not None:
+                    out_fh.close()
+
+            if damage:
+                self._remove_quietly(tmp)
+                return 'damaged'
+            if dry_run:
+                return 'done'
+
+            if to_plain:
+                # --unpacked always converts; the header is prepended only
+                # when something was scrubbed, as in the whole-text path.
+                with open(tmp, 'r', encoding='utf-8',
+                          errors='surrogateescape') as src, \
+                     open(plain_path, 'w', encoding='utf-8',
+                          errors='surrogateescape') as dst:
+                    if changed:
+                        dst.write(_SCRUB_INFO_HEADER)
+                    shutil.copyfileobj(src, dst)
+                os.remove(tmp)
+                os.remove(file_path)
+                return 'done'
+
+            if not changed:
+                os.remove(tmp)
+                return 'done'
+
+            # Prove the tmp is a complete readable stream before it replaces
+            # the original — same contract as write_compressed_text.
+            read_back = 0
+            with opener(tmp, 'rb') as check:
+                while True:
+                    chunk = check.read(_READ_CHUNK)
+                    if not chunk:
+                        break
+                    read_back += len(chunk)
+            if read_back != wrote:
+                raise ValueError(f"read back {read_back} of {wrote} bytes")
+            if not compression_magic_ok(tmp, ext):
+                raise ValueError(f"result is not a {ext[1:]} stream")
+            os.replace(tmp, file_path)
+            return 'done'
+        except MemoryError:
+            self._remove_quietly(tmp)
+            raise
+        except Exception as e:
+            self._remove_quietly(tmp)
+            logger.error(f"{base_name}: left unchanged, could not write a "
+                         f"valid {ext[1:]} stream: {e}")
+            return 'failed'
+
+    @staticmethod
+    def _remove_quietly(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    def _scrub_compressed_salvage(self, file_path, base_name, ext, opener,
+                                  logger, dry_run, warn):
+        """Damaged stream: keep what still decompresses and rewrite from it,
+        whole. Salvage is bounded by what the broken stream yields and damage
+        is rare, so the in-memory path is acceptable here."""
+        data = _salvage_decompressed(file_path, ext)
+        if not data:
             warn(f"{base_name}: {ext[1:]} stream is damaged and nothing could be "
                  f"decompressed — left as it is, its content is NOT scrubbed")
-            return
-        if status == 'truncated':
-            warn(f"{base_name}: {ext[1:]} stream ends before its end-of-stream "
-                 f"marker — rewritten from the {len(original_text)} bytes that could "
-                 f"be salvaged, the damaged tail is dropped")
+            return False
+        if b'\x00' in data[:_TEXT_PROBE]:
+            warn(f"{base_name}: {ext[1:]} payload is not text — left unchanged "
+                 f"(text-scrubbing it would destroy the payload)")
+            return True
+        text = data.decode('utf-8', 'surrogateescape')
+        del data
+        warn(f"{base_name}: {ext[1:]} stream ends before its end-of-stream "
+             f"marker — rewritten from the {len(text)} bytes that could "
+             f"be salvaged, the damaged tail is dropped")
+        scrubbed = self._scrub_content(text, base_name[:-len(ext)], logger)
+        return self._finish_compressed(file_path, base_name, ext, opener, logger,
+                                       dry_run, text, scrubbed, truncated=True)
 
-        # Strip the compression extension so per-file skip lists
-        # (e.g. MAC skipping modules.txt) still apply.
-        scrubbed_text = self._scrub_content(original_text, base_name[:-len(ext)], logger)
+    def _finish_compressed(self, file_path, base_name, ext, opener, logger,
+                           dry_run, original_text, scrubbed_text, truncated):
+        """Whole-text write-out shared by the single-segment and salvage
+        paths — the historical semantics, unchanged. Returns False when the
+        rewrite was needed but could not be written."""
         if dry_run:
-            return
+            return True
 
         plain_path = file_path[:-len(ext)]
         # A plain sibling (boot.log next to boot.log.gz) must not be
@@ -433,12 +704,14 @@ class FileProcessor:
                       errors="surrogateescape") as out_f:
                 out_f.write(header + scrubbed_text)
             os.remove(file_path)
-        elif scrubbed_text != original_text or status == 'truncated':
+        elif scrubbed_text != original_text or truncated:
             # A damaged file is rewritten even when nothing matched: what ships
             # is then a complete stream of content the scrubbers have seen, not
             # a tail no consumer can read and no scrubber has checked.
-            write_compressed_text(file_path, ext, opener,
-                                  _SCRUB_INFO_HEADER + scrubbed_text, logger, base_name)
+            return write_compressed_text(file_path, ext, opener,
+                                         _SCRUB_INFO_HEADER + scrubbed_text,
+                                         logger, base_name)
+        return True
 
     def _scrub_content(self, text, basename, logger):
         if self.learn_only:

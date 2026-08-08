@@ -370,7 +370,10 @@ def process_one_file(file_path, current_mappings, args, config, keyword_scrubber
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, scrubbed_output_name(base))
-    shutil.copyfile(file_path, out_path)
+    if os.path.abspath(out_path) != os.path.abspath(file_path):
+        # Equal when the input already carries _scrubbed: re-scrub in place
+        # instead of letting copyfile fail on the same file.
+        shutil.copyfile(file_path, out_path)
 
     serial_scrubber = SerialScrubber(mappings=current_mappings)
     serial_scrubber.serial_dict = dict(current_mappings.get('serial', {}))
