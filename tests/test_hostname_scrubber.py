@@ -97,6 +97,31 @@ def test_preserved_strings_not_corrupted_by_substring_hosts():
     assert "uyuni-common-libs installed" in out         # package names intact
 
 
+def test_literal_sentinel_in_input_does_not_break_restore():
+    """A literal \\x00PRESERVEDn\\x00 in the input (NULs can reach scrub():
+    looks_binary probes only the file head, chunked --jobs files not at all)
+    must not raise IndexError in the single-pass restore — that would void
+    the whole hostname pass for the file."""
+    from supportutils_scrub.hostname_scrubber import HostnameScrubber
+    s = HostnameScrubber({"server": "hostname_0"})
+    text = "uyuni-server up; \x00PRESERVED99\x00 raw; server down"
+    out = s.scrub(text)
+    assert "uyuni-server up" in out
+    assert "\x00PRESERVED99\x00 raw" in out              # left as-is, no crash
+    assert "hostname_0 down" in out
+
+
+def test_dense_preserved_occurrences_restored_exactly():
+    """Many sentinels (the case the O(text) restore exists for) all restore
+    to their own occurrence, including >9 indices where a greedy-digit bug
+    would garble PRESERVED1 vs PRESERVED10."""
+    from supportutils_scrub.hostname_scrubber import HostnameScrubber
+    s = HostnameScrubber({"server": "hostname_0"})
+    line = "uyuni-server ok; server bad; "
+    out = s.scrub(line * 25)
+    assert out == "uyuni-server ok; hostname_0 bad; " * 25
+
+
 def test_preserved_strings_case_insensitive():
     from supportutils_scrub.hostname_scrubber import HostnameScrubber
     s = HostnameScrubber({"UYUNI-SERVER": "hostname_9"})

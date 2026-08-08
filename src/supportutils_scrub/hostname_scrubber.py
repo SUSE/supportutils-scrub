@@ -89,6 +89,11 @@ class HostnameScrubber(Scrubber):
     # Occurrences are masked with sentinels before substitution and restored
     # after. The mask pattern is compiled once per process.
     _PRESERVE_RE = None
+    # Restoring with one str.replace per saved occurrence is O(occurrences x
+    # text length) — a log dense in preserved names (a uyuni container's
+    # boot.txt mentions uyuni-server thousands of times) takes hours on a
+    # large file. A single regex pass over the sentinels is O(text) instead.
+    _SENTINEL_RE = re.compile('\x00PRESERVED(\\d+)\x00')
 
     @classmethod
     def _preserve_re(cls):
@@ -109,11 +114,17 @@ class HostnameScrubber(Scrubber):
                 saved.append(m.group(0))
                 return f"\x00PRESERVED{len(saved) - 1}\x00"
             text = pre.sub(_mask, text)
-        text = self._re.sub(lambda m: self._lookup[m.group(0).lower()], text)
-        for i, original in enumerate(saved):
-            text = text.replace(f"\x00PRESERVED{i}\x00", original)
-        return text
-    
+            text = self._re.sub(lambda m: self._lookup[m.group(0).lower()], text)
+
+            # A literal sentinel already present in the input (NUL bytes do
+            # reach scrub(): looks_binary probes only the file head, and the
+            # --jobs chunk path never probes at all) must not raise — an
+            # IndexError here would void the whole hostname pass for the file.
+            def _restore(m):
+                i = int(m.group(1))
+                return saved[i] if i < len(saved) else m.group(0)
+            return self._SENTINEL_RE.sub(_restore, text)
+        return self._re.sub(lambda m: self._lookup[m.group(0).lower()], text)
 
 
     @staticmethod
