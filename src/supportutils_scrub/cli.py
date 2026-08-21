@@ -197,7 +197,7 @@ def main():
 
     is_stdin = (len(paths) == 0 and not sys.stdin.isatty()) \
                or (len(paths) == 1 and paths[0] == '-')
-    is_folder = len(paths) == 1 and os.path.isdir(paths[0])
+    is_folder = len(paths) >= 1 and all(os.path.isdir(p) for p in paths)
     is_file = (len(paths) == 1
                and os.path.isfile(paths[0])
                and not is_archive_path(paths[0]))

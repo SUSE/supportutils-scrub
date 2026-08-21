@@ -65,13 +65,21 @@ def run_folder_mode(args, logger):
         print("[!] Keyword obfuscation disabled (no keywords loaded)")
 
     timer = PhaseTimer(echo=verbose_flag)
+    # Several directories in one run share one pool and one mapping: the
+    # discover/replay pre-pass coordinates every fake across all of them,
+    # which separate concurrent runs could not (each would allocate from
+    # the same pools blind and the last mapping written would win).
+    scrubbed_paths = []
     try:
-        report_files, scrubbed_path = copy_folder_to_scrubbed(args.supportconfig_path[0])
-        if not quiet:
-            print(f"[✓] Folder copied to: {scrubbed_path}")
+        for src_path in args.supportconfig_path:
+            _files, sp = copy_folder_to_scrubbed(src_path)
+            scrubbed_paths.append(sp)
+            if not quiet:
+                print(f"[✓] Folder copied to: {sp}")
     except Exception as e:
         print(f"[!] Error copying folder: {e}")
         raise
+    scrubbed_path = scrubbed_paths[0]
     timer.mark('copy')
 
     def _cleanup_on_signal(signum, frame):
@@ -84,18 +92,20 @@ def run_folder_mode(args, logger):
                     child.terminate()
                 except Exception:
                     pass
-            sys.stderr.write(f"\n[!] Interrupted — removing partial output {scrubbed_path}\n")
+            sys.stderr.write(f"\n[!] Interrupted — removing partial output {scrubbed_paths}\n")
             sys.stderr.flush()
-            if os.path.exists(scrubbed_path):
-                shutil.rmtree(scrubbed_path, ignore_errors=True)
+            for sp in scrubbed_paths:
+                if os.path.exists(sp):
+                    shutil.rmtree(sp, ignore_errors=True)
         except Exception:
             pass
         os._exit(1)
     signal.signal(signal.SIGINT,  _cleanup_on_signal)
     signal.signal(signal.SIGTERM, _cleanup_on_signal)
 
-    if expand_nested_archives(scrubbed_path, logger):
-        report_files = walk_supportconfig(scrubbed_path)
+    for sp in scrubbed_paths:
+        expand_nested_archives(sp, logger)
+    report_files = [f for sp in scrubbed_paths for f in walk_supportconfig(sp)]
     timer.mark('unpack-nested')
 
     is_sc = is_supportconfig_folder(report_files)
@@ -117,7 +127,8 @@ def run_folder_mode(args, logger):
     # adopted-node names live in the tree structure, not the primary
     # network.txt; harvested regardless of is_sc so plain crm_report/hb_report
     # bundles get their node dirs mapped too (collector-adoption bypass fix)
-    additional_hostnames.extend(extract_hostnames_from_adopted_paths(scrubbed_path))
+    for sp in scrubbed_paths:
+        additional_hostnames.extend(extract_hostnames_from_adopted_paths(sp))
     hostname_dict = extract_hostnames(scan_files, additional_hostnames, mappings)
 
     want_report = bool(getattr(args, 'report', False)) or bool(getattr(args, 'report_file', None))
@@ -130,8 +141,10 @@ def run_folder_mode(args, logger):
     # Rename regardless of is_sc: --hostname/--domain seeding must scrub
     # path names of plain folders (hb_reports etc.) too, not only
     # supportconfigs. No-op when nothing was learned or seeded.
-    scrubbed_path = rename_extraction_paths(scrubbed_path, hostname_dict, domain_dict=domain_dict)
-    report_files = walk_supportconfig(scrubbed_path)
+    scrubbed_paths = [rename_extraction_paths(sp, hostname_dict, domain_dict=domain_dict)
+                      for sp in scrubbed_paths]
+    scrubbed_path = scrubbed_paths[0]
+    report_files = [f for sp in scrubbed_paths for f in walk_supportconfig(sp)]
 
     serial_scrubber = None
     if is_sc:
@@ -240,7 +253,8 @@ def run_folder_mode(args, logger):
             dataset_dict[_det.KEY_FIELD] = _det.current_key()
         combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
     timer.mark('scrub')
-    report_format_mismatches(scrubbed_path)
+    for sp in scrubbed_paths:
+        report_format_mismatches(sp)
     if verbose_flag and file_times:
         report = slowest_files_report(file_times)
         if report:
@@ -285,7 +299,8 @@ def run_folder_mode(args, logger):
     print(f"| Cloud tokens obfuscated   : {counts.get('cloud_token', 0)}", file=out)
     print(f"| Total obfuscation entries : {total_obfuscations}", file=out)
     if not quiet:
-        print(f"| Output folder             : {scrubbed_path}", file=out)
+        for sp in scrubbed_paths:
+            print(f"| Output folder             : {sp}", file=out)
     if saved_mapping_path:
         print(f"| Mapping file              : {saved_mapping_path}", file=out)
         if getattr(args, '_enc_passphrase', None):
@@ -297,12 +312,12 @@ def run_folder_mode(args, logger):
 
     verify_findings = []
     if getattr(args, 'verify', False):
-        original_path = args.supportconfig_path[0]
-        verify_findings = verify_scrubbed_folder(
-            scrubbed_path, combined_mappings_for_verify,
-            original_folder=original_path, config=config,
-            check_allowlist=True, check_patterns=True,
-            check_identity=True, jobs=getattr(args, 'jobs', 1))
+        for original_path, sp in zip(args.supportconfig_path, scrubbed_paths):
+            verify_findings += verify_scrubbed_folder(
+                sp, combined_mappings_for_verify,
+                original_folder=original_path, config=config,
+                check_allowlist=True, check_patterns=True,
+                check_identity=True, jobs=getattr(args, 'jobs', 1))
         vout = out
         if verify_findings:
             print(f"[!] VERIFY: {len(verify_findings)} potential leak(s) found in scrubbed output:", file=vout)
@@ -319,18 +334,22 @@ def run_folder_mode(args, logger):
         print(timer.summary(), file=sys.stderr)
 
     if quiet:
-        print(scrubbed_path)
+        for sp in scrubbed_paths:          # one line per input, input order
+            print(sp)
 
     if report_path:
-        folder_report = [{'input': os.path.abspath(args.supportconfig_path[0]),
-                          'output': os.path.abspath(scrubbed_path),
-                          'files_total': len(report_files)}]
+        folder_report = [{'input': os.path.abspath(src_path),
+                          'output': os.path.abspath(sp),
+                          'files_total': len(walk_supportconfig(sp))}
+                         for src_path, sp in zip(args.supportconfig_path, scrubbed_paths)]
         write_report(report_path, folder_report, SCRIPT_VERSION,
                      verify_findings=verify_findings)
 
     record = audit_record('folder',
-        inputs  = [{'path': os.path.abspath(args.supportconfig_path[0]), 'sha256': 'n/a (directory)'}],
-        outputs = [{'path': os.path.abspath(scrubbed_path), 'sha256': 'n/a (directory)'}],
+        inputs  = [{'path': os.path.abspath(p), 'sha256': 'n/a (directory)'}
+                   for p in args.supportconfig_path],
+        outputs = [{'path': os.path.abspath(sp), 'sha256': 'n/a (directory)'}
+                   for sp in scrubbed_paths],
         mapping_path = saved_mapping_path, args = args, version = SCRIPT_VERSION)
     write_audit_log(audit_path, record)
 
