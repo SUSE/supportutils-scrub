@@ -89,7 +89,11 @@ def walk_supportconfig(folder_path):
     """ Walk through the Supportconfig folder and return a list of all files """
     report_files = []
     for root, dirs, files in os.walk(folder_path):
-        for file in files:
+        # Sorted: fake values are allocated in first-seen order, and two
+        # copies of one tree list their entries in different inode orders.
+        # A sorted walk makes the mapping a pure function of the content.
+        dirs.sort()
+        for file in sorted(files):
             report_files.append(os.path.join(root, file))
     return report_files
 
