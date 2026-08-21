@@ -1,5 +1,6 @@
 # pipeline.py — shared extraction, mapping, and scrubber-init helpers
 
+from supportutils_scrub.processor import _iter_line_segments
 import os
 import sys
 import re
@@ -204,16 +205,29 @@ def extract_usernames(report_files, additional_usernames, mappings):
     return username_dict
 
 
+#: Pre-scans read in line-aligned segments of this size: every discovery
+#: pattern matches within one line, and a multi-hundred-MB pacemaker.log no
+#: longer lands whole in the parent's memory.
+_PRESCAN_SEG_BYTES = 32 * 1024 * 1024
+
+
+def _pre_scan_file(scrubber, fpath):
+    try:
+        with open(fpath, 'rb') as f:
+            for seg in _iter_line_segments(f.read, _PRESCAN_SEG_BYTES):
+                scrubber.pre_scan(seg.decode('utf-8', 'ignore'))
+    except MemoryError:
+        raise
+    except Exception:
+        pass
+
+
 def extract_serials(report_files, mappings):
     scrubber = SerialScrubber(mappings=mappings)
     target_files = {'basic-environment.txt', 'boot.txt', 'hardware.txt'}
     for fpath in report_files:
         if os.path.basename(fpath) in target_files:
-            try:
-                with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
-                    scrubber.pre_scan(f.read())
-            except Exception:
-                pass
+            _pre_scan_file(scrubber, fpath)
     return scrubber.serial_dict
 
 
@@ -231,11 +245,7 @@ def extract_sids(report_files, mappings):
         return n in named or 'sap' in n or 'crm' in n or 'hana' in n or 'pacemaker' in n
     for fpath in report_files:
         if _relevant(os.path.basename(fpath)):
-            try:
-                with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
-                    scrubber.pre_scan(f.read())
-            except Exception:
-                pass
+            _pre_scan_file(scrubber, fpath)
     return scrubber.sid_dict
 
 

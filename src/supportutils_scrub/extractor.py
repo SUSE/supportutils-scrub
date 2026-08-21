@@ -190,6 +190,68 @@ def extract_xz_archive(archive_path, logger, extract_base=None):
 
     return report_files, clean_folder_path
 
+# Extraction through a multi-threaded decompressor when one is installed:
+# Python's lzma/gzip/bz2 modules are single-threaded, and on a 128-core box
+# the extract phase ran on one of them (22 s p99) while the repack already
+# streamed through `xz -T0`. The tar is parsed by tarfile in stream mode, so
+# wrapper stripping and the traversal guard are the same code as before.
+_EXTERNAL_DECOMPRESS = True
+_DECOMPRESSORS = {
+    'r:xz': (['xz', '-T0', '-dc'], ['xz']),
+    'r:gz': (['pigz', '-dc'], ['pigz']),
+    'r:bz2': (['pbzip2', '-dc'], ['pbzip2']),
+}
+
+
+def _decompressor_cmd(mode):
+    """The external decompressor command for `mode`, or None."""
+    if not _EXTERNAL_DECOMPRESS:
+        return None
+    entry = _DECOMPRESSORS.get(mode)
+    if not entry:
+        return None
+    cmd, need = entry
+    return cmd if all(shutil.which(b) for b in need) else None
+
+
+def _stream_members(archive_path, cmd):
+    """Yield (tar, member) over a tar stream fed by `cmd`; the tar object is
+    needed to extract the current member. Caller consumes strictly in order."""
+    with open(archive_path, 'rb') as src:
+        proc = subprocess.Popen(cmd, stdin=src, stdout=subprocess.PIPE)
+        try:
+            with tarfile.open(fileobj=proc.stdout, mode='r|') as tar:
+                for member in tar:
+                    yield tar, member
+        finally:
+            proc.stdout.close()
+            if proc.wait() != 0:
+                raise RuntimeError(f"{cmd[0]} exited with status {proc.returncode}")
+
+
+def _extract_streaming(archive_path, cmd, clean_folder_path, clean_folder_name,
+                       tar_extract_base):
+    """Two streamed passes: the first learns the member list (the wrapper
+    decision needs all of it), the second extracts. Decompression runs in
+    the external tool, multi-threaded, both times."""
+    members = [m for _tar, m in _stream_members(archive_path, cmd)]
+    top_level = _common_top_level(members)
+    for tar, member in _stream_members(archive_path, cmd):
+        if member.issym() or member.islnk() or member.isdir():
+            continue
+        relative_path = _member_relative_path(member, top_level)
+        if not relative_path:
+            continue
+        if not _is_safe_path(clean_folder_path, relative_path):
+            print(f"[!] Blocked unsafe path in archive: {member.name}")
+            continue
+        member.name = os.path.join(clean_folder_name, relative_path)
+        try:
+            tar.extract(member, path=tar_extract_base)
+        except Exception as e:
+            logging.warning(f"Skipping {member.name}: {e}")
+
+
 def extract_tgz_archive(archive_path, logger, extract_base=None, mode="r:gz"):
     """Extract a tar archive (gz/bz2/xz per `mode`) and return report files."""
     archive_dir = os.path.dirname(archive_path)
@@ -207,6 +269,23 @@ def extract_tgz_archive(archive_path, logger, extract_base=None, mode="r:gz"):
         shutil.rmtree(clean_folder_path)
 
     os.makedirs(clean_folder_path, exist_ok=True)
+
+    cmd = _decompressor_cmd(mode)
+    if cmd:
+        try:
+            _extract_streaming(archive_path, cmd, clean_folder_path,
+                               clean_folder_name, tar_extract_base)
+            report_files = walk_supportconfig(clean_folder_path)
+            print(f"[✓] Archive extracted ({cmd[0]}, multi-threaded) to: "
+                  f"{clean_folder_path}")
+            return report_files, clean_folder_path
+        except Exception as e:
+            # the Python path below is the fallback for anything the stream
+            # cannot do; start over from an empty folder
+            logging.warning(f"streaming extraction failed ({e}); "
+                            "falling back to the Python extractor")
+            shutil.rmtree(clean_folder_path, ignore_errors=True)
+            os.makedirs(clean_folder_path, exist_ok=True)
 
     with tarfile.open(archive_path, mode) as tar:
         members = tar.getmembers()
