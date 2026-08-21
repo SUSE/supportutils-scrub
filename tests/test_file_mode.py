@@ -173,3 +173,16 @@ def test_unpacked_in_place_refused(tmp_path):
 
     assert e.value.code == 1
     assert path.read_bytes() == before
+
+
+def test_lone_sap_log_loses_its_sid_like_it_would_inside_a_bundle(tmp_path):
+    """The file entry point had no Serial/SID scrubber: the same SAP log
+    scrubbed alone kept its SID while inside a bundle it lost it."""
+    path = tmp_path / "sapstartsrv.log"
+    path.write_text("starting SAPPRD instance for /usr/sap/PRD/SYS by prdadm\n")
+
+    _run(path, tmp_path)
+
+    body = (tmp_path / "sapstartsrv_scrubbed.log").read_text()
+    assert "PRD" not in body
+    assert "prdadm" not in body

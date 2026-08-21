@@ -14,6 +14,8 @@ from supportutils_scrub.auth_scrubber import AuthScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
+from supportutils_scrub.serial_scrubber import SerialScrubber
+from supportutils_scrub.sid_scrubber import SIDScrubber
 from supportutils_scrub.processor import (
     FileProcessor, compressed_opener, scrubbed_output_name,
     strip_compression_ext, compression_magic_ok, looks_binary,
@@ -23,6 +25,7 @@ from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers, scrub_name,
     extract_and_map_domains, extract_hostnames, extract_usernames,
     dataset_paths,
+    extract_serials, extract_sids,
 )
 from supportutils_scrub.audit import (
     save_mappings, print_enc_note, sha256_file, audit_record, write_audit_log,
@@ -130,6 +133,16 @@ def run_file_mode(args, logger):
     # FileProcessor(decompress=True) converts it and drops the extension.
     output_path = os.path.join(os.path.dirname(input_path), scrubbed_output_name(out_base))
 
+    # Serial numbers and SAP SIDs, exactly as the folder and archive chains
+    # do: this entry point had silently dropped both, and a lone SAP log
+    # scrubbed here kept its SID while the same file inside a bundle lost it.
+    serial_dict = extract_serials([input_path], mappings)
+    serial_scrubber = SerialScrubber(mappings=mappings)
+    serial_scrubber.serial_dict = serial_dict
+    sid_dict = extract_sids([input_path], mappings)
+    sid_scrubber = SIDScrubber(mappings=mappings)
+    sid_scrubber.sid_dict = sid_dict
+
     email_scrubber = EmailScrubber(mappings=mappings)
     username_scrubber = UsernameScrubber(username_dict)
     scrubbers = [
@@ -145,6 +158,7 @@ def run_file_mode(args, logger):
         LdapDnScrubber(mappings=mappings),
         username_scrubber,
         PasswordScrubber(mappings=mappings), CloudTokenScrubber(mappings=mappings),
+        serial_scrubber, sid_scrubber,
     ]
     scrubbers = [s for s in scrubbers if s is not None]
 
