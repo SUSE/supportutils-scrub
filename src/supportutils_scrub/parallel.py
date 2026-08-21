@@ -49,7 +49,10 @@ from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.serial_scrubber import SerialScrubber
 from supportutils_scrub.sid_scrubber import SIDScrubber
-from supportutils_scrub.processor import (
+import gzip
+import subprocess
+from supportutils_scrub.processor import (compressed_opener, compression_magic_ok,
+                                          _SCRUB_INFO_HEADER as _HEADER,
     FileProcessor, BINARY_SA_PATTERN, BINARY_OBJ_PATTERN,
     SAR_XZ_PATTERN, SAR_PLAIN_PATTERN, _SCRUB_INFO_HEADER,
     compressed_opener,
@@ -59,6 +62,13 @@ from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 _BATCHES_PER_WORKER = 8   # small-file tasks per worker (verify uses 4)
 _CHUNK_THRESHOLD = 32 * 1024 * 1024
 _CHUNK_MIN = 8 * 1024 * 1024
+# A compressed single-file log above this many bytes ON DISK is staged to a
+# plain temporary file and scrubbed across the pool like any big file. Below
+# it the in-worker streaming path (one task) is cheaper than the staging.
+_COMPRESSED_CHUNK_THRESHOLD = 4 * 1024 * 1024
+_STAGE_SUFFIX = '.scrubplain'
+_STAGE_BLOCK = 8 * 1024 * 1024
+_STAGE_MIN_FREE = 1 << 30          # stop staging below 1 GB free; fall back
 
 
 def _build_chain(frozen, config, deterministic, include_ldap):
@@ -315,6 +325,138 @@ def _assemble_chunks(path, parts, changed):
                 pass
 
 
+def _stageable_compressed(path):
+    """(ext, opener) when this compressed log is worth staging for the pool:
+    a healthy .gz/.xz/.bz2 stream (not a sar binary) above the threshold."""
+    base = os.path.basename(path)
+    comp = compressed_opener(base)
+    if not comp or SAR_XZ_PATTERN.match(base):
+        return None
+    try:
+        if os.path.getsize(path) <= _COMPRESSED_CHUNK_THRESHOLD:
+            return None
+    except OSError:
+        return None
+    if not compression_magic_ok(path, comp[0]):
+        return None                     # misnamed: process_file handles it
+    return comp
+
+
+def _free_bytes(path):
+    try:
+        st = os.statvfs(os.path.dirname(path) or '.')
+        return st.f_bavail * st.f_frsize
+    except OSError:
+        return None
+
+
+def _stage_compressed(path, comp, logger):
+    """Decompress `path` into a plain sibling temp file, streaming. Returns
+    the staged path, or None (damaged stream, no space): the caller then
+    leaves the file to the in-worker streaming path, which salvages.
+
+    Measured before: a multi-GB rotated log was excluded from chunking by
+    name, so it was one task on one core whatever --jobs said; at ~2 MB/s
+    per core a 3.3 GB payload took 27 minutes and set every scrub's p99."""
+    ext, opener = comp
+    staged = path + _STAGE_SUFFIX
+    try:
+        with opener(path, 'rb') as src, open(staged, 'wb') as out:
+            n = 0
+            while True:
+                block = src.read(_STAGE_BLOCK)
+                if not block:
+                    break
+                out.write(block)
+                n += 1
+                if n % 32 == 0:          # every 256 MB: is there room?
+                    free = _free_bytes(staged)
+                    if free is not None and free < _STAGE_MIN_FREE:
+                        raise OSError(f"{free >> 20} MB free; staging stopped")
+    except MemoryError:
+        raise
+    except Exception as e:
+        logger.warning(f"{os.path.basename(path)}: not staged for the pool "
+                       f"({e}); scrubbed as a stream instead")
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
+        return None
+    return staged
+
+
+def _recompress(staged, path, ext, opener, logger):
+    """Compress the staged plain result back into `path`, streaming, and
+    prove the result is a complete stream of the format its name promises
+    before it replaces the original (the write_compressed_text contract)."""
+    tmp = path + '.scrubtmp'
+    label = os.path.basename(path)
+    try:
+        size = os.path.getsize(staged)
+        if ext == '.xz' and shutil.which('xz'):
+            with open(staged, 'rb') as src, open(tmp, 'wb') as out:
+                subprocess.run(['xz', '-T0', '-c'], stdin=src, stdout=out,
+                               check=True)
+        else:
+            with open(staged, 'rb') as src:
+                if ext == '.gz':
+                    fh = open(tmp, 'wb')
+                    out = gzip.GzipFile(filename=label[:-len(ext)], mode='wb',
+                                        fileobj=fh)
+                else:
+                    fh = None
+                    out = opener(tmp, 'wb')
+                try:
+                    shutil.copyfileobj(src, out, _STAGE_BLOCK)
+                finally:
+                    out.close()
+                    if fh:
+                        fh.close()
+        read_back = 0
+        with opener(tmp, 'rb') as check:
+            while True:
+                block = check.read(_STAGE_BLOCK)
+                if not block:
+                    break
+                read_back += len(block)
+        if read_back != size:
+            raise ValueError(f"read back {read_back} of {size} bytes")
+        if not compression_magic_ok(tmp, ext):
+            raise ValueError(f"result is not a {ext[1:]} stream")
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        logger.error(f"{label}: left unchanged, could not write a valid "
+                     f"{ext[1:]} stream: {e}")
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def _finish_staged(path, staged, ext, opener, changed, decompress, logger):
+    """Put the staged result where the file belongs: plain (under --unpacked,
+    when no plain sibling exists) or recompressed. The original is never
+    touched when the result could not be written. The staging file is
+    removed on every path."""
+    plain_path = path[:-len(ext)]
+    try:
+        if decompress and not os.path.exists(plain_path):
+            os.replace(staged, plain_path)
+            os.remove(path)
+            return True
+        if changed:
+            return _recompress(staged, path, ext, opener, logger)
+        return True
+    finally:
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
+
+
 def _balanced_batches(files, n):
     """Split files into n buckets balanced by size (largest-first round-robin)."""
     def _size(p):
@@ -353,7 +495,23 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
         # IPv6 and MAC allocate deterministically in workers (see
         # _build_chain), so they need no pre-pass.
         ip = IPScrubber(config, mappings=frozen_seed)
-        disc_big = [p for p in report_files if _is_chunkable(p)]
+        # Big compressed logs are staged plain and chunked like any big file.
+        staged_map = {}          # staged path -> (original, ext, opener)
+        work_files = []
+        for p in report_files:
+            comp = _stageable_compressed(p)
+            st = _stage_compressed(p, comp, logger) if comp else None
+            if st:
+                staged_map[st] = (p, comp[0], comp[1])
+                work_files.append(st)
+            else:
+                work_files.append(p)
+        report_files = work_files
+
+        def _big(p):
+            return p in staged_map or _is_chunkable(p)
+
+        disc_big = [p for p in report_files if _big(p)]
         disc_big_set = set(disc_big)
         disc_small = [p for p in report_files if p not in disc_big_set]
 
@@ -397,7 +555,7 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
         frozen.setdefault('mac', dict(frozen_seed.get('mac', {})))
 
         # --- Parallel apply --------------------------------------------------
-        big_files = [p for p in report_files if _is_chunkable(p)]
+        big_files = [p for p in report_files if _big(p)]
         big_set = set(big_files)
         small_files = [p for p in report_files if p not in big_set]
 
@@ -463,14 +621,25 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
             for path, parts in chunk_parts.items():
                 _assemble_chunks(path, parts,
                                  chunk_changed.get(path, False) and path not in chunk_failed)
+            for st, (orig, ext, opener) in staged_map.items():
+                if st in chunk_failed:
+                    continue             # original left untouched; staging removed below
+                _finish_staged(orig, st, ext, opener,
+                               chunk_changed.get(st, False), decompress, logger)
         finally:
+            for st in staged_map:
+                try:
+                    os.remove(st)
+                except OSError:
+                    pass
             try:
                 os.unlink(ctx_path)
             except OSError:
                 pass
 
     for path, secs in chunk_times.items():
-        file_times.append((os.path.basename(path), secs))
+        name = os.path.basename(staged_map[path][0] if path in staged_map else path)
+        file_times.append((name, secs))
 
     # IPv4 subnet/state are authoritative from the pre-pass; ipv6_subnet is
     # the union of the (deterministic, hence consistent) worker allocations.
