@@ -102,6 +102,11 @@ def parse_args():
         help="Streaming stdin mode: buffer the first 500 lines to build entity maps, "
              "then scrub and flush each subsequent line immediately. "
              "Use for live pipes such as: journalctl -f | supportutils-scrub --stream")
+    parser.add_argument("--preload", action="store_true",
+        help="Learn names (hostnames, domains, users, serials, SIDs) from EVERY "
+             "input, write the mapping (in place with --mappings), and scrub "
+             "nothing. Run it over all captures of a case first, so each "
+             "per-capture scrub starts with the complete name set.")
     parser.add_argument("--unpacked", action="store_true",
         help="Leave the scrubbed output fully unpacked: archives are not repacked "
              "into a _scrubbed.txz (the _scrubbed/ folder is the output) and "
@@ -181,6 +186,14 @@ def main():
         args._enc_passphrase = None
 
     paths = args.supportconfig_path
+
+    if getattr(args, 'preload', False):
+        if not paths:
+            print("[!] --preload needs at least one input", file=sys.stderr)
+            sys.exit(2)
+        from supportutils_scrub.modes.preload import run_preload_mode
+        run_preload_mode(args, logger)
+        return
 
     is_stdin = (len(paths) == 0 and not sys.stdin.isatty()) \
                or (len(paths) == 1 and paths[0] == '-')
