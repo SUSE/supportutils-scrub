@@ -245,6 +245,8 @@ def init_scrubbers(args, config, logger):
     if args.mappings:
         mappings = load_mappings_file(args.mappings)
         mapping_keywords = list(mappings.get('keyword', {}).keys())
+    from supportutils_scrub import det as _det
+    _det.ensure_key(mappings)
 
     cmd_keywords = []
     if args.keywords:

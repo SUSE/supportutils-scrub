@@ -108,6 +108,32 @@ def write_audit_log(audit_path, record):
         print(f"[!] Could not write audit log: {e}", file=_err)
 
 
+_SEEDED_OPTS = {'--hostname', '--domain', '--username', '--keywords',
+                '--mappings', '--keyword-file'}
+
+
+def _redacted_argv(argv):
+    """The argv record without the values seeded into the scrub: those are
+    the very hostnames and keywords being removed, and an audit record that
+    quotes them is a leak of its own (CWE-532)."""
+    out, skip = [], False
+    for a in argv:
+        if skip:
+            out.append('<redacted>')
+            skip = False
+            continue
+        opt, eq, _val = a.partition('=')
+        if opt in _SEEDED_OPTS:
+            if eq:
+                out.append(opt + '=<redacted>')
+            else:
+                out.append(opt)
+                skip = True
+            continue
+        out.append(a)
+    return out
+
+
 def audit_record(mode, inputs, outputs, mapping_path, args, version):
     try:
         operator = pwd.getpwuid(os.getuid()).pw_name
@@ -122,7 +148,7 @@ def audit_record(mode, inputs, outputs, mapping_path, args, version):
         'mode':         mode,
         'inputs':       inputs,
         'outputs':      outputs,
-        'cli_args':     sys.argv[1:],
+        'cli_args':     _redacted_argv(sys.argv[1:]),
         'mapping_file': mapping_path or 'none (--no-mappings)',
     }
 

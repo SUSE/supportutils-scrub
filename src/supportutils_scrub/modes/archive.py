@@ -124,6 +124,9 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
             verbose=verbose_flag, include_ldap=include_ldap,
             decompress=getattr(args, 'unpacked', False))
         updated_mappings['tld_map'] = tld_map
+        from supportutils_scrub import det as _det
+        if _det.current_key():
+            updated_mappings[_det.KEY_FIELD] = _det.current_key()
         combined_mappings_for_verify = updated_mappings
     else:
         file_processor = FileProcessor(config, scrubbers, profile=profile,
@@ -150,6 +153,9 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
         updated_mappings['state'] = ip_s.state if ip_s else {}
         updated_mappings['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
         updated_mappings['tld_map'] = tld_map
+        from supportutils_scrub import det as _det
+        if _det.current_key():
+            updated_mappings[_det.KEY_FIELD] = _det.current_key()
         combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
         if profile:
             print(file_processor.format_profile())
@@ -419,6 +425,9 @@ def process_one_file(file_path, current_mappings, args, config, keyword_scrubber
     updated_mappings['state'] = ip_s.state if ip_s else {}
     updated_mappings['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
     updated_mappings['tld_map'] = current_mappings.get('tld_map', {})
+    from supportutils_scrub import det as _det
+    if _det.current_key():
+        updated_mappings[_det.KEY_FIELD] = _det.current_key()
 
     stats = {
         'archive_path': file_path, 'output_path': out_path, 'files': 1,

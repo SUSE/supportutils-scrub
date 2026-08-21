@@ -185,6 +185,8 @@ def _get_ctx(ctx_path):
     if ctx is None:
         with open(ctx_path, 'rb') as f:
             frozen, config, include_ldap, verbose, decompress = pickle.load(f)
+        from supportutils_scrub import det as _det
+        _det.set_key(frozen.get(_det.KEY_FIELD))
         logger = SupportutilsScrubLogger(log_level="verbose" if verbose else "normal")
         scrubbers = _build_chain(frozen, config, deterministic=True,
                                  include_ldap=include_ldap)
@@ -384,6 +386,9 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
                     logger.error(f"pre-pass replay failed for {path}: {e}")
 
         frozen = dict(frozen_seed)
+        from supportutils_scrub import det as _det
+        if _det.current_key():
+            frozen[_det.KEY_FIELD] = _det.current_key()
         frozen['ip'] = dict(ip.mapping)
         frozen['subnet'] = dict(ip.subnet_dict)
         frozen['state'] = dict(ip.state)

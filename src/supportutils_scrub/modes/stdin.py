@@ -148,6 +148,9 @@ def run_stdin_mode(args, logger):
     dataset_dict['state'] = ip_s.state if ip_s else {}
     dataset_dict['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
     dataset_dict['tld_map'] = tld_map
+    from supportutils_scrub import det as _det
+    if _det.current_key():
+        dataset_dict[_det.KEY_FIELD] = _det.current_key()
 
     saved_mapping_path = save_mappings(args, dataset_path, dataset_dict)
 
