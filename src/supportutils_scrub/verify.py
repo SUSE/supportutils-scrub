@@ -180,7 +180,10 @@ _SECRET_PATTERNS = [
     (re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+'), 'JWT token'),
     # Generic password assignments — only "password" and "passwd" with = delimiter
     # Skip values already redacted by supportconfig or our scrubber
-    (re.compile(r'(?i)\b(?:password|passwd)\s*=\s*["\']?(?!\*REMOVED)(?!scrubbed_pass_)([A-Za-z0-9+/]{8,})'), 'password value'),
+    # mirrors password_scrubber._PASSWORD_RE: same names, same value charset
+    (re.compile(r'(?i)\b(?:password|passwd|secret|token|apikey|api_key|passphrase)\s*[:=]\s*["\']?(?!\*REMOVED)(?!scrubbed_pass_)([^\s"\'<>]{8,})'), 'password value'),
+    # mirrors password_scrubber._ATTR_PAIR_RE: name="passwd" value="..."
+    (re.compile(r'(?i)name\s*=\s*(["\'])(?:password|passwd|secret|token|apikey|api_key|passphrase)\1[^>]*?value\s*=\s*(["\'])(?!\*REMOVED)(?!scrubbed_pass_)([^"\'<>]{6,})\2'), 'password value'),
 ]
 
 # An HTTP Basic credential that survived scrubbing. The scrubbed form is still
