@@ -56,6 +56,7 @@ from supportutils_scrub.processor import (
 )
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 
+_BATCHES_PER_WORKER = 8   # small-file tasks per worker (verify uses 4)
 _CHUNK_THRESHOLD = 32 * 1024 * 1024
 _CHUNK_MIN = 8 * 1024 * 1024
 
@@ -406,10 +407,9 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
                 pickle.dump((frozen, config, include_ldap, verbose, decompress), f,
                             protocol=pickle.HIGHEST_PROTOCOL)
 
-            futures = []
-            for batch in _balanced_batches(small_files, jobs):
-                futures.append(ex.submit(_scrub_batch, (ctx_path, batch)))
-
+            # The critical path first: the chunks of the biggest files go in
+            # before any small-file batch, or the pool (FIFO) hands every
+            # worker a batch and the longest work waits for a free slot.
             chunk_parts = {}    # path -> [(idx, part_path)]
             chunk_changed = {}  # path -> bool
             chunk_failed = set()
@@ -418,6 +418,15 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
                 for idx, (start, end) in enumerate(_chunk_bounds(path, jobs)):
                     chunk_futures.append(
                         (path, ex.submit(_scrub_chunk, (ctx_path, path, idx, start, end))))
+
+            # Many more tasks than workers: cost is content-dependent, not
+            # byte-proportional (identical-size chunks measured at 2 min and
+            # 80 min), so `jobs` byte-balanced buckets left the slowest bucket
+            # setting the phase while the other workers idled. The per-task
+            # overhead is a dict diff; the context is cached per worker.
+            futures = []
+            for batch in _balanced_batches(small_files, jobs * _BATCHES_PER_WORKER):
+                futures.append(ex.submit(_scrub_batch, (ctx_path, batch)))
 
             for fut in futures:
                 diffs, hits, extra, times = fut.result()
