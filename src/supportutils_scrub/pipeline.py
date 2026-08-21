@@ -37,7 +37,9 @@ def _next_fake_tld(counter):
 
 def build_hierarchical_domain_map(all_domains, existing_mappings):
     valid_domains = {d for d in all_domains if '.' in d}
-    sorted_domains = sorted(list(valid_domains), key=lambda d: len(d.split('.')))
+    # label count first (parents before children), then the name: a tie
+    # that fell back to set order varied with the per-process hash seed
+    sorted_domains = sorted(valid_domains, key=lambda d: (len(d.split('.')), d))
 
     domain_dict = existing_mappings.get('domain', {})
     tld_map = existing_mappings.get('tld_map', {})
