@@ -110,6 +110,14 @@ def extract_hostnames(report_files, additional_hostnames, mappings):
         if 'network.txt' in f:
             all_hostnames.extend(HostnameScrubber.extract_hostnames_from_hosts(f))
             all_hostnames.extend(HostnameScrubber.extract_hostnames_from_hostname_section(f))
+        # A clustered system knows the names of hosts it did not capture. Those
+        # names appear nowhere in this node's own identity files, so without
+        # this they are never learned and survive into the scrubbed output.
+        base = os.path.basename(f)
+        if base.startswith(('ha.txt', 'cib.xml', 'crm_mon', 'members.txt',
+                            'corosync.conf')):
+            all_hostnames.extend(
+                HostnameScrubber.extract_hostnames_from_cluster(f))
 
     all_hostnames.extend(additional_hostnames)
     for h in all_hostnames:

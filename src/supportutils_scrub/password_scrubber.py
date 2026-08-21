@@ -2,11 +2,34 @@
 import re
 from supportutils_scrub.scrubber import Scrubber
 
+#: Names whose VALUE is a credential wherever it appears. Kept to secrets:
+#: an account or an application id is an identifier and is handled by the
+#: username and keyword paths, and over-scrubbing a configuration makes it
+#: unreadable, which is its own kind of damage.
+_SECRET_NAMES = r'password|passwd|secret|token|apikey|api_key|passphrase'
+
+#: key=value and key: value, the shape a configuration file uses. The value
+#: charset used to be letters, digits, + and /, so a secret carrying a tilde
+#: or a dot was only partly replaced and the rest of it shipped.
 _PASSWORD_RE = re.compile(
-    r'(?i)(\b(?:password|passwd|passphrase)\s*[:=]\s*["\']?)'
+    r'(?i)(\b(?:' + _SECRET_NAMES + r')\s*[:=]\s*)'
+    r'(["\']?)'
     r'(?!\*REMOVED)'
     r'(?!scrubbed_pass_)'
-    r'([A-Za-z0-9+/]{8,})'
+    r'([^\s"\'<>]{8,})'
+)
+
+#: name="passwd" value="..." , which is how a cluster configuration carries
+#: the credentials its fencing agents authenticate with. Neither form above
+#: matches it: the name is followed by a quote, not by a separator, so a
+#: fencing password survived a full scrub run untouched.
+_ATTR_PAIR_RE = re.compile(
+    r'(?i)(name\s*=\s*(["\'])(?:' + _SECRET_NAMES + r')\2'
+    r'[^>]*?value\s*=\s*)(["\'])'
+    r'(?!\*REMOVED)'
+    r'(?!scrubbed_pass_)'
+    r'([^"\'<>]{6,})'
+    r'\3'
 )
 
 # Command-line secrets. Values passed as CLI options survive into ps/history
@@ -55,9 +78,12 @@ class PasswordScrubber(Scrubber):
     def scrub(self, text):
         """Replaces password values in text. Returns scrubbed text."""
         def _replace(m):
-            prefix = m.group(1)
-            value = m.group(2)
-            return prefix + self._get_fake_password(value)
+            prefix, quote, value = m.group(1), m.group(2), m.group(3)
+            return prefix + quote + self._get_fake_password(value)
+
+        def _replace_attr(m):
+            prefix, quote, value = m.group(1), m.group(3), m.group(4)
+            return prefix + quote + self._get_fake_password(value) + quote
 
         def _replace_cli(m):
             value = m.group('qval') or m.group('val')
@@ -66,5 +92,6 @@ class PasswordScrubber(Scrubber):
             quote = m.group('q') or ''
             return m.group('prefix') + quote + self._get_fake_password(value) + quote
 
+        text = _ATTR_PAIR_RE.sub(_replace_attr, text)
         text = _PASSWORD_RE.sub(_replace, text)
         return _CLI_SECRET_RE.sub(_replace_cli, text)

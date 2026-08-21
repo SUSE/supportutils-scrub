@@ -178,6 +178,70 @@ class HostnameScrubber(Scrubber):
         return hostnames
 
     @staticmethod
+    def extract_hostnames_from_cluster(file_path):
+        """Hostnames the CLUSTER names, from its own record of its membership.
+
+        Hostnames are otherwise learned from a node's own identity files, so a
+        clustered system leaks its peers: a member that was never captured
+        appears in no captured node's /etc/hosts, is never learned, and its
+        real name survives wherever the captured nodes' configuration mentions
+        it. Measured on a support corpus: 4 of 38 clustered cases, 15 names.
+
+        Four places a cluster states who belongs to it, all narrow on purpose:
+        the CIB node table, the status output's node list, the bracketed
+        online/offline lines, and the corosync nodelist. Anything that could
+        equally be a resource id, an address or a cluster name is left alone;
+        over-harvesting would replace text that is not a host and make the
+        scrubbed capture harder to read than the leak it prevents.
+        """
+        excluded = WELL_KNOWN_HOSTNAMES
+        found = []
+
+        def take(name):
+            short = (name or "").strip().split(".")[0]
+            if len(short) < 4 or short in excluded:
+                return
+            if re.fullmatch(r"[0-9a-fA-F:.]+", short):
+                return                       # an address, not a name
+            if not re.fullmatch(r"[A-Za-z][\w-]*", short):
+                return
+            found.append(short)
+
+        try:
+            with open(file_path, "r", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            return []
+
+        # the CIB's own node table
+        for m in re.finditer(r'<node\b[^>]*\buname="([^"]+)"', text):
+            take(m.group(1))
+        # status output. The bullet is required: the same tool prints "Node
+        # List:" and "Node Attributes:" as section headings, and a pattern
+        # reading "Node <word>:" harvested List and Attributes from a real
+        # capture. The parenthesised form carries a node id instead.
+        for m in re.finditer(r"^\s*\*\s*Node\s+([A-Za-z][\w.-]*)\s*:",
+                             text, re.MULTILINE):
+            take(m.group(1))
+        for m in re.finditer(r"^\s*Node\s+([A-Za-z][\w.-]*)\s+\(\d+\)",
+                             text, re.MULTILINE):
+            take(m.group(1))
+        # bracketed membership lines, bulleted in current output and bare in
+        # older versions
+        for m in re.finditer(r"^\s*\*?\s*(?:Online|OFFLINE|Standby)\s*:\s*"
+                             r"\[([^\]]*)\]", text, re.MULTILINE):
+            for word in m.group(1).split():
+                take(word)
+        # corosync nodelist, scoped: `name:` outside it means many things
+        block = re.search(r"nodelist\s*\{(.*?)\n\}", text, re.S)
+        if block:
+            for m in re.finditer(r"^\s*(?:ring\d+_addr|name)\s*:\s*(\S+)",
+                                 block.group(1), re.MULTILINE):
+                take(m.group(1))
+
+        return list(dict.fromkeys(found))
+
+    @staticmethod
     def extract_hostnames_from_text(text, syslog_counts=None):
         """Extract hostnames from NFS server lines and RFC 5424 syslog timestamps.
 
