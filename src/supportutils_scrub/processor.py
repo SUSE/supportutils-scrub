@@ -141,6 +141,15 @@ def _salvage_decompressed(path, ext):
     return b''.join(out)
 
 
+def _is_compressed_name(base_name):
+    """True when the name claims a single-file compressed log, i.e. the
+    branch that already has its own binary probe and must keep it."""
+    low = base_name.lower()
+    if low.endswith(_TAR_SUFFIXES):
+        return False
+    return any(low.endswith(ext) for ext in _COMPRESS_OPENERS)
+
+
 def looks_binary(path):
     """True when a file's head holds NUL bytes, i.e. it is not text."""
     try:
@@ -365,6 +374,22 @@ class FileProcessor:
                 os.remove(file_path)
             except Exception as e:
                 print(f"[!] Failed to remove binary file {file_path}: {e} ")
+            return True
+
+        # A binary payload under a plain name. The compressed branch has
+        # probed for this since it existed, but a file whose name carries no
+        # compression extension reached the text path directly, where
+        # errors='ignore' drops every byte that is not valid UTF-8 and the
+        # banner goes in front. A packet capture came back from that with its
+        # magic gone and a fifth of its bytes missing; the same would hold for
+        # a core dump, a database or a disk image. Left unchanged and
+        # reported, like the unknown binary in _process_compressed: rewriting
+        # it as text destroys it, and the tree-wide report names it so the
+        # leave is never silent.
+        if not _is_compressed_name(base_name) and looks_binary(file_path):
+            if not dry_run:
+                logger.error(f"{base_name}: binary content, not text "
+                             f"- left unchanged (a text scrub would destroy it)")
             return True
 
         is_sar_xz_file   = bool(SAR_XZ_PATTERN.match(base_name))
