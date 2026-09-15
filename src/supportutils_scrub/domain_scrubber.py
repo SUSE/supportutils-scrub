@@ -6,7 +6,11 @@ from supportutils_scrub.scrubber import Scrubber
 from supportutils_scrub.trie_re import build_trie_pattern
 
 LABEL = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
-DOMAIN_RE = re.compile(rf"(?<![A-Za-z0-9-])({LABEL}(?:\.{LABEL})+)(?![A-Za-z0-9-])", re.IGNORECASE)
+# The underscore in the lookbehind keeps an underscored filename from being read
+# as a domain starting at its last word: pam_unix.so must not yield "unix.so".
+# A domain label is never preceded by an underscore, and the SRV form
+# (_ldap._tcp.example.com) starts with one, so its parent is still learned.
+DOMAIN_RE = re.compile(rf"(?<![A-Za-z0-9_-])({LABEL}(?:\.{LABEL})+)(?![A-Za-z0-9-])", re.IGNORECASE)
 
 _DC_RE = re.compile(r'(DC=[A-Za-z0-9-]+(?:,DC=[A-Za-z0-9-]+)+)', re.IGNORECASE)
 
@@ -14,6 +18,13 @@ _SINGLE_LABEL_BAN = {
     "local", "localhost", "internal", "intranet", "corp", "lan", "home",
     "net", "org", "com", "edu", "gov", "mil", "int", "arpa"
 }
+
+# Country-code TLDs that are also file extensions carried by every capture:
+# shared objects, libtool archives and Python scripts. Deliberately only these
+# three. Extensions that collide with a TLD a customer plausibly uses (.in, .co,
+# .it, .ch, .is, .pl, .md) stay learnable, because renaming a README is cosmetic
+# while missing a real domain is a leak. See _is_valid_domain.
+_EXTENSION_TLDS = frozenset({"so", "la", "py"})
 
 _VALID_TLDS = frozenset({
     "com", "org", "net", "edu", "gov", "mil", "int", "arpa",
@@ -83,6 +94,13 @@ def _is_valid_domain(d: str, trusted: bool = False) -> bool:
         if not re.fullmatch(r"[a-zA-Z0-9-]+", p):
             return False
     if not trusted and parts[-1].lower() not in _VALID_TLDS:
+        return False
+    # A few country-code TLDs are also common file extensions, and a capture
+    # holds far more of those files than it does Somali, Lao or Papua New
+    # Guinean domains. A bare name.so is the filename, so learning it renames
+    # every shared object, libtool archive and Python script in the report.
+    # Only the two-label form is refused: www.example.so is still learned.
+    if not trusted and len(parts) == 2 and parts[-1].lower() in _EXTENSION_TLDS:
         return False
     return True
 

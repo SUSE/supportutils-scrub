@@ -80,3 +80,66 @@ class TestDomainExtraction:
         domains = DomainScrubber.extract_domains_from_text(
             "server ns1.example.com and mail.test.org")
         assert "example.com" in domains or "ns1.example.com" in domains
+
+
+class TestFilenamesAreNotDomains:
+    """Filenames whose extension collides with a country-code TLD were learned
+    as domains and rewritten, which corrupts the PAM stack and the library
+    listings a capture is read for."""
+
+    def test_pam_module_not_learned(self):
+        assert DomainScrubber.extract_domains_from_text(
+            "auth     required     pam_unix.so try_first_pass") == []
+
+    def test_pam_module_path_not_learned(self):
+        assert DomainScrubber.extract_domains_from_text(
+            "/lib64/security/pam_unix.so") == []
+
+    def test_pam_stack_block_not_learned(self):
+        block = (
+            "auth     required     pam_env.so\n"
+            "auth     required     pam_unix.so try_first_pass\n"
+            "password requisite    pam_cracklib.so\n"
+        )
+        assert DomainScrubber.extract_domains_from_text(block) == []
+
+    def test_shared_object_not_learned(self):
+        assert DomainScrubber.extract_domains_from_text("libc.so") == []
+
+    def test_libtool_archive_not_learned(self):
+        assert DomainScrubber.extract_domains_from_text("libfoo.la") == []
+
+    def test_python_script_not_learned(self):
+        assert DomainScrubber.extract_domains_from_text(
+            "Traceback: /usr/bin/omsutil.py line 3") == []
+
+    def test_real_domain_still_learned(self):
+        domains = DomainScrubber.extract_domains_from_text("host.example.co")
+        assert "host.example.co" in domains
+        assert "example.co" in domains
+
+    def test_suse_domain_still_learned(self):
+        assert "susecloud.net" in DomainScrubber.extract_domains_from_text(
+            "updates from smt.susecloud.net")
+
+    def test_srv_record_parent_still_learned(self):
+        assert "example.com" in DomainScrubber.extract_domains_from_text(
+            "_ldap._tcp.example.com")
+
+    def test_trusted_source_unaffected(self):
+        from supportutils_scrub.domain_scrubber import _is_valid_domain
+        assert _is_valid_domain("unix.so", trusted=True) is True
+
+    def test_trusted_hosts_line_learns_the_domain_not_a_hostname_piece(self):
+        # An underscored host in /etc/hosts used to teach "db.corp.internal",
+        # a truncated piece of the hostname. The domain itself is what matters
+        # and still replaces; the hostname half is the hostname scrubber's.
+        domains = DomainScrubber.extract_domains_from_text(
+            "10.0.0.5 sap_db.corp.internal sap_db", trusted=True)
+        assert domains == ["corp.internal"]
+
+    def test_trusted_plain_host_line_unaffected(self):
+        domains = DomainScrubber.extract_domains_from_text(
+            "10.0.0.6 node1.corp.internal node1", trusted=True)
+        assert "node1.corp.internal" in domains
+        assert "corp.internal" in domains
