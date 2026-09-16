@@ -1,23 +1,46 @@
 -------------------------------------------------------------------
-Thu Jul 30 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
+Wed Sep 16 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
 
-- Compressed single-file logs: a name can no longer describe a format
-  its content does not have
-  + Rewritten .gz/.xz/.bz2 logs are written to a temporary file, read
-    back, and validated as a complete stream before they replace the
-    original; a rewrite that cannot preserve the format leaves the
-    file untouched and says so instead of failing silently
-  + A file whose compression extension does not match its content is
-    scrubbed as the plain text it is and the misleading extension is
-    dropped, so consumers that follow the extension can read it
-  + A compressed file with a non-text payload is left byte-identical
-    instead of being mangled into text
-  + A stream that ends before its end-of-stream marker is salvaged,
-    scrubbed, and rewritten as a complete stream
-  + Bytes that are not valid UTF-8 survive the round trip instead of
-    being dropped
-  + Every run reports leftover extension/content mismatches, and
-    verify no longer skips a compressed file it cannot decompress
+- Update to version 1.7
+  + Credentials: mask command-line secrets (--password, --passphrase,
+    credentials=), URL logins and HTTP Basic credentials, and the
+    name/value attribute form with a wider secret charset; verify
+    checks for the same forms
+  + Hostnames: learn cluster members from the cluster's own membership
+    records (CIB node table, crm_mon, corosync nodelist) and adopted
+    node names from the tree structure (crm_report node dirs, nested
+    supportconfigs); preserved names restored in one regex pass
+  + New --preload: learn names from every input of a case, write the
+    shared mapping, and scrub nothing, so each per-capture scrub starts
+    with the complete name set
+  + Compressed single-file logs: every .gz/.xz/.bz2 rewrite is read
+    back and validated as a complete stream before it replaces the
+    original; a file whose extension does not match its content is
+    scrubbed as plain text and the extension dropped; non-text payloads
+    left byte-identical; truncated streams salvaged and rewritten;
+    invalid UTF-8 bytes survive the round trip; leftover mismatches
+    reported on every run; verify no longer skips a compressed file
+    it cannot decompress
+  + Compressed logs scrubbed in bounded segments, file mode included,
+    so peak memory no longer grows with the decompressed size
+  + Binary files under plain names (packet captures, core dumps,
+    images) left unchanged and reported instead of rewritten as text
+  + Domains: file names such as pam_unix.so, libc.so or omsutil.py are
+    no longer learned as domains and renamed
+  + Deterministic output: files walked in sorted order and a domain map
+    tie-break independent of the hash seed, so a mapping depends only
+    on the content
+  + Parallel fakes keyed per run; the key is kept in the mapping file,
+    never in output, and --mappings reuses it
+  + Audit log: values passed with --hostname, --domain, --username,
+    --keywords, --keyword-file and --mappings are redacted
+  + Folder mode: several directories in one run share one pool and one
+    mapping
+  + File mode scrubs serials and SIDs like every other input mode
+  + Performance: longest work scheduled first; big compressed logs
+    staged plain and scrubbed across the --jobs pool; archives
+    extracted through xz -T0, pigz or pbzip2 when present; pre-scans
+    read in segments
   + Worker processes no longer duplicate log lines
 
 -------------------------------------------------------------------

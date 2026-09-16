@@ -81,8 +81,8 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
 ```
 =============================================================================
           Obfuscation Utility - supportutils-scrub
-                      Version : 1.6
-                 Release Date : 2026-07-22
+                      Version : 1.7
+                 Release Date : 2026-09-16
 
  supportutils-scrub masks sensitive information from SUSE supportconfig
  tarballs, directories, plain files, and network captures. It replaces
@@ -235,6 +235,7 @@ IPv4 subnet rewrite rules (most-specific first):
 - `--verbose`: Enable verbose output
 - `--quiet`: Suppress the startup banner and per-file listing. Errors and warnings still go to stderr. Useful when called from scripts or `supportconfig`.
 - `--mappings FILE`: JSON or encrypted `*.json.enc` mapping file from a prior run. Prompts for passphrase automatically when the file is encrypted.
+- `--preload`: Learn names (hostnames, domains, users, serials, SIDs) from every input, write the mapping, and scrub nothing. With `--mappings FILE` the mapping goes to FILE. Run it over all captures of a case first so each later scrub with `--mappings` starts with the complete name set.
 - `--username USERNAMES`: Additional usernames to obfuscate (comma/semicolon/space-separated)
 - `--hostname HOSTNAMES`: Additional hostnames to obfuscate
 - `--domain DOMAINS`: Additional domains to obfuscate
