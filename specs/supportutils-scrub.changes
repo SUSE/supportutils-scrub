@@ -1,6 +1,16 @@
 -------------------------------------------------------------------
 Thu Sep 18 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
 
+- Update to version 1.7.2
+  + The cloud metadata domain is left readable: metadata.google.internal
+    and google.internal are no longer learned or mapped, so a line about
+    the metadata server still says so. Filtered when learned and at
+    scrub time, so an older mapping file cannot rewrite them either
+  + Removed the unreferenced extract_xz_archive()
+
+-------------------------------------------------------------------
+Thu Sep 18 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
+
 - Update to version 1.7.1
   + Cloud metadata: the instance-metadata alias every cloud instance
     carries in /etc/hosts (169.254.169.254 metadata.google.internal

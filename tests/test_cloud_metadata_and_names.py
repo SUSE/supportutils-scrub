@@ -83,6 +83,33 @@ def test_seeding_the_alias_by_hand_does_not_map_it(tmp_path):
     assert "realhost" in out
 
 
+def test_the_metadata_domain_is_left_readable(tmp_path):
+    """The hostname half alone still rewrote the FQDN to sub_N.domain_N.xyz,
+    so a line about the metadata server stopped saying so."""
+    from supportutils_scrub.domain_scrubber import DomainScrubber
+    from supportutils_scrub.pipeline import build_hierarchical_domain_map
+
+    domains = {"metadata.google.internal", "google.internal", "example.com"}
+    dmap, _tld = build_hierarchical_domain_map(domains, {})
+    assert "metadata.google.internal" not in dmap
+    assert "google.internal" not in dmap
+    assert "example.com" in dmap
+
+    text = "registered against metadata.google.internal via mirror.example.com"
+    out = DomainScrubber({"example.com": "domain_0.aaa"}).scrub(text)
+    assert "metadata.google.internal" in out
+    assert "example.com" not in out
+
+
+def test_a_stale_mapping_cannot_rewrite_the_metadata_domain():
+    from supportutils_scrub.domain_scrubber import DomainScrubber
+    legacy = {"metadata.google.internal": "sub_1.domain_1.aaa",
+              "example.com": "domain_0.aaa"}
+    out = DomainScrubber(legacy).scrub("metadata.google.internal and example.com")
+    assert out.startswith("metadata.google.internal")
+    assert "domain_0.aaa" in out
+
+
 # ---- a name gets exactly the rules the text gets ---------------------------
 
 def test_a_short_hostname_no_longer_eats_a_product_file_name():

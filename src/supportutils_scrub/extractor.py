@@ -148,52 +148,6 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                     logger.error(f"Failed to remove nested archive {rel}: {e}")
     return unpacked
 
-def extract_xz_archive(archive_path, logger, extract_base=None):
-    """
-    Extract an XZ archive and return a list of report files.
-    """
-    base_name = os.path.basename(archive_path)
-    base_name_no_ext = os.path.splitext(base_name)[0]
-    clean_folder_name = append_scrubbed(base_name_no_ext)
-    if extract_base:
-        clean_folder_path = os.path.join(extract_base, clean_folder_name)
-    else:
-        clean_folder_path = os.path.join(os.path.dirname(archive_path), clean_folder_name)
-
-    if os.path.exists(clean_folder_path):
-        shutil.rmtree(clean_folder_path)
-
-    os.makedirs(clean_folder_path, exist_ok=True) 
-
-    with tarfile.open(archive_path, 'r:xz') as tar:
-        members = tar.getmembers()
-        top_level = _common_top_level(members)
-
-        for member in members:
-            if member.issym() or member.islnk():
-                continue
-            if member.isdir():
-                continue
-            relative_path = _member_relative_path(member, top_level)
-            if not relative_path:
-                continue
-            if not _is_safe_path(clean_folder_path, relative_path):
-                print(f"[!] Blocked unsafe path in archive: {member.name}")
-                continue
-            member.name = relative_path
-            try:
-                tar.extract(member, path=clean_folder_path)
-            except Exception as e:
-                print(f"[!] Error extracting {member.name}: {e}")
-
-    report_files = walk_supportconfig(clean_folder_path)
-    if extract_base:
-        print(f"[✓] Archive extracted to RAM (tmpfs): {clean_folder_path}")
-    else:
-        print(f"[✓] Archive extracted to: {clean_folder_path}")
-
-    return report_files, clean_folder_path
-
 # Extraction through a multi-threaded decompressor when one is installed:
 # Python's lzma/gzip/bz2 modules are single-threaded, and on a 128-core box
 # the extract phase ran on one of them (22 s p99) while the repack already

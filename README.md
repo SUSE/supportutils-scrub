@@ -81,7 +81,7 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
 ```
 =============================================================================
           Obfuscation Utility - supportutils-scrub
-                      Version : 1.7.1
+                      Version : 1.7.2
                  Release Date : 2026-09-16
 
  supportutils-scrub masks sensitive information from SUSE supportconfig

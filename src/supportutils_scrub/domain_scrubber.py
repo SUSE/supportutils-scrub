@@ -24,6 +24,13 @@ _SINGLE_LABEL_BAN = {
 # three. Extensions that collide with a TLD a customer plausibly uses (.in, .co,
 # .it, .ch, .is, .pl, .md) stay learnable, because renaming a README is cosmetic
 # while missing a real domain is a leak. See _is_valid_domain.
+# The cloud instance-metadata service, the domain half of the hostname rule:
+# every instance of that cloud resolves it, it names a service and not a
+# customer, and rewriting it costs the reader the context that the line is
+# about the metadata server. Filtered when learned AND at scrub time, so a
+# mapping file written before this rule cannot bring it back.
+PRESERVED_DOMAINS = frozenset({"metadata.google.internal", "google.internal"})
+
 _EXTENSION_TLDS = frozenset({"so", "la", "py"})
 
 _VALID_TLDS = frozenset({
@@ -125,6 +132,7 @@ class DomainScrubber(Scrubber):
             _norm(real): fake
             for real, fake in (domain_dict or {}).items()
             if _is_valid_domain(real, trusted=True)
+            and _norm(real) not in PRESERVED_DOMAINS
         }
 
         self._ordered_domains = _sort_specific_first(self.domain_dict.keys(), trusted=True)

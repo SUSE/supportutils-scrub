@@ -21,7 +21,7 @@
 %endif
 
 Name:           supportutils-scrub
-Version:        1.7.1
+Version:        1.7.2
 Release:        0
 Summary:        Utility to sanitize and remove sensitive data from supportconfig tarballs
 License:        GPL-2.0-only
