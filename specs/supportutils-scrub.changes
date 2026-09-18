@@ -1,4 +1,33 @@
 -------------------------------------------------------------------
+Thu Sep 18 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
+
+- Update to version 1.7.1
+  + Cloud metadata: the instance-metadata alias every cloud instance
+    carries in /etc/hosts (169.254.169.254 metadata.google.internal
+    metadata) is no longer learned as a hostname, so
+    public_cloud/metadata.txt keeps its name instead of arriving as
+    hostname_N.txt; names on that address are aliases of one service,
+    not hosts, and the exclusion is case-insensitive. A customer host
+    whose name merely starts with metadata is still obfuscated
+  + Renaming a file or directory now applies exactly the scrubbers the
+    file CONTENT gets, in the same order, instead of a plain substring
+    replace: a host called work no longer turns network.txt into
+    nethostname_N.txt, a host called mess no longer cuts messages.txt
+    in half, and a name that differs only in case is renamed like the
+    text is
+  + hostname_preserve from the configuration now reaches every entry
+    point. It was honoured in the parallel path alone, so in a default
+    run the documented "never obfuscated" names were obfuscated anyway;
+    a preserved name is also never given a mapping, however it arrives
+    (harvest, --hostname, or an older mapping file)
+  + Every rename is reported: a count on each run, the old and new name
+    of each with --verbose, and the pairs in the --report JSON. A file
+    that changed name silently read as a file the tool had lost
+  + Empty directories in the source are kept in the scrubbed output
+    (public_cloud/regcache), while the archive's own wrapper directory
+    is not recreated inside it
+
+-------------------------------------------------------------------
 Wed Sep 16 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
 
 - Update to version 1.7

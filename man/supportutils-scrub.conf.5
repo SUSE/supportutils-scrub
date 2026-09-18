@@ -1,4 +1,4 @@
-.TH SUPPORTUTILS-SCRUB.CONF 5 "16 Sep 2026" "supportutils-scrub 1.7"
+.TH SUPPORTUTILS-SCRUB.CONF 5 "18 Sep 2026" "supportutils-scrub 1.7.1"
 .SH NAME
 supportutils-scrub.conf \- Configuration file for supportutils-scrub
 .SH SYNOPSIS
@@ -69,7 +69,7 @@ Specifies whether hardware serial numbers and system UUIDs (from dmidecode outpu
 .PD
 .TP
 .B hostname_preserve
-Comma-separated list of hostnames that must never be obfuscated. Extends the built-in preserve set (localhost names and product-default container names such as \fIuyuni-server\fR); the built-ins cannot be removed.
+Comma-separated list of hostnames that must never be obfuscated, in file contents and in file and directory names alike. Extends the built-in preserve set (localhost names, product-default container names such as \fIuyuni-server\fR, and the cloud instance-metadata aliases \fImetadata\fR and \fImetadata.google.internal\fR); the built-ins cannot be removed. A preserved name is never given a mapping, however it reaches the run: harvested from a capture, seeded with \fB--hostname\fR, or carried in from an earlier mapping file.
 .PD 0
 .IP * 2
 \fBDefault\fR: empty
