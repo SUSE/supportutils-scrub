@@ -65,10 +65,22 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
     username_dict = extract_usernames(report_files, additional_usernames, current_mappings)
     additional_hostnames = re.split(r'[,\s;]+', args.hostname) if args.hostname else []
     # collector-adoption bypass fix: node names carried by tree structure
-    additional_hostnames.extend(extract_hostnames_from_adopted_paths(clean_folder_path))
-    hostname_dict = extract_hostnames(report_files, additional_hostnames, current_mappings)
+    additional_hostnames.extend(
+        extract_hostnames_from_adopted_paths(clean_folder_path, config=config))
+    hostname_dict = extract_hostnames(report_files, additional_hostnames,
+                                      current_mappings, config=config)
 
-    clean_folder_path = rename_extraction_paths(clean_folder_path, hostname_dict, domain_dict=domain_dict)
+    renames = []
+    clean_folder_path = rename_extraction_paths(clean_folder_path, hostname_dict,
+                                                domain_dict=domain_dict,
+                                                config=config, renames=renames)
+    if renames and not getattr(args, 'quiet', False):
+        print(f"[i] {len(renames)} path(s) renamed: a name carrying a hostname "
+              "or a domain is obfuscated like the text is"
+              + ("" if verbose_flag else " (--verbose lists them)"))
+        if verbose_flag:
+            for old, new in renames:
+                print(f"        {old} -> {new}")
     report_files = walk_supportconfig(clean_folder_path)
 
     serial_dict = extract_serials(report_files, current_mappings)
@@ -94,7 +106,7 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
         AuthScrubber(mappings=current_mappings, email_scrubber=email_scrubber,
                      username_scrubber=username_scrubber),
         email_scrubber,
-        HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
+        HostnameScrubber(hostname_dict, config=config), DomainScrubber(domain_dict),
     ]
     if include_ldap:
         scrubbers.append(LdapDnScrubber(mappings=current_mappings))
@@ -168,7 +180,8 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
         if report:
             print(report, file=sys.stderr)
     return (clean_folder_path, report_files, updated_mappings, report_file_hits,
-            combined_mappings_for_verify, hostname_dict, domain_dict, tld_map)
+            combined_mappings_for_verify, hostname_dict, domain_dict, tld_map,
+            renames)
 
 
 def process_one_archive(archive_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
@@ -223,7 +236,8 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
                   f"workdir={clean_folder_path}", file=sys.stderr)
 
         (clean_folder_path, report_files, updated_mappings, report_file_hits,
-         combined_mappings_for_verify, hostname_dict, domain_dict, tld_map) = _scrub_tree(
+         combined_mappings_for_verify, hostname_dict, domain_dict, tld_map,
+         renames) = _scrub_tree(
             clean_folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag,
             timer=timer)
 
@@ -309,6 +323,7 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
             'output': output_path,
             'files_total': len(report_files),
             'file_hits': report_file_hits,
+            'renames': [{'from': old, 'to': new} for old, new in renames],
         },
         'verify_findings': verify_findings,
     }
@@ -322,7 +337,8 @@ def process_one_folder(folder_path, current_mappings, args, config, keyword_scru
     report_files, clean_folder_path = copy_folder_to_scrubbed(folder_path)
     timer.mark('copy')
     (clean_folder_path, report_files, updated_mappings, report_file_hits,
-     combined_mappings_for_verify, hostname_dict, domain_dict, tld_map) = _scrub_tree(
+     combined_mappings_for_verify, hostname_dict, domain_dict, tld_map,
+     renames) = _scrub_tree(
         clean_folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag,
         timer=timer)
     print(f"[✓] Scrubbed folder written to: {clean_folder_path}")
@@ -399,7 +415,7 @@ def process_one_file(file_path, current_mappings, args, config, keyword_scrubber
         AuthScrubber(mappings=current_mappings, email_scrubber=email_scrubber,
                      username_scrubber=username_scrubber),
         email_scrubber,
-        HostnameScrubber(dict(current_mappings.get('hostname', {}))),
+        HostnameScrubber(dict(current_mappings.get('hostname', {})), config=config),
         DomainScrubber(dict(current_mappings.get('domain', {}))),
         LdapDnScrubber(mappings=current_mappings),
         username_scrubber,

@@ -37,7 +37,27 @@ PRODUCT_DEFAULT_HOSTNAMES = {
 # mapping files (or passed as additional hostnames) cannot resurrect them.
 # The config key `hostname_preserve` (comma-separated) EXTENDS this set;
 # nothing can remove the built-ins.
-WELL_KNOWN_HOSTNAMES = LOOPBACK_HOSTNAMES | PRODUCT_DEFAULT_HOSTNAMES
+# The cloud instance-metadata service, which every instance of a given cloud
+# shares. GCE writes "169.254.169.254 metadata.google.internal metadata" into
+# /etc/hosts, so the bare word is harvested as a hostname, and from there it
+# renames public_cloud/metadata.txt to hostname_N.txt: the file loses the name
+# every reader and every tool knows it by, and nothing is protected, because
+# the name identifies a service rather than a customer.
+#
+# This set is OR'd into WELL_KNOWN_HOSTNAMES only. It must NOT join
+# PRODUCT_DEFAULT_HOSTNAMES: that set also builds the corruption mask
+# (_preserve_re), which matches case-insensitively and would then protect the
+# 'metadata' inside a customer host named metadata-01 from being scrubbed.
+CLOUD_METADATA_HOSTNAMES = {
+    "metadata", "metadata.google.internal",
+}
+
+# Addresses that only ever serve instance metadata. Every name on such a line
+# is an alias of that service, so nothing on it is learned.
+METADATA_ADDRESSES = {"169.254.169.254", "fd00:ec2::254"}
+
+WELL_KNOWN_HOSTNAMES = (LOOPBACK_HOSTNAMES | PRODUCT_DEFAULT_HOSTNAMES
+                        | CLOUD_METADATA_HOSTNAMES)
 
 
 def preserved_hostnames(config=None):
@@ -130,7 +150,9 @@ class HostnameScrubber(Scrubber):
     @staticmethod
     def extract_hostnames_from_hosts(file_path):
         hostnames = []
-        excluded_hostnames = WELL_KNOWN_HOSTNAMES
+        # Lowercased: /etc/hosts is written by hand and by cloud agents, and
+        # 'Metadata' must be excluded exactly as 'metadata' is.
+        excluded_hostnames = {n.lower() for n in WELL_KNOWN_HOSTNAMES}
         with open(file_path, 'r') as file:
             in_hosts_section = False
             for line in file:
@@ -146,11 +168,15 @@ class HostnameScrubber(Scrubber):
                         line = line.split('#')[0]
 
                     fields = re.split(r'\s+', line.strip())
+                    if fields and fields[0].lower() in METADATA_ADDRESSES:
+                        # every name on this line is an alias of the cloud's
+                        # metadata service, not a host anyone owns
+                        continue
                     for field in fields[1:]:
                         short_name = field.split('.')[0]
                         if len(short_name) < 4:
                             continue
-                        if short_name not in excluded_hostnames:
+                        if short_name.lower() not in excluded_hostnames:
                             hostnames.append(short_name)
 
         return hostnames
@@ -158,7 +184,7 @@ class HostnameScrubber(Scrubber):
     @staticmethod
     def extract_hostnames_from_hostname_section(file_path):
         hostnames = []
-        excluded_hostnames = WELL_KNOWN_HOSTNAMES
+        excluded_hostnames = {n.lower() for n in WELL_KNOWN_HOSTNAMES}
         with open(file_path, 'r') as file:
             in_hostname_section = False
             for line in file:
@@ -171,7 +197,7 @@ class HostnameScrubber(Scrubber):
 
                     hostname = line.strip()
                     short_name = hostname.split('.')[0]
-                    if short_name not in excluded_hostnames:
+                    if short_name.lower() not in excluded_hostnames:
                         hostnames.append(short_name)
                     
                     break  

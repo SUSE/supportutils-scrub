@@ -241,13 +241,22 @@ def _extract_streaming(archive_path, cmd, clean_folder_path, clean_folder_name,
     members = [m for _tar, m in _stream_members(archive_path, cmd)]
     top_level = _common_top_level(members)
     for tar, member in _stream_members(archive_path, cmd):
-        if member.issym() or member.islnk() or member.isdir():
+        if member.issym() or member.islnk():
             continue
         relative_path = _member_relative_path(member, top_level)
         if not relative_path:
             continue
         if not _is_safe_path(clean_folder_path, relative_path):
             print(f"[!] Blocked unsafe path in archive: {member.name}")
+            continue
+        if member.isdir():
+            rel = relative_path.strip("/")
+            # the wrapper maps to its own name, not to "": recreating it would
+            # put an empty scc_host_date/ inside the output folder
+            if not rel or (top_level and rel == top_level):
+                continue
+            # made with our own mode, not the archive's
+            os.makedirs(os.path.join(clean_folder_path, rel), exist_ok=True)
             continue
         member.name = os.path.join(clean_folder_name, relative_path)
         try:
@@ -298,12 +307,18 @@ def extract_tgz_archive(archive_path, logger, extract_base=None, mode="r:gz"):
         for member in members:
             if member.issym() or member.islnk():
                 continue
-            if member.isdir():
-                continue
 
             relative_path = _member_relative_path(member, top_level)
 
             if not relative_path:
+                continue
+
+            if member.isdir():
+                rel = relative_path.strip("/")
+                if (rel and not (top_level and rel == top_level)
+                        and _is_safe_path(clean_folder_path, rel)):
+                    os.makedirs(os.path.join(clean_folder_path, rel),
+                                exist_ok=True)
                 continue
 
             if not _is_safe_path(clean_folder_path, relative_path):

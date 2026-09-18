@@ -33,3 +33,36 @@ def test_every_chain_site_constructs_the_same_scrubber_classes():
     drift = {rel: sorted(union - got) for rel, got in sets.items()
              if union - got}
     assert not drift, f"chain sites missing scrubbers: {drift}"
+
+
+_HOSTNAME_SITES = _SITES + ["modes/stdin.py"]
+
+
+def _calls(src, name):
+    """Every argument list of `name(...)`, nested parentheses included."""
+    out = []
+    marker = name + "("
+    i = src.find(marker)
+    while i >= 0:
+        j = i + len(marker)
+        depth = 1
+        while j < len(src) and depth:
+            depth += {"(": 1, ")": -1}.get(src[j], 0)
+            j += 1
+        out.append(src[i + len(marker):j - 1])
+        i = src.find(marker, j)
+    return out
+
+
+def test_every_hostname_scrubber_is_given_the_config():
+    """The same drift, one level down: the class was built everywhere, but
+    only parallel.py handed it the config. Without it the preserve set is the
+    built-ins alone, so the operator's hostname_preserve silently did nothing
+    outside the parallel path, and the man page promised otherwise."""
+    missing = {}
+    for rel in _HOSTNAME_SITES:
+        with open(os.path.join(_SRC, rel)) as fh:
+            for call in _calls(fh.read(), "HostnameScrubber"):
+                if "config" not in call:
+                    missing.setdefault(rel, []).append(" ".join(call.split()))
+    assert not missing, f"HostnameScrubber built without config: {missing}"

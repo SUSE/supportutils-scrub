@@ -38,7 +38,7 @@ def _build_processor(config, ip_scrubber, mac_scrubber, ipv6_scrubber, keyword_s
         AuthScrubber(mappings=mappings, email_scrubber=email_scrubber,
                      username_scrubber=username_scrubber),
         email_scrubber,
-        HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
+        HostnameScrubber(hostname_dict, config=config), DomainScrubber(domain_dict),
         LdapDnScrubber(mappings=mappings),
         username_scrubber,
         PasswordScrubber(mappings=mappings), CloudTokenScrubber(mappings=mappings),
@@ -101,7 +101,8 @@ def run_stdin_mode(args, logger):
 
         domain_dict, tld_map  = extract_and_map_domains([], additional_domains,   mappings)
         username_dict         = extract_usernames([],       additional_usernames,  mappings)
-        hostname_dict         = extract_hostnames([],       additional_hostnames,  mappings)
+        hostname_dict         = extract_hostnames([],       additional_hostnames,  mappings,
+                                                  config=config)
 
         file_processor = _build_processor(
             config, ip_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
@@ -131,7 +132,8 @@ def run_stdin_mode(args, logger):
 
         domain_dict, tld_map  = extract_and_map_domains([], additional_domains,   mappings)
         username_dict         = extract_usernames([],       additional_usernames,  mappings)
-        hostname_dict         = extract_hostnames([],       additional_hostnames,  mappings)
+        hostname_dict         = extract_hostnames([],       additional_hostnames,  mappings,
+                                                  config=config)
 
         file_processor = _build_processor(
             config, ip_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,

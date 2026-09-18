@@ -128,8 +128,10 @@ def run_folder_mode(args, logger):
     # network.txt; harvested regardless of is_sc so plain crm_report/hb_report
     # bundles get their node dirs mapped too (collector-adoption bypass fix)
     for sp in scrubbed_paths:
-        additional_hostnames.extend(extract_hostnames_from_adopted_paths(sp))
-    hostname_dict = extract_hostnames(scan_files, additional_hostnames, mappings)
+        additional_hostnames.extend(
+            extract_hostnames_from_adopted_paths(sp, config=config))
+    hostname_dict = extract_hostnames(scan_files, additional_hostnames, mappings,
+                                      config=config)
 
     want_report = bool(getattr(args, 'report', False)) or bool(getattr(args, 'report_file', None))
     input_basename = os.path.basename(args.supportconfig_path[0].rstrip('/'))
@@ -141,7 +143,10 @@ def run_folder_mode(args, logger):
     # Rename regardless of is_sc: --hostname/--domain seeding must scrub
     # path names of plain folders (hb_reports etc.) too, not only
     # supportconfigs. No-op when nothing was learned or seeded.
-    scrubbed_paths = [rename_extraction_paths(sp, hostname_dict, domain_dict=domain_dict)
+    renames = []
+    scrubbed_paths = [rename_extraction_paths(sp, hostname_dict,
+                                              domain_dict=domain_dict,
+                                              config=config, renames=renames)
                       for sp in scrubbed_paths]
     scrubbed_path = scrubbed_paths[0]
     report_files = [f for sp in scrubbed_paths for f in walk_supportconfig(sp)]
@@ -169,7 +174,7 @@ def run_folder_mode(args, logger):
         AuthScrubber(mappings=mappings, email_scrubber=email_scrubber,
                      username_scrubber=username_scrubber),
         email_scrubber,
-        HostnameScrubber(hostname_dict), DomainScrubber(domain_dict),
+        HostnameScrubber(hostname_dict, config=config), DomainScrubber(domain_dict),
         LdapDnScrubber(mappings=mappings),
         username_scrubber,
         PasswordScrubber(mappings=mappings), CloudTokenScrubber(mappings=mappings),

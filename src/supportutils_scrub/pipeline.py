@@ -96,13 +96,15 @@ def extract_and_map_domains(report_files, additional_domains, mappings):
     return build_hierarchical_domain_map(all_domains, mappings)
 
 
-def extract_hostnames(report_files, additional_hostnames, mappings):
-    # Preserved product strings (uyuni-server family, loopback names) are
-    # dropped HERE, at the single source of the working dict: a legacy
-    # mapping file recorded before the preserve rule existed must not
-    # resurrect them, in text scrubbing OR in file/dir renaming.
+def extract_hostnames(report_files, additional_hostnames, mappings, config=None):
+    # Preserved product strings (uyuni-server family, loopback names, the
+    # cloud metadata aliases) are dropped HERE, at the single source of the
+    # working dict: a legacy mapping file recorded before the preserve rule
+    # existed must not resurrect them, in text scrubbing OR in file/dir
+    # renaming. The config carries the operator's own hostname_preserve
+    # list, which is worth nothing if it does not reach this point.
     from supportutils_scrub.hostname_scrubber import preserved_hostnames
-    _preserved = preserved_hostnames()
+    _preserved = preserved_hostnames(config)
     raw = mappings.get('hostname', {})
     hostname_dict = {k: v for k, v in raw.items()
                      if k.lower() not in _preserved}
@@ -124,6 +126,11 @@ def extract_hostnames(report_files, additional_hostnames, mappings):
 
     all_hostnames.extend(additional_hostnames)
     for h in all_hostnames:
+        # however a name arrived here -- harvested, seeded with --hostname, or
+        # carried in from an older mapping file -- a preserved one is never
+        # given a mapping, because a mapping is what renames files later.
+        if h.lower() in _preserved:
+            continue
         if h not in hostname_dict:
             hostname_dict[h] = f"hostname_{counter}"
             counter += 1
@@ -147,13 +154,13 @@ def _plausible_hostname(name, preserved):
             and not name.lower().endswith((".txt", ".log", ".xml", ".gz")))
 
 
-def extract_hostnames_from_adopted_paths(root):
+def extract_hostnames_from_adopted_paths(root, config=None):
     """Harvest node names from tree STRUCTURE: crm_report node dirs (the dir
     basename IS the node name), nested scc_<host>_<stamp> dirs, and every
     nested basic-environment.txt uname line. For dotted names the short first
     label is harvested too, so bare-shortname mentions map consistently."""
     from supportutils_scrub.hostname_scrubber import preserved_hostnames
-    preserved = preserved_hostnames()
+    preserved = preserved_hostnames(config)
     found = []
 
     def _add(name):
@@ -370,25 +377,34 @@ def report_format_mismatches(root, file=None):
     return len(bad)
 
 
-def scrub_name(name, hostname_dict, domain_dict=None):
-    # Preserved product strings survive renaming verbatim, protected against
-    # substring corruption the same way HostnameScrubber.scrub protects text.
+def name_scrubber(hostname_dict, domain_dict=None, config=None):
+    """The callable that renames one file or directory.
+
+    A name gets EXACTLY the rules the content gets: the same two scrubbers,
+    in the chain's order, so a name cannot be rewritten by something the
+    text would have left alone. The plain str.replace this used to do had no
+    boundaries, so a host called 'work' turned network.txt into
+    nethostname_9.txt, and it was case-sensitive, so MYHOST_logs kept a name
+    the content no longer used. Both scrubbers are built once per tree walk:
+    each compiles a regex, which is not something to repeat per file.
+    """
     from supportutils_scrub.hostname_scrubber import HostnameScrubber
-    pre = HostnameScrubber._preserve_re()
-    saved = []
-    if pre.search(name):
-        def _mask(m):
-            saved.append(m.group(0))
-            return f"\x00P{len(saved) - 1}\x00"
-        name = pre.sub(_mask, name)
-    if domain_dict:
-        for real, fake in sorted(domain_dict.items(), key=lambda x: len(x[0]), reverse=True):
-            name = name.replace(real, fake)
-    for real, fake in sorted(hostname_dict.items(), key=lambda x: len(x[0]), reverse=True):
-        name = name.replace(real, fake)
-    for i, original in enumerate(saved):
-        name = name.replace(f"\x00P{i}\x00", original)
-    return name
+    from supportutils_scrub.domain_scrubber import DomainScrubber
+    hs = HostnameScrubber(hostname_dict or {}, config=config)
+    ds = DomainScrubber(domain_dict) if domain_dict else None
+
+    def scrub(name):
+        name = hs.scrub(name)
+        if ds is not None:
+            name = ds.scrub(name)
+        return name
+
+    return scrub
+
+
+def scrub_name(name, hostname_dict, domain_dict=None, config=None):
+    """One name, for callers that rename a single artifact."""
+    return name_scrubber(hostname_dict, domain_dict, config)(name)
 
 
 def dataset_paths(dataset_dir, timestamp, hostname_dict=None, input_name=None, report=False):
@@ -406,32 +422,51 @@ def dataset_paths(dataset_dir, timestamp, hostname_dict=None, input_name=None, r
     return mapping_path, audit_path, report_path
 
 
-def rename_extraction_paths(clean_folder_path, hostname_dict, rename_top=True, domain_dict=None):
+def rename_extraction_paths(clean_folder_path, hostname_dict, rename_top=True,
+                            domain_dict=None, config=None, renames=None):
+    """Rename every path a scrubbed name changes, and record what changed.
+
+    `renames` is an optional list the caller passes in to receive (old, new)
+    pairs, relative to the tree where that reads naturally: a rename that is
+    never reported leaves the operator looking for a file the output no
+    longer has under that name.
+    """
     if not hostname_dict and not domain_dict:
         return clean_folder_path
+    scrub_one = name_scrubber(hostname_dict, domain_dict, config)
+
+    def note(root, old, new):
+        if renames is None:
+            return
+        rel = os.path.relpath(root, clean_folder_path)
+        prefix = "" if rel == "." else rel + os.sep
+        renames.append((prefix + old, prefix + new))
+
     for root, dirs, files in os.walk(clean_folder_path, topdown=True):
         # dirs must be updated in place or the walk descends into the old
         # (renamed-away) path and silently skips everything below it.
         for i, d in enumerate(dirs):
-            scrubbed = scrub_name(d, hostname_dict, domain_dict=domain_dict)
+            scrubbed = scrub_one(d)
             if scrubbed != d:
                 try:
                     os.rename(os.path.join(root, d), os.path.join(root, scrubbed))
+                    note(root, d, scrubbed)
                     dirs[i] = scrubbed
                 except Exception as e:
                     print(f"[!] Could not rename directory '{d}': {e}", file=sys.stderr)
         for f in files:
-            scrubbed = scrub_name(f, hostname_dict, domain_dict=domain_dict)
+            scrubbed = scrub_one(f)
             if scrubbed != f:
                 try:
                     os.rename(os.path.join(root, f), os.path.join(root, scrubbed))
+                    note(root, f, scrubbed)
                 except Exception as e:
                     print(f"[!] Could not rename file '{f}': {e}", file=sys.stderr)
     if not rename_top:
         return clean_folder_path
     parent   = os.path.dirname(clean_folder_path)
     basename = os.path.basename(clean_folder_path)
-    scrubbed_basename = scrub_name(basename, hostname_dict, domain_dict=domain_dict)
+    scrubbed_basename = scrub_one(basename)
     if scrubbed_basename != basename:
         new_path = os.path.join(parent, scrubbed_basename)
         try:

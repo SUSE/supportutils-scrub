@@ -59,12 +59,12 @@ def _text_of(path):
         return ''
 
 
-def _learn_tree(tree, mappings, seeds):
+def _learn_tree(tree, mappings, seeds, config=None):
     files = walk_supportconfig(tree)
     is_sc = is_supportconfig_folder(files)
     scan = files if is_sc else []
     extra_hosts = list(seeds['hostname'])
-    extra_hosts.extend(extract_hostnames_from_adopted_paths(tree))
+    extra_hosts.extend(extract_hostnames_from_adopted_paths(tree, config=config))
     extra_domains, extra_users = list(seeds['domain']), list(seeds['user'])
     if not is_sc:
         # a cluster report or a plain folder: no identity files, so read the
@@ -83,13 +83,14 @@ def _learn_tree(tree, mappings, seeds):
     # all files: extract_hostnames reads only network.txt and the cluster
     # record files, and a cluster report carries those without being a
     # supportconfig
-    mappings['hostname'] = extract_hostnames(files, extra_hosts, mappings)
+    mappings['hostname'] = extract_hostnames(files, extra_hosts, mappings,
+                                             config=config)
     if is_sc:
         mappings['serial'] = extract_serials(files, mappings)
     mappings['sid'] = extract_sids(files, mappings)
 
 
-def _learn_file(path, mappings, seeds):
+def _learn_file(path, mappings, seeds, config=None):
     text = _text_of(path)
     hosts = list(seeds['hostname']) + HostnameScrubber.extract_hostnames_from_text(text)
     domains = list(seeds['domain']) + DomainScrubber.extract_domains_from_text(text)
@@ -98,12 +99,18 @@ def _learn_file(path, mappings, seeds):
     mappings['domain'] = domain_dict
     mappings['tld_map'] = tld_map
     mappings['user'] = extract_usernames([], users, mappings)
-    mappings['hostname'] = extract_hostnames([], hosts, mappings)
+    mappings['hostname'] = extract_hostnames([], hosts, mappings, config=config)
     mappings['sid'] = extract_sids([path], mappings)
 
 
 def run_preload_mode(args, logger):
     from supportutils_scrub.audit import load_mappings_file
+    from supportutils_scrub.config import DEFAULT_CONFIG_PATH
+    from supportutils_scrub.config_reader import ConfigReader
+    # the operator's hostname_preserve list decides what is never given a
+    # mapping, and this pass is what writes the mapping file
+    config = ConfigReader(DEFAULT_CONFIG_PATH).read_config(
+        getattr(args, 'config', None))
     mappings = {}
     if args.mappings and os.path.exists(args.mappings):
         mappings = load_mappings_file(args.mappings)
@@ -116,20 +123,20 @@ def run_preload_mode(args, logger):
 
     for path in args.supportconfig_path:
         if os.path.isdir(path):
-            _learn_tree(path, mappings, seeds)
+            _learn_tree(path, mappings, seeds, config=config)
         elif os.path.isfile(path) and is_archive_path(path):
             tmp = tempfile.mkdtemp(prefix='scrub-preload-',
                                    dir=get_secure_tmp_base())
             try:
                 extract_tgz_archive(path, logger, extract_base=tmp,
                                     mode=_tar_mode(path))
-                _learn_tree(tmp, mappings, seeds)
+                _learn_tree(tmp, mappings, seeds, config=config)
             except (tarfile.TarError, OSError) as e:
                 logger.warning(f"preload: cannot read {path}: {e}")
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
         elif os.path.isfile(path):
-            _learn_file(path, mappings, seeds)
+            _learn_file(path, mappings, seeds, config=config)
         else:
             logger.warning(f"preload: no such input {path}")
 
