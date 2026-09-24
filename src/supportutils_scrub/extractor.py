@@ -6,7 +6,8 @@ import logging
 import tarfile
 import subprocess
 
-from supportutils_scrub.processor import (append_scrubbed, is_dump_member,
+from supportutils_scrub.processor import (append_scrubbed, dump_member_verdict,
+                                          DUMP, NOT_A_DUMP,
                                           _TAR_SUFFIXES, _ARCHIVE_NAME_SUFFIXES)
 
 
@@ -106,35 +107,54 @@ _NESTED_ARCHIVE_SUFFIXES = _ARCHIVE_NAME_SUFFIXES
 
 
 def _first_dump_member(tar, members):
-    """The name of the first of members (read from the open tar) that is a
-    memory dump, or None."""
+    """(name, verdict) for the first of members (read from the open tar)
+    that is a memory dump or could not be inspected, or None."""
     for member in members:
-        if is_dump_member(tar, member):
-            return member.name
+        verdict = dump_member_verdict(tar, member)
+        if verdict != NOT_A_DUMP:
+            return member.name, verdict
     return None
+
+
+def _dump_words(verdict):
+    return ("a memory dump" if verdict == DUMP
+            else "a member that could not be inspected and may be a memory dump")
 
 
 def _extract_verified(tar, members, dest):
     """Extract members into dest and check each regular file landed whole
     (its size on disk is the member's size). Raises on the first failure,
-    and when a member it must skip for its path is a memory dump: that dump
-    would otherwise be lost with the archive."""
+    and whenever a dump would be lost: a member skipped for its path that is
+    (or may be) a dump, or a second regular member at a path already written
+    in this extraction when either copy is (or may be) one, since the later
+    copy would overwrite the earlier."""
+    written = {}
     for member in members:
         # Untrusted content: regular files and dirs only, no
         # symlinks/devices, no paths escaping dest.
         if not (member.isfile() or member.isdir()):
             continue
         if not _is_safe_path(dest, member.name):
-            if member.isfile() and is_dump_member(tar, member):
-                raise OSError(f"{member.name}: a memory dump stored under an unsafe "
-                              f"path (absolute or outside the archive), not extracted")
+            if member.isfile():
+                verdict = dump_member_verdict(tar, member)
+                if verdict != NOT_A_DUMP:
+                    raise OSError(f"{member.name}: {_dump_words(verdict)} stored under an "
+                                  f"unsafe path (absolute or outside the archive), "
+                                  f"not extracted")
             continue
+        target = os.path.normpath(os.path.join(dest, member.name))
+        if member.isfile() and target in written:
+            for copy in (written[target], member):
+                verdict = dump_member_verdict(tar, copy)
+                if verdict != NOT_A_DUMP:
+                    raise OSError(f"{member.name}: stored twice at one path and one copy "
+                                  f"is {_dump_words(verdict)}; not extracted over it")
         tar.extract(member, path=dest)
         if member.isfile():
-            target = os.path.join(dest, member.name)
             got = os.path.getsize(target)
             if got != member.size:
                 raise OSError(f"{member.name}: {got} of {member.size} bytes extracted")
+            written[target] = member
 
 
 def expand_nested_archives(root_dir, logger=None, max_depth=5):
@@ -194,16 +214,21 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                 unpacked += 1
             except Exception as e:
                 if dump:
+                    name, verdict = dump
                     tail = ""
                     if created:
                         # dest did not exist before this archive: only what
                         # the failed extraction wrote is removed
                         shutil.rmtree(dest, ignore_errors=True)
                         tail = ", the partial extraction removed"
+                    if verdict == DUMP:
+                        what = f"it carries a memory dump ({name})"
+                    else:
+                        what = (f"it holds a member that could not be inspected and may "
+                                f"be a memory dump ({name}: could not inspect)")
                     if logger:
-                        logger.error(f"Could not unpack nested archive {rel}: {e}; it carries "
-                                     f"a memory dump ({dump}), left in place and never "
-                                     f"scrubbed{tail}")
+                        logger.error(f"Could not unpack nested archive {rel}: {e}; {what}, "
+                                     f"left in place and never scrubbed{tail}")
                     kept.add(archive)
                     continue
                 if logger:

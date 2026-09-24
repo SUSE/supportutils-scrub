@@ -3,6 +3,7 @@
 import os
 import bz2
 import gzip
+import itertools
 import lzma
 import re
 import shutil
@@ -218,27 +219,59 @@ _ARCHIVE_NAME_SUFFIXES = _TAR_SUFFIXES + ('.tar',)
 # format such as bz2 or lz4 emits nothing before a whole block is in, hence
 # the cap well above one block), and never more than _DUMP_HEAD_BYTES come
 # out, so a highly compressed payload cannot fill memory.
+#
+# The probe has three answers. UNKNOWN (no decompressor here, a stream that
+# does not decode, memory refused) keeps an archive that failed to unpack:
+# the scrub tool cannot always read a dump, but it must never destroy one.
 _MEMBER_COMPRESSIONS = ('.gz', '.xz', '.bz2', '.zst', '.lz4')
 _MEMBER_READ_BLOCK = 4096
 _MEMBER_COMPRESSED_CAP = 8 * 1024 * 1024
 _EXTERNAL_MEMBER_DECOMPRESSORS = {'.zst': ('zstd', '-dcq'), '.lz4': ('lz4', '-dcq')}
+# xz declares its dictionary in the header; a crafted one asks for gigabytes
+_LZMA_MEMLIMIT = 128 * 1024 * 1024
+_DUMP_SIGNATURES = (b'makedumpfile', b'KDUMP   ', b'\x7fELF')
+
+DUMP = 'dump'
+NOT_A_DUMP = 'not-a-dump'
+UNKNOWN = 'unknown'
+
+
+def _read_available(raw, size):
+    """Up to size bytes from an unbuffered member reader. A member cut short
+    raises on a read that runs past its end without moving the position, so
+    the read is retried with halved sizes and every byte before the damage
+    is kept (in a stream, where the position cannot go back, the retry
+    fails and the block is lost)."""
+    out = []
+    got = 0
+    step = size
+    while got < size and step > 0:
+        try:
+            block = raw.read(min(step, size - got))
+        except MemoryError:
+            raise
+        except Exception:
+            step //= 2
+            continue
+        if not block:
+            break
+        out.append(block)
+        got += len(block)
+    return b''.join(out)
 
 
 def _member_blocks(raw, cap):
     """Compressed blocks from an unbuffered member reader, at most cap bytes
-    in all, ending quietly where a member cut short ends."""
+    in all, the partial block before a member cut short included."""
     got = 0
     while got < cap:
-        try:
-            block = raw.read(min(_MEMBER_READ_BLOCK, cap - got))
-        except MemoryError:
-            raise
-        except Exception:
-            return
+        block = _read_available(raw, min(_MEMBER_READ_BLOCK, cap - got))
         if not block:
             return
         got += len(block)
         yield block
+        if len(block) < min(_MEMBER_READ_BLOCK, cap - got + len(block)):
+            return                      # the member ends (or is cut short) here
 
 
 class _BlockReader:
@@ -262,12 +295,12 @@ class _BlockReader:
 
 
 def _python_decompressor(suffix):
-    """An object with decompress(data, max_length) for suffix, the string
-    'zstandard' for that module's pull interface, or None."""
+    """An object with decompress(data, max_length) and eof for suffix, the
+    string 'zstandard' for that module's pull interface, or None."""
     if suffix == '.gz':
         return zlib.decompressobj(16 + zlib.MAX_WBITS)
     if suffix == '.xz':
-        return lzma.LZMADecompressor()
+        return lzma.LZMADecompressor(memlimit=_LZMA_MEMLIMIT)
     if suffix == '.bz2':
         return bz2.BZ2Decompressor()
     if suffix == '.zst':
@@ -291,56 +324,55 @@ def _python_decompressor(suffix):
 
 
 def _python_decompressed_head(suffix, blocks, n):
-    """The first n decompressed bytes, or None when no Python decompressor
-    for suffix is available (blocks are then left unread)."""
+    """(head, complete): the first n decompressed bytes and whether the
+    stream ended cleanly within them, or None when no Python decompressor
+    for suffix is available (blocks are then left unread). A decode error
+    stops with what came out before it, complete False."""
     dec = _python_decompressor(suffix)
     if dec is None:
         return None
+    out = b''
     if dec == 'zstandard':
         import zstandard
         reader = zstandard.ZstdDecompressor().stream_reader(_BlockReader(blocks))
-        out = b''
         while len(out) < n:
             try:
                 piece = reader.read(n - len(out))
-            except MemoryError:
-                raise
             except Exception:
-                break
+                return out, False
             if not piece:
-                break
+                return out, True
             out += piece
-        return out
-    out = b''
+        return out, False
     for block in blocks:
         try:
             out += dec.decompress(block, n - len(out))
-        except MemoryError:
-            raise
         except Exception:
-            break                       # damaged, or past the end of stream
+            return out, False           # damaged, or memory refused
         if len(out) >= n:
-            break
-    return out
+            return out, False
+        if getattr(dec, 'eof', False):
+            return out, True
+    return out, False
 
 
-def _external_decompressed_head(suffix, blocks, n):
-    """The first n bytes the external decompressor for suffix writes; b''
-    when it is not installed. The tool is stopped as soon as n bytes are
-    read."""
+def _external_decompressed_head(suffix, prefix, n):
+    """(head, complete) from the external decompressor for suffix, fed the
+    member bytes already read into memory, or None when it is not installed.
+    The tool is stopped as soon as n bytes are read; the feeder thread only
+    ever touches the pipe, never the archive."""
     cmd = _EXTERNAL_MEMBER_DECOMPRESSORS.get(suffix)
     exe = shutil.which(cmd[0]) if cmd else None
     if not exe:
-        return b''
+        return None
     proc = subprocess.Popen([exe, *cmd[1:]], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     def _feed():
         try:
-            for block in blocks:
-                proc.stdin.write(block)
+            proc.stdin.write(prefix)
         except (OSError, ValueError):
-            pass                        # the reader is done and stopped the tool
+            pass                        # the tool was stopped: the pipe is closed
         finally:
             try:
                 proc.stdin.close()
@@ -348,26 +380,34 @@ def _external_decompressed_head(suffix, blocks, n):
                 pass
     feeder = threading.Thread(target=_feed, daemon=True)
     feeder.start()
+    complete = False
     try:
-        return proc.stdout.read(n)
+        head = proc.stdout.read(n)
+        if len(head) < n:
+            complete = proc.wait() == 0  # the tool ended: all it could write
     finally:
-        proc.kill()
+        if proc.poll() is None:
+            proc.kill()
         proc.wait()
         proc.stdout.close()
-        feeder.join(timeout=5)
+        feeder.join()                   # the dead tool's pipe fails any write
+    return head, complete
 
 
-def _decompressed_member_head(raw, suffix):
-    """The dump-head bytes of a compressed member."""
-    blocks = _member_blocks(raw, _MEMBER_COMPRESSED_CAP)
-    head = _python_decompressed_head(suffix, blocks, _DUMP_HEAD_BYTES)
-    if head is None:
-        head = _external_decompressed_head(suffix, blocks, _DUMP_HEAD_BYTES)
-    return head
+def _head_verdict(head, check, complete):
+    """DUMP, NOT_A_DUMP or UNKNOWN for a head that may be short: complete
+    means head is all the payload there is."""
+    if check(head):
+        return DUMP
+    if complete or len(head) >= _DUMP_HEAD_BYTES:
+        return NOT_A_DUMP
+    if any(sig.startswith(head) or head.startswith(sig) for sig in _DUMP_SIGNATURES):
+        return UNKNOWN                  # nothing, or a dump signature cut short
+    return NOT_A_DUMP                   # bytes no dump starts with
 
 
-def is_dump_member(tar, member):
-    """True when an archive member is a memory dump.
+def dump_member_verdict(tar, member):
+    """DUMP, NOT_A_DUMP or UNKNOWN for an archive member.
 
     opencore.ini, the marker a getappcore bundle carries beside its core,
     counts by name. Every other member counts by content, never by name
@@ -375,37 +415,63 @@ def is_dump_member(tar, member):
     bytes, bounded), so a text file called core.txt or vmcore-notes stays
     text and its archive is unpacked and scrubbed. A core* member counts
     when its head is an ELF core, a vmcore* member when its head is a
-    kernel dump (makedumpfile, compressed kdump, or an ELF core). A member
-    stored compressed (.gz .xz .bz2 .zst .lz4) is judged by its decompressed
-    head. In a stream the member must be the current one."""
+    kernel dump (makedumpfile, compressed kdump, or an ELF core). The raw
+    head decides first, whatever the name says; a member stored compressed
+    (.gz .xz .bz2 .zst .lz4) is then judged by its decompressed head.
+    UNKNOWN when the head cannot be read or decoded here. Never raises. In
+    a stream the member must be the current one."""
     if not member.isfile():
-        return False
+        return NOT_A_DUMP
     base = os.path.basename(member.name or '')
     if base == 'opencore.ini':
-        return True
+        return DUMP
+    if member.size == 0:
+        return NOT_A_DUMP
     if base.startswith('vmcore'):
         check = is_dump_head
     elif base.startswith('core'):
         check = _is_elf_core_head
     else:
-        return False
+        return NOT_A_DUMP
     suffix = next((s for s in _MEMBER_COMPRESSIONS if base.lower().endswith(s)), None)
     try:
         f = tar.extractfile(member)
         if f is None:
-            return False
+            return UNKNOWN
         # Through the unbuffered member reader: the buffered one fills a whole
         # block first and fails on a member cut short right after its head,
         # which is what a truncated upload of a dump looks like.
-        if suffix:
-            head = _decompressed_member_head(f.raw, suffix)
-        else:
-            head = f.raw.read(_DUMP_HEAD_BYTES)
-    except MemoryError:
-        raise
-    except Exception:
-        return False
-    return check(head)
+        raw = f.raw
+        raw_head = _read_available(raw, _DUMP_HEAD_BYTES)
+        raw_complete = len(raw_head) >= min(member.size, _DUMP_HEAD_BYTES)
+        if check(raw_head):
+            return DUMP                 # an uncompressed dump under any name
+        if not suffix:
+            return _head_verdict(raw_head, check, raw_complete)
+        if not raw_complete and not raw_head:
+            return UNKNOWN
+        rest = (_member_blocks(raw, _MEMBER_COMPRESSED_CAP - len(raw_head))
+                if len(raw_head) >= _DUMP_HEAD_BYTES else iter(()))
+        blocks = itertools.chain([raw_head], rest)
+        got = _python_decompressed_head(suffix, blocks, _DUMP_HEAD_BYTES)
+        if got is None:
+            # read into memory under the cap before the tool runs, so no
+            # thread ever reads the archive
+            got = _external_decompressed_head(suffix, b''.join(blocks),
+                                              _DUMP_HEAD_BYTES)
+        if got is None:
+            return UNKNOWN              # no decompressor for it here
+        head, complete = got
+        if not head and not complete:
+            return UNKNOWN              # does not decode
+        return _head_verdict(head, check, complete)
+    except Exception:                   # MemoryError included: never escapes
+        return UNKNOWN
+
+
+def is_dump_member(tar, member):
+    """True when dump_member_verdict says DUMP."""
+    return dump_member_verdict(tar, member) == DUMP
 
 
 def archive_dump_member(path, limit=None):
@@ -413,7 +479,7 @@ def archive_dump_member(path, limit=None):
     or None. The archive is read as a stream (never loaded whole), stopping
     at the first hit or after `limit` members (default _DUMP_LISTING_CAP).
     An archive that cannot be read proves nothing and yields None, from the
-    point the damage starts."""
+    point the damage starts. Never raises, MemoryError included."""
     if limit is None:
         limit = _DUMP_LISTING_CAP
     try:
@@ -423,9 +489,7 @@ def archive_dump_member(path, limit=None):
                     return member.name
                 if count >= limit:
                     break
-    except MemoryError:
-        raise
-    except Exception:
+    except Exception:                   # MemoryError included
         pass
     return None
 

@@ -460,11 +460,10 @@ class TestCompressedDumpMembers:
         ("vmcore-dmesg.txt.gz", lambda: gzip.compress(b"[ 0.0] Linux\n", mtime=0)),
         ("core.txt.gz", lambda: gzip.compress(b"core notes\n", mtime=0)),
         ("core.1234.xz", lambda: lzma.compress(_elf_core(e_type=2))),
-        ("vmcore.xz", lambda: b"not an xz stream at all"),
         ("vmcore.gz", lambda: gzip.compress(b"makedumpfile: saving\n", mtime=0)),
         # a bomb: 64 MB of NUL bytes, decompressed only as far as the head
         ("vmcore.gz", lambda: gzip.compress(b"\x00" * (64 << 20), mtime=0)),
-    ], ids=["vmcore.gz-text", "dmesg.gz", "core.txt.gz", "core.xz-elf-exec", "not-xz",
+    ], ids=["vmcore.gz-text", "dmesg.gz", "core.txt.gz", "core.xz-elf-exec",
             "vmcore.gz-log-line", "vmcore.gz-zeros"])
     def test_compressed_non_dumps(self, name, make):
         assert _stream_verdicts([(name, make())]) == {name: False}
@@ -476,6 +475,144 @@ class TestCompressedDumpMembers:
         name = _SYSTEMD_CORE + ".zst"
         assert _stream_verdicts([(name, _zstd(_elf_core() + _RNG_BYTES))]) == {name: True}
         assert _stream_verdicts([("core.9.zst", _zstd(b"text\n" * 1000))]) == {"core.9.zst": False}
+
+
+def _verdicts3(members, mode="r|*"):
+    """{member name: dump_member_verdict} over a tar (a stream by default)."""
+    buf = io.BytesIO(_tar_bytes(members))
+    out = {}
+    with tarfile.open(fileobj=buf, mode=mode) as tar:
+        for member in tar:
+            out[member.name] = processor.dump_member_verdict(tar, member)
+    return out
+
+
+def _no_decompressors(monkeypatch):
+    """What the production image has for zstd and lz4: nothing."""
+    monkeypatch.setattr(processor, "_python_decompressor", lambda suffix: None)
+    monkeypatch.setattr(processor, "_EXTERNAL_MEMBER_DECOMPRESSORS", {})
+
+
+def _xz_with_dict(data, dict_code):
+    """An xz stream whose block header declares the LZMA2 dictionary
+    dict_code (40 is 4 GiB), block header CRC recomputed."""
+    import struct
+    import zlib
+    raw = bytearray(lzma.compress(data, format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC32))
+    hdr = 12
+    size = (raw[hdr] + 1) * 4
+    flags = raw[hdr + 1]
+    pos = hdr + 2
+
+    def varint(pos):
+        while raw[pos] & 0x80:
+            pos += 1
+        return pos + 1
+    if flags & 0x40:
+        pos = varint(pos)
+    if flags & 0x80:
+        pos = varint(pos)
+    assert raw[pos] == 0x21 and raw[pos + 1] == 1       # LZMA2, one property byte
+    raw[pos + 2] = dict_code
+    crc = zlib.crc32(bytes(raw[hdr:hdr + size - 4]))
+    raw[hdr + size - 4:hdr + size] = struct.pack("<I", crc)
+    return bytes(raw)
+
+
+class TestMemberVerdicts:
+    """The probe answers DUMP, NOT_A_DUMP or UNKNOWN, and never raises."""
+
+    def test_a_stream_that_does_not_decode_is_unknown(self):
+        assert _verdicts3([("vmcore.xz", b"not an xz stream at all")]) == \
+            {"vmcore.xz": processor.UNKNOWN}
+
+    def test_no_decompressor_here_is_unknown(self, monkeypatch):
+        core = _zstd(_elf_core() + _RNG_BYTES)
+        text = _zstd(b"plain text\n" * 100)
+        _no_decompressors(monkeypatch)
+        name = _SYSTEMD_CORE + ".zst"
+        assert _verdicts3([(name, core), ("core.9.zst", text)]) == \
+            {name: processor.UNKNOWN, "core.9.zst": processor.UNKNOWN}
+
+    def test_a_huge_declared_dictionary_is_unknown_not_a_memory_error(self):
+        name = "vmcore.xz"
+        data = _xz_with_dict(_makedumpfile(), 40)
+        assert _verdicts3([(name, data)]) == {name: processor.UNKNOWN}
+
+    def test_a_memory_error_in_the_probe_is_unknown(self, monkeypatch):
+        class _Greedy:
+            eof = False
+
+            def decompress(self, data, n):
+                raise MemoryError()
+        monkeypatch.setattr(processor, "_python_decompressor", lambda suffix: _Greedy())
+        data = gzip.compress(_makedumpfile(), mtime=0)
+        assert _verdicts3([("vmcore.gz", data)]) == {"vmcore.gz": processor.UNKNOWN}
+
+    def test_the_stream_listing_never_raises_a_memory_error(self, tmp_path, monkeypatch):
+        def greedy(tar, member):
+            raise MemoryError()
+        monkeypatch.setattr(processor, "is_dump_member", greedy)
+        path = tmp_path / "x.tar"
+        path.write_bytes(_tar_bytes([("vmcore", _makedumpfile())]))
+        assert processor.archive_dump_member(str(path)) is None
+
+    def test_an_uncompressed_dump_under_a_compressed_name_is_a_dump(self, monkeypatch):
+        _no_decompressors(monkeypatch)
+        assert _verdicts3([("vmcore.gz", _makedumpfile()), ("core.7.zst", _elf_core())]) == \
+            {"vmcore.gz": processor.DUMP, "core.7.zst": processor.DUMP}
+
+    @pytest.mark.parametrize("name,payload", [
+        ("core.txt.gz", gzip.compress(b"core notes 198.51.100.77\n" * 20, mtime=0)),
+        ("vmcore.gz", gzip.compress(b"hi\n", mtime=0)),        # shorter than a head
+        ("vmcore.xz", lzma.compress(b"plain text\n" * 20)),
+        ("vmcore", b"hello"),
+    ], ids=["core.txt.gz", "vmcore.gz-short", "vmcore.xz-text", "vmcore-short-text"])
+    def test_a_decodable_text_payload_is_not_a_dump(self, name, payload):
+        assert _verdicts3([(name, payload)]) == {name: processor.NOT_A_DUMP}
+
+    @pytest.mark.parametrize("cut,expected", [
+        (b"makedump", "unknown"),    # a dump signature cut short
+        (b"\x7fELF\x02\x01", "unknown"),
+        (b"hello wo", "not-a-dump"),
+    ], ids=["makedumpfile-cut", "elf-cut", "text-cut"])
+    def test_a_member_cut_inside_its_head(self, tmp_path, cut, expected):
+        full = _tar_bytes([("vmcore", cut + b"x" * 5000)])
+        path = tmp_path / "cut.tar"
+        path.write_bytes(full[:512 + len(cut)])
+        with tarfile.open(path, "r:*") as tar:
+            try:
+                tar.getmembers()
+            except tarfile.ReadError:
+                pass
+            member = tar.members[0]
+            assert processor.dump_member_verdict(tar, member) == expected
+
+    def test_a_short_read_keeps_the_bytes_before_the_damage(self, tmp_path):
+        data = bytes(range(256)) * 40                           # 10240 bytes
+        full = _tar_bytes([("vmcore.xz", data)])
+        path = tmp_path / "cut.tar"
+        path.write_bytes(full[:512 + 5000])
+        with tarfile.open(path, "r:*") as tar:
+            try:
+                tar.getmembers()
+            except tarfile.ReadError:
+                pass
+            raw = tar.extractfile(tar.members[0]).raw
+            assert b"".join(processor._member_blocks(raw, 1 << 20)) == data[:5000]
+
+    def test_the_external_tool_is_fed_from_memory_and_reaped(self):
+        if not shutil.which("zstd"):
+            pytest.skip("no zstd tool here")
+        import threading
+        before = threading.active_count()
+        head, complete = processor._external_decompressed_head(
+            ".zst", _zstd(b"short text\n"), 20)
+        assert (head, complete) == (b"short text\n", True)
+        head, complete = processor._external_decompressed_head(
+            ".zst", _zstd(_elf_core() + _RNG_BYTES), 20)
+        assert len(head) == 20 and processor._is_elf_core_head(head)
+        assert threading.active_count() == before
 
 
 class TestExpandNestedArchives:
@@ -630,6 +767,87 @@ class TestExpandNestedArchives:
         assert _sha(arc) == before
         assert os.listdir(tmp_path) == ["crash.tar"]
         assert len(logger.errors) == 1 and "(vmcore)" in logger.errors[0], logger.errors
+
+    def test_a_damaged_archive_holding_a_raw_dump_under_a_gz_name_is_kept(self, tmp_path):
+        full = _tar_bytes([("vmcore.gz", _makedumpfile() * 50)])
+        arc = tmp_path / "upload.tar"
+        arc.write_bytes(full[:2048])
+        before = _sha(arc)
+        logger = _Logger()
+        extractor.expand_nested_archives(str(tmp_path), logger)
+        assert _sha(arc) == before and os.listdir(tmp_path) == ["upload.tar"]
+        assert len(logger.errors) == 1 and "memory dump (vmcore.gz)" in logger.errors[0]
+
+    def test_a_damaged_archive_whose_member_does_not_decode_is_kept(self, tmp_path):
+        full = _tar_bytes([("vmcore.xz", b"not an xz stream at all" * 200)])
+        arc = tmp_path / "upload.tar"
+        arc.write_bytes(full[:2048])
+        before = _sha(arc)
+        logger = _Logger()
+        extractor.expand_nested_archives(str(tmp_path), logger)
+        assert _sha(arc) == before and os.listdir(tmp_path) == ["upload.tar"]
+        assert len(logger.errors) == 1, logger.errors
+        assert "(vmcore.xz: could not inspect)" in logger.errors[0]
+
+    def test_without_a_decompressor_an_unsafe_path_zst_core_keeps_the_archive(
+            self, tmp_path, monkeypatch):
+        name = "/var/lib/systemd/coredump/" + _SYSTEMD_CORE + ".zst"
+        arc = tmp_path / "cores.tar"
+        arc.write_bytes(_tar_bytes([("readme", b"text\n"),
+                                    (name, _zstd(_elf_core() + _RNG_BYTES))]))
+        _no_decompressors(monkeypatch)
+        before = _sha(arc)
+        logger = _Logger()
+        assert extractor.expand_nested_archives(str(tmp_path), logger) == 0
+        assert _sha(arc) == before and os.listdir(tmp_path) == ["cores.tar"]
+        assert len(logger.errors) == 1, logger.errors
+        assert f"({name}: could not inspect)" in logger.errors[0]
+        assert "unsafe path" in logger.errors[0]
+
+    def test_without_a_decompressor_a_damaged_archive_of_a_zst_core_is_kept(
+            self, tmp_path, monkeypatch):
+        full = _tar_bytes([(_SYSTEMD_CORE + ".zst", _zstd(_elf_core() + _RNG_BYTES))])
+        arc = tmp_path / "cores.tar"
+        arc.write_bytes(full[:len(full) // 2])
+        _no_decompressors(monkeypatch)
+        before = _sha(arc)
+        logger = _Logger()
+        extractor.expand_nested_archives(str(tmp_path), logger)
+        assert _sha(arc) == before and os.listdir(tmp_path) == ["cores.tar"]
+        assert len(logger.errors) == 1 and "could not inspect" in logger.errors[0]
+
+    def test_a_damaged_archive_of_a_decodable_text_core_txt_gz_is_removed(self, tmp_path):
+        full = _tar_bytes([("core.txt.gz", gzip.compress(b"notes\n" * 50000, mtime=0)),
+                           ("messages", b"x" * 8000)])
+        with tarfile.open(fileobj=io.BytesIO(full)) as tar:
+            cut = tar.getmember("messages").offset_data + 1000
+        arc = tmp_path / "notes.tar"
+        arc.write_bytes(full[:cut])                 # damaged inside messages
+        logger = _Logger()
+        extractor.expand_nested_archives(str(tmp_path), logger)
+        assert not arc.exists()
+        assert len(logger.errors) == 1 and "removed" in logger.errors[0]
+
+    @pytest.mark.parametrize("order", ["dump-then-text", "text-then-dump"])
+    def test_a_second_member_at_the_path_of_a_dump_keeps_the_archive(self, tmp_path, order):
+        members = [("vmcore", _makedumpfile()), ("vmcore", b"hello")]
+        if order == "text-then-dump":
+            members.reverse()
+        arc = tmp_path / "crash.tar"
+        arc.write_bytes(_tar_bytes([("dmesg.txt", b"text\n")] + members))
+        before = _sha(arc)
+        logger = _Logger()
+        assert extractor.expand_nested_archives(str(tmp_path), logger) == 0
+        assert _sha(arc) == before and os.listdir(tmp_path) == ["crash.tar"]
+        assert len(logger.errors) == 1 and "stored twice" in logger.errors[0], logger.errors
+
+    def test_two_text_copies_at_one_path_still_unpack(self, tmp_path):
+        (tmp_path / "logs.tar").write_bytes(_tar_bytes([
+            ("messages", b"first\n"), ("messages", b"second\n")]))
+        logger = _Logger()
+        assert extractor.expand_nested_archives(str(tmp_path), logger) == 1
+        assert (tmp_path / "logs" / "messages").read_bytes() == b"second\n"
+        assert logger.errors == []
 
     def test_a_tar_holding_core_txt_is_expanded(self, tmp_path):
         (tmp_path / "notes.tar").write_bytes(_tar_bytes([
