@@ -169,6 +169,20 @@ _DUMP_HEAD_BYTES = 20
 _ELF_ET_CORE = 4
 
 
+def _is_elf_core_head(head):
+    """True when head is an ELF header whose e_type is ET_CORE."""
+    if head[:4] != b'\x7fELF' or len(head) < 18:
+        return False
+    order = {1: 'little', 2: 'big'}.get(head[5])
+    return bool(order) and int.from_bytes(head[16:18], order) == _ELF_ET_CORE
+
+
+def is_dump_head(head):
+    """True when head starts a kernel dump or an ELF core."""
+    return (head.startswith(b'makedumpfile') or head.startswith(b'KDUMP   ')
+            or _is_elf_core_head(head))
+
+
 def is_memory_dump(path):
     """True when the file's head is a kernel dump or an ELF core."""
     try:
@@ -176,20 +190,9 @@ def is_memory_dump(path):
             head = f.read(_DUMP_HEAD_BYTES)
     except OSError:
         return False
-    if head.startswith(b'makedumpfile') or head.startswith(b'KDUMP   '):
-        return True
-    if head[:4] == b'\x7fELF' and len(head) >= 18:
-        order = {1: 'little', 2: 'big'}.get(head[5])
-        if order and int.from_bytes(head[16:18], order) == _ELF_ET_CORE:
-            return True
-    return False
+    return is_dump_head(head)
 
 
-# Archive members that mark a memory dump: a kernel dump (vmcore, vmcore.flat,
-# vmcore-incomplete; not the vmcore-dmesg.txt beside it), an application core
-# (core, core.<pid>, core.<pid>.<anything>) or the opencore.ini a getappcore
-# bundle carries next to its core.
-_CORE_MEMBER = re.compile(r'^core(\.\d+)?(\.|$)')
 # The member listing stops after this many members without a hit, so a big
 # dump-less archive is not walked to its end just to be told apart.
 _DUMP_LISTING_CAP = 2000
@@ -198,18 +201,45 @@ _DUMP_LISTING_CAP = 2000
 _ARCHIVE_NAME_SUFFIXES = _TAR_SUFFIXES + ('.tar',)
 
 
-def is_dump_member_name(name):
-    """True when an archive member's basename marks a memory dump."""
-    base = os.path.basename(name or '')
+def is_dump_member(tar, member):
+    """True when an archive member is a memory dump.
+
+    opencore.ini, the marker a getappcore bundle carries beside its core,
+    counts by name. Every other member counts by content, never by name
+    alone: a name only picks the members whose head is read (the first
+    bytes, bounded), so a text file called core.txt or vmcore-notes stays
+    text and its archive is unpacked and scrubbed. A core* member counts
+    when its head is an ELF core, a vmcore* member when its head is a
+    kernel dump (makedumpfile, compressed kdump, or an ELF core). In a
+    stream the member must be the current one."""
+    if not member.isfile():
+        return False
+    base = os.path.basename(member.name or '')
     if base == 'opencore.ini':
         return True
-    if base.startswith('vmcore') and not base.endswith('.txt'):
-        return True
-    return bool(_CORE_MEMBER.match(base))
+    if base.startswith('vmcore'):
+        check = is_dump_head
+    elif base.startswith('core'):
+        check = _is_elf_core_head
+    else:
+        return False
+    try:
+        f = tar.extractfile(member)
+        if f is None:
+            return False
+        # Through the unbuffered member reader: the buffered one fills a whole
+        # block first and fails on a member cut short right after its head,
+        # which is what a truncated upload of a dump looks like.
+        head = f.raw.read(_DUMP_HEAD_BYTES)
+    except MemoryError:
+        raise
+    except Exception:
+        return False
+    return check(head)
 
 
 def archive_dump_member(path, limit=None):
-    """The name of the first regular-file member that marks a memory dump,
+    """The name of the first member that is a memory dump (is_dump_member),
     or None. The archive is read as a stream (never loaded whole), stopping
     at the first hit or after `limit` members (default _DUMP_LISTING_CAP).
     An archive that cannot be read proves nothing and yields None, from the
@@ -219,7 +249,7 @@ def archive_dump_member(path, limit=None):
     try:
         with tarfile.open(path, 'r|*') as tar:
             for count, member in enumerate(tar, 1):
-                if member.isfile() and is_dump_member_name(member.name):
+                if is_dump_member(tar, member):
                     return member.name
                 if count >= limit:
                     break

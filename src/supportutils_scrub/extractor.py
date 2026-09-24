@@ -7,7 +7,7 @@ import tarfile
 import subprocess
 
 from supportutils_scrub.processor import (append_scrubbed, archive_dump_member,
-                                          is_dump_member_name)
+                                          is_dump_member)
 
 
 _ARCHIVE_SUFFIXES = ('.tar.gz', '.tar.bz2', '.tar.xz', '.tgz', '.tbz', '.tbz2', '.txz')
@@ -103,10 +103,11 @@ def walk_supportconfig(folder_path):
 _NESTED_ARCHIVE_SUFFIXES = _ARCHIVE_SUFFIXES + ('.tar',)
 
 
-def _first_dump_member(members):
-    """The name of the first regular-file member that marks a memory dump."""
+def _first_dump_member(tar, members):
+    """The name of the first of members (read from the open tar) that is a
+    memory dump, or None."""
     for member in members:
-        if member.isfile() and is_dump_member_name(member.name):
+        if is_dump_member(tar, member):
             return member.name
     return None
 
@@ -147,17 +148,19 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
             while os.path.exists(dest):
                 dest = f"{base_dest}_{n}"
                 n += 1
-            loaded = []
+            dump = None
             try:
                 with tarfile.open(archive, 'r:*') as tar:
                     try:
                         members = tar.getmembers()
-                    finally:
-                        # what was read before any damage, for the dump check
-                        loaded = tar.members
+                    except Exception:
+                        # the members read before the damage, for the check
+                        # below: a damaged archive that holds a dump stays
+                        dump = _first_dump_member(tar, tar.members)
+                        raise
                     # the stream listing stops after a member cap; a dump
                     # further in is caught here, before anything is written
-                    if _first_dump_member(members):
+                    if _first_dump_member(tar, members):
                         if logger:
                             logger.info(f"{rel}: carries a memory dump; left whole, never scrubbed")
                         kept.add(archive)
@@ -175,7 +178,6 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                     logger.info(f"Unpacked nested archive: {rel}")
                 unpacked += 1
             except Exception as e:
-                dump = _first_dump_member(loaded)
                 if dump:
                     if logger:
                         logger.error(f"Could not unpack nested archive {rel}: {e}; it carries "

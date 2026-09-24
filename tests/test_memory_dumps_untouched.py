@@ -206,21 +206,70 @@ class TestMemoryDumpProbe:
         assert logger.infos == ["messages.txt: memory dump, left unchanged (never scrubbed)"]
 
 
-class TestDumpMemberNames:
-    @pytest.mark.parametrize("name", [
-        "vmcore", "var/crash/127.0.0.1-2026-09-24/vmcore", "vmcore.flat",
-        "vmcore-incomplete", "core", "core.1234", "root/core.1234", "core.1234.gz",
-        "opencore.ini", "x/opencore.ini",
-    ])
-    def test_dump_members(self, name):
-        assert processor.is_dump_member_name(name) is True
+def _stream_verdicts(members):
+    """{member name: is_dump_member} over a tar read as a stream."""
+    buf = io.BytesIO(_tar_bytes(members))
+    out = {}
+    with tarfile.open(fileobj=buf, mode="r|*") as tar:
+        for member in tar:
+            out[member.name] = processor.is_dump_member(tar, member)
+    return out
 
-    @pytest.mark.parametrize("name", [
-        "vmcore-dmesg.txt", "var/crash/x/vmcore-dmesg.txt", "cores", "corefile",
-        "score.1234", "opencore.ini.bak", "messages", "",
-    ])
-    def test_other_members(self, name):
-        assert processor.is_dump_member_name(name) is False
+
+class TestDumpMembers:
+    """A member is a dump by its content; only opencore.ini counts by name."""
+
+    @pytest.mark.parametrize("name,payload", [
+        ("vmcore", _makedumpfile()),
+        ("var/crash/127.0.0.1-2026-09-24/vmcore", _kdump_compressed()),
+        ("vmcore.flat", _makedumpfile()),
+        ("vmcore-incomplete", _elf_core()),
+        ("core", _elf_core()),
+        ("core.1234", _elf_core("big")),
+        ("root/core.1234", _elf_core()),
+        ("corefile", _elf_core()),
+        ("opencore.ini", b"[core]\n"),
+        ("x/opencore.ini", b""),
+    ], ids=["vmcore-flat", "vmcore-kdump", "vmcore.flat", "vmcore-incomplete-elf",
+            "core", "core.1234-be", "root-core.1234", "corefile", "opencore.ini",
+            "opencore.ini-empty"])
+    def test_dump_members(self, name, payload):
+        assert _stream_verdicts([(name, payload)]) == {name: True}
+
+    @pytest.mark.parametrize("name,payload", [
+        ("core.txt", b"core notes 198.51.100.77\n"),
+        ("core.py", b"import os\n"),
+        ("core.xml", b"<core/>\n"),
+        ("core.1234", b"not a core at all\n"),
+        ("core.1234", _elf_core(e_type=2)),        # an executable is no core
+        ("core", _makedumpfile()),                 # a core is an ELF core only
+        ("vmcore", b"plain text body 198.51.100.77\n"),
+        ("vmcore-dmesg.txt", b"[    0.000000] Linux version\n"),
+        ("vmcore.1", b""),
+        ("messages", _elf_core()),                 # not a dump name: not read
+        ("score.1234", _elf_core()),
+        ("opencore.ini.bak", b"[core]\n"),
+    ], ids=["core.txt", "core.py", "core.xml", "core.1234-text", "core.1234-elf-exec",
+            "core-makedumpfile", "vmcore-text", "vmcore-dmesg.txt", "vmcore.1-empty",
+            "messages-elf-core", "score.1234", "opencore.ini.bak"])
+    def test_other_members(self, name, payload):
+        assert _stream_verdicts([(name, payload)]) == {name: False}
+
+    def test_a_directory_named_core_is_not_a_dump(self):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            info = tarfile.TarInfo("pkg/core")
+            info.type = tarfile.DIRTYPE
+            tar.addfile(info)
+        buf.seek(0)
+        with tarfile.open(fileobj=buf, mode="r|*") as tar:
+            assert [processor.is_dump_member(tar, m) for m in tar] == [False]
+
+    def test_the_stream_listing_reads_each_member_in_turn(self):
+        verdicts = _stream_verdicts([
+            ("core.txt", b"text\n"), ("vmcore-dmesg.txt", b"text\n"),
+            ("vmcore", _makedumpfile())])
+        assert verdicts == {"core.txt": False, "vmcore-dmesg.txt": False, "vmcore": True}
 
 
 class TestExpandNestedArchives:
@@ -279,6 +328,49 @@ class TestExpandNestedArchives:
         assert len(logger.errors) == 1, logger.errors
         assert "upload.tar" in logger.errors[0] and "vmcore" in logger.errors[0]
         assert "left in place" in logger.errors[0]
+
+    def test_a_damaged_gz_archive_whose_dump_the_listing_missed_is_kept(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(processor, "_DUMP_LISTING_CAP", 1)
+        filler = bytes(range(256)) * 400          # does not compress away
+        full = _tar_bytes([("readme", b"notes\n"), ("vmcore", _makedumpfile() + filler)],
+                          mode="w:gz")
+        arc = tmp_path / "upload.tar.gz"
+        arc.write_bytes(full[:len(full) // 2])
+        before = _sha(arc)
+        logger = _Logger()
+        extractor.expand_nested_archives(str(tmp_path), logger)
+        assert arc.exists() and _sha(arc) == before
+        assert len(logger.errors) == 1 and "vmcore" in logger.errors[0], logger.errors
+
+    def test_a_tar_holding_core_txt_is_expanded(self, tmp_path):
+        (tmp_path / "notes.tar").write_bytes(_tar_bytes([
+            ("core.txt", b"core notes 198.51.100.77\n"), ("core.py", b"import os\n")]))
+        logger = _Logger()
+        assert extractor.expand_nested_archives(str(tmp_path), logger) == 1
+        assert not (tmp_path / "notes.tar").exists()
+        assert (tmp_path / "notes" / "core.txt").is_file()
+        assert logger.errors == []
+
+    def test_a_tar_holding_an_elf_core_named_core_1234_is_left_whole(self, tmp_path):
+        arc = tmp_path / "app.tar.xz"
+        arc.write_bytes(_tar_bytes([("readme", b"notes\n"), ("core.1234", _elf_core())],
+                                   mode="w:xz"))
+        before = _sha(arc)
+        logger = _Logger()
+        assert extractor.expand_nested_archives(str(tmp_path), logger) == 0
+        assert _sha(arc) == before
+        assert os.listdir(tmp_path) == ["app.tar.xz"]
+        assert logger.infos == ["app.tar.xz: carries a memory dump; left whole, never scrubbed"]
+
+    def test_a_tar_holding_a_text_vmcore_is_expanded(self, tmp_path):
+        (tmp_path / "crash.tar").write_bytes(_tar_bytes([
+            ("vmcore", b"plain text body 198.51.100.77\n"),
+            ("vmcore-dmesg.txt", b"[    0.000000] Linux version\n")]))
+        logger = _Logger()
+        assert extractor.expand_nested_archives(str(tmp_path), logger) == 1
+        assert not (tmp_path / "crash.tar").exists()
+        assert (tmp_path / "crash" / "vmcore").is_file()
 
     def test_an_intact_archive_whose_dump_the_listing_missed_is_still_kept(
             self, tmp_path, monkeypatch):
