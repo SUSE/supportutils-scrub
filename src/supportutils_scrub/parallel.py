@@ -55,7 +55,7 @@ from supportutils_scrub.processor import (compressed_opener, compression_magic_o
                                           _SCRUB_INFO_HEADER as _HEADER,
     FileProcessor, BINARY_SA_PATTERN, BINARY_OBJ_PATTERN,
     SAR_XZ_PATTERN, SAR_PLAIN_PATTERN, _SCRUB_INFO_HEADER,
-    compressed_opener, is_memory_dump, is_archive_name,
+    compressed_opener, is_memory_dump, is_archive_name, looks_binary,
 )
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 
@@ -304,10 +304,13 @@ def _is_chunkable(path):
             return False
     except OSError:
         return False
-    # A dump, a core or an archive left whole for carrying one is far above
-    # the threshold and is not text: chunking it would rewrite it as text.
-    # process_file leaves it unchanged and says so.
-    return not (is_archive_name(base) or is_memory_dump(path))
+    # Only text is split and scrubbed in pieces. A dump, a core, an archive
+    # left whole for carrying one, or any other binary (a dump part with no
+    # header of its own, a packet capture, a database: NUL bytes in the head)
+    # would be rewritten as text; unchunked it reaches process_file, which
+    # leaves it unchanged and says so.
+    return not (is_archive_name(base) or is_memory_dump(path)
+                or looks_binary(path))
 
 
 def _assemble_chunks(path, parts, changed):
