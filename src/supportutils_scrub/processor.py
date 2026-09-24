@@ -6,7 +6,9 @@ import gzip
 import lzma
 import re
 import shutil
+import subprocess
 import tarfile
+import threading
 import time
 import zlib
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
@@ -209,6 +211,161 @@ _DUMP_LISTING_CAP = 2000
 _ARCHIVE_NAME_SUFFIXES = _TAR_SUFFIXES + ('.tar',)
 
 
+# A dump member may be stored compressed (vmcore.gz, vmcore.xz, core.<pid>.xz,
+# the systemd-coredump core.<comm>.<uid>.<boot>.<pid>.<ts>.zst|xz|lz4). Its
+# head is read through the matching decompressor, bounded on both sides:
+# compressed input is fed block by block only until the head is out (a block
+# format such as bz2 or lz4 emits nothing before a whole block is in, hence
+# the cap well above one block), and never more than _DUMP_HEAD_BYTES come
+# out, so a highly compressed payload cannot fill memory.
+_MEMBER_COMPRESSIONS = ('.gz', '.xz', '.bz2', '.zst', '.lz4')
+_MEMBER_READ_BLOCK = 4096
+_MEMBER_COMPRESSED_CAP = 8 * 1024 * 1024
+_EXTERNAL_MEMBER_DECOMPRESSORS = {'.zst': ('zstd', '-dcq'), '.lz4': ('lz4', '-dcq')}
+
+
+def _member_blocks(raw, cap):
+    """Compressed blocks from an unbuffered member reader, at most cap bytes
+    in all, ending quietly where a member cut short ends."""
+    got = 0
+    while got < cap:
+        try:
+            block = raw.read(min(_MEMBER_READ_BLOCK, cap - got))
+        except MemoryError:
+            raise
+        except Exception:
+            return
+        if not block:
+            return
+        got += len(block)
+        yield block
+
+
+class _BlockReader:
+    """A read() over a block iterator, for decompressors that pull input."""
+
+    def __init__(self, blocks):
+        self._blocks = blocks
+        self._buf = b''
+
+    def read(self, n=-1):
+        while n < 0 or len(self._buf) < n:
+            block = next(self._blocks, None)
+            if block is None:
+                break
+            self._buf += block
+        if n < 0:
+            out, self._buf = self._buf, b''
+        else:
+            out, self._buf = self._buf[:n], self._buf[n:]
+        return out
+
+
+def _python_decompressor(suffix):
+    """An object with decompress(data, max_length) for suffix, the string
+    'zstandard' for that module's pull interface, or None."""
+    if suffix == '.gz':
+        return zlib.decompressobj(16 + zlib.MAX_WBITS)
+    if suffix == '.xz':
+        return lzma.LZMADecompressor()
+    if suffix == '.bz2':
+        return bz2.BZ2Decompressor()
+    if suffix == '.zst':
+        try:
+            from compression import zstd
+            return zstd.ZstdDecompressor()
+        except ImportError:
+            pass
+        try:
+            import zstandard  # noqa: F401
+            return 'zstandard'
+        except ImportError:
+            pass
+    if suffix == '.lz4':
+        try:
+            import lz4.frame
+            return lz4.frame.LZ4FrameDecompressor()
+        except ImportError:
+            pass
+    return None
+
+
+def _python_decompressed_head(suffix, blocks, n):
+    """The first n decompressed bytes, or None when no Python decompressor
+    for suffix is available (blocks are then left unread)."""
+    dec = _python_decompressor(suffix)
+    if dec is None:
+        return None
+    if dec == 'zstandard':
+        import zstandard
+        reader = zstandard.ZstdDecompressor().stream_reader(_BlockReader(blocks))
+        out = b''
+        while len(out) < n:
+            try:
+                piece = reader.read(n - len(out))
+            except MemoryError:
+                raise
+            except Exception:
+                break
+            if not piece:
+                break
+            out += piece
+        return out
+    out = b''
+    for block in blocks:
+        try:
+            out += dec.decompress(block, n - len(out))
+        except MemoryError:
+            raise
+        except Exception:
+            break                       # damaged, or past the end of stream
+        if len(out) >= n:
+            break
+    return out
+
+
+def _external_decompressed_head(suffix, blocks, n):
+    """The first n bytes the external decompressor for suffix writes; b''
+    when it is not installed. The tool is stopped as soon as n bytes are
+    read."""
+    cmd = _EXTERNAL_MEMBER_DECOMPRESSORS.get(suffix)
+    exe = shutil.which(cmd[0]) if cmd else None
+    if not exe:
+        return b''
+    proc = subprocess.Popen([exe, *cmd[1:]], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def _feed():
+        try:
+            for block in blocks:
+                proc.stdin.write(block)
+        except (OSError, ValueError):
+            pass                        # the reader is done and stopped the tool
+        finally:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+    feeder = threading.Thread(target=_feed, daemon=True)
+    feeder.start()
+    try:
+        return proc.stdout.read(n)
+    finally:
+        proc.kill()
+        proc.wait()
+        proc.stdout.close()
+        feeder.join(timeout=5)
+
+
+def _decompressed_member_head(raw, suffix):
+    """The dump-head bytes of a compressed member."""
+    blocks = _member_blocks(raw, _MEMBER_COMPRESSED_CAP)
+    head = _python_decompressed_head(suffix, blocks, _DUMP_HEAD_BYTES)
+    if head is None:
+        head = _external_decompressed_head(suffix, blocks, _DUMP_HEAD_BYTES)
+    return head
+
+
 def is_dump_member(tar, member):
     """True when an archive member is a memory dump.
 
@@ -218,8 +375,9 @@ def is_dump_member(tar, member):
     bytes, bounded), so a text file called core.txt or vmcore-notes stays
     text and its archive is unpacked and scrubbed. A core* member counts
     when its head is an ELF core, a vmcore* member when its head is a
-    kernel dump (makedumpfile, compressed kdump, or an ELF core). In a
-    stream the member must be the current one."""
+    kernel dump (makedumpfile, compressed kdump, or an ELF core). A member
+    stored compressed (.gz .xz .bz2 .zst .lz4) is judged by its decompressed
+    head. In a stream the member must be the current one."""
     if not member.isfile():
         return False
     base = os.path.basename(member.name or '')
@@ -231,6 +389,7 @@ def is_dump_member(tar, member):
         check = _is_elf_core_head
     else:
         return False
+    suffix = next((s for s in _MEMBER_COMPRESSIONS if base.lower().endswith(s)), None)
     try:
         f = tar.extractfile(member)
         if f is None:
@@ -238,7 +397,10 @@ def is_dump_member(tar, member):
         # Through the unbuffered member reader: the buffered one fills a whole
         # block first and fails on a member cut short right after its head,
         # which is what a truncated upload of a dump looks like.
-        head = f.raw.read(_DUMP_HEAD_BYTES)
+        if suffix:
+            head = _decompressed_member_head(f.raw, suffix)
+        else:
+            head = f.raw.read(_DUMP_HEAD_BYTES)
     except MemoryError:
         raise
     except Exception:
@@ -820,7 +982,7 @@ class FileProcessor:
             if not dry_run:
                 logger.info(f"{base_name}: memory dump, left unchanged (never scrubbed)")
             return
-        warn(f"{base_name}: {ext[1:]} payload is not text — left unchanged "
+        warn(f"{base_name}: {ext[1:]} payload is not text - left unchanged "
              f"(text-scrubbing it would destroy the payload)")
 
     @staticmethod

@@ -116,13 +116,18 @@ def _first_dump_member(tar, members):
 
 def _extract_verified(tar, members, dest):
     """Extract members into dest and check each regular file landed whole
-    (its size on disk is the member's size). Raises on the first failure."""
+    (its size on disk is the member's size). Raises on the first failure,
+    and when a member it must skip for its path is a memory dump: that dump
+    would otherwise be lost with the archive."""
     for member in members:
         # Untrusted content: regular files and dirs only, no
         # symlinks/devices, no paths escaping dest.
         if not (member.isfile() or member.isdir()):
             continue
         if not _is_safe_path(dest, member.name):
+            if member.isfile() and is_dump_member(tar, member):
+                raise OSError(f"{member.name}: a memory dump stored under an unsafe "
+                              f"path (absolute or outside the archive), not extracted")
             continue
         tar.extract(member, path=dest)
         if member.isfile():
@@ -167,6 +172,7 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                 dest = f"{base_dest}_{n}"
                 n += 1
             dump = None
+            created = False
             try:
                 with tarfile.open(archive, 'r:*') as tar:
                     try:
@@ -176,8 +182,9 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                         # the archive is kept
                         dump = _first_dump_member(tar, tar.members)
                         raise
-                    os.makedirs(dest)
                     try:
+                        os.makedirs(dest)
+                        created = True
                         _extract_verified(tar, members, dest)
                     except Exception:
                         dump = _first_dump_member(tar, members)
@@ -187,13 +194,16 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                 unpacked += 1
             except Exception as e:
                 if dump:
-                    # dest did not exist before this archive: only what the
-                    # failed extraction wrote is removed
-                    shutil.rmtree(dest, ignore_errors=True)
+                    tail = ""
+                    if created:
+                        # dest did not exist before this archive: only what
+                        # the failed extraction wrote is removed
+                        shutil.rmtree(dest, ignore_errors=True)
+                        tail = ", the partial extraction removed"
                     if logger:
                         logger.error(f"Could not unpack nested archive {rel}: {e}; it carries "
                                      f"a memory dump ({dump}), left in place and never "
-                                     f"scrubbed, the partial extraction removed")
+                                     f"scrubbed{tail}")
                     kept.add(archive)
                     continue
                 if logger:

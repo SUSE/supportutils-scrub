@@ -12,12 +12,15 @@ kept in place and named in an error, never deleted with the dump in it.
 No em dashes, by project convention.
 """
 
+import bz2
 import gzip
 import hashlib
 import io
 import lzma
 import os
 import random
+import shutil
+import subprocess
 import tarfile
 from types import SimpleNamespace
 
@@ -405,6 +408,76 @@ class TestDumpMembers:
         assert verdicts == {"core.txt": False, "vmcore-dmesg.txt": False, "vmcore": True}
 
 
+def _zstd(data):
+    try:
+        import zstandard
+        return zstandard.ZstdCompressor().compress(data)
+    except ImportError:
+        pass
+    exe = shutil.which("zstd")
+    if not exe:
+        pytest.skip("no zstd compressor here")
+    return subprocess.run([exe, "-c", "-q"], input=data, stdout=subprocess.PIPE,
+                          check=True).stdout
+
+
+def _lz4(data):
+    try:
+        import lz4.frame
+        return lz4.frame.compress(data)
+    except ImportError:
+        pass
+    exe = shutil.which("lz4")
+    if not exe:
+        pytest.skip("no lz4 compressor here")
+    return subprocess.run([exe, "-c", "-q"], input=data, stdout=subprocess.PIPE,
+                          check=True).stdout
+
+
+_SYSTEMD_CORE = "core.bash.1000.0123456789abcdef0123456789abcdef.4321.1700000000000000"
+
+
+class TestCompressedDumpMembers:
+    """A dump member stored compressed is judged by its decompressed head."""
+
+    @pytest.mark.parametrize("name,make", [
+        ("vmcore.gz", lambda: gzip.compress(_makedumpfile(), mtime=0)),
+        ("vmcore.xz", lambda: lzma.compress(_makedumpfile() + _RNG_BYTES)),
+        ("vmcore.bz2", lambda: bz2.compress(_kdump_compressed())),
+        ("core.1234.xz", lambda: lzma.compress(_elf_core())),
+        # a whole 900 KB bz2 block must be in before bz2 emits a byte
+        ("core.1234.bz2", lambda: bz2.compress(_elf_core() + random.Random(2).randbytes(2 << 20))),
+        (_SYSTEMD_CORE + ".zst", lambda: _zstd(_elf_core() + _RNG_BYTES)),
+        (_SYSTEMD_CORE + ".xz", lambda: lzma.compress(_elf_core())),
+        (_SYSTEMD_CORE + ".lz4", lambda: _lz4(_elf_core())),
+    ], ids=["vmcore.gz", "vmcore.xz", "vmcore.bz2-kdump", "core.xz", "core.bz2-big-block",
+            "systemd-zst", "systemd-xz", "systemd-lz4"])
+    def test_compressed_dumps(self, name, make):
+        assert _stream_verdicts([(name, make())]) == {name: True}
+
+    @pytest.mark.parametrize("name,make", [
+        ("vmcore.gz", lambda: gzip.compress(b"plain text 198.51.100.77\n", mtime=0)),
+        ("vmcore-dmesg.txt.gz", lambda: gzip.compress(b"[ 0.0] Linux\n", mtime=0)),
+        ("core.txt.gz", lambda: gzip.compress(b"core notes\n", mtime=0)),
+        ("core.1234.xz", lambda: lzma.compress(_elf_core(e_type=2))),
+        ("vmcore.xz", lambda: b"not an xz stream at all"),
+        ("vmcore.gz", lambda: gzip.compress(b"makedumpfile: saving\n", mtime=0)),
+        # a bomb: 64 MB of NUL bytes, decompressed only as far as the head
+        ("vmcore.gz", lambda: gzip.compress(b"\x00" * (64 << 20), mtime=0)),
+    ], ids=["vmcore.gz-text", "dmesg.gz", "core.txt.gz", "core.xz-elf-exec", "not-xz",
+            "vmcore.gz-log-line", "vmcore.gz-zeros"])
+    def test_compressed_non_dumps(self, name, make):
+        assert _stream_verdicts([(name, make())]) == {name: False}
+
+    def test_the_external_zstd_tool_is_used_when_no_module_is(self, monkeypatch):
+        if not shutil.which("zstd"):
+            pytest.skip("no zstd tool here")
+        monkeypatch.setattr(processor, "_python_decompressor", lambda suffix: None)
+        name = _SYSTEMD_CORE + ".zst"
+        assert _stream_verdicts([(name, _zstd(_elf_core() + _RNG_BYTES))]) == {name: True}
+        assert _stream_verdicts([("core.9.zst", _zstd(b"text\n" * 1000))]) == {"core.9.zst": False}
+
+
 class TestExpandNestedArchives:
     def test_a_kdump_tar_is_unpacked_and_its_dump_comes_out_byte_identical(self, tmp_path):
         (tmp_path / "crash.tar.gz").write_bytes(_tar_bytes([
@@ -482,6 +555,64 @@ class TestExpandNestedArchives:
         assert _sha(arc) == before
         assert os.listdir(tmp_path) == ["crash.tar"]
         assert len(logger.errors) == 1 and "No space left" in logger.errors[0]
+        assert "partial extraction removed" in logger.errors[0]
+
+    def test_a_folder_that_cannot_be_made_keeps_a_dump_carrying_archive(
+            self, tmp_path, monkeypatch):
+        arc = tmp_path / "crash.tar"
+        arc.write_bytes(_tar_bytes([("dmesg.txt", b"text\n"), ("vmcore", _makedumpfile())]))
+        before = _sha(arc)
+        real_makedirs = os.makedirs
+
+        def makedirs(path, *a, **kw):
+            if os.path.basename(path) == "crash":
+                raise OSError(28, "No space left on device")
+            return real_makedirs(path, *a, **kw)
+        monkeypatch.setattr(extractor.os, "makedirs", makedirs)
+        logger = _Logger()
+        assert extractor.expand_nested_archives(str(tmp_path), logger) == 0
+        assert _sha(arc) == before
+        assert os.listdir(tmp_path) == ["crash.tar"]
+        assert len(logger.errors) == 1 and "(vmcore)" in logger.errors[0], logger.errors
+        assert "No space left" in logger.errors[0]
+        assert "partial extraction removed" not in logger.errors[0]
+
+    @pytest.mark.parametrize("name", ["/var/crash/2026-09-24/vmcore", "../vmcore",
+                                      "a/../../core.1234"],
+                             ids=["absolute", "dotdot", "nested-dotdot"])
+    def test_a_dump_stored_under_an_unsafe_path_keeps_the_archive(self, tmp_path, name):
+        payload = _elf_core() if "core.1234" in name else _makedumpfile()
+        arc = tmp_path / "crash.tar"
+        arc.write_bytes(_tar_bytes([("dmesg.txt", b"text\n"), (name, payload)]))
+        before = _sha(arc)
+        logger = _Logger()
+        assert extractor.expand_nested_archives(str(tmp_path), logger) == 0
+        assert _sha(arc) == before
+        assert os.listdir(tmp_path) == ["crash.tar"]
+        assert len(logger.errors) == 1, logger.errors
+        assert f"({name})" in logger.errors[0] and "unsafe path" in logger.errors[0]
+        assert "partial extraction removed" in logger.errors[0]
+
+    def test_a_text_member_under_an_unsafe_path_is_still_just_skipped(self, tmp_path):
+        (tmp_path / "logs.tar").write_bytes(_tar_bytes([
+            ("../escape.txt", b"text\n"), ("/etc/passwd", b"root:x:0:0\n"),
+            ("messages", b"a log line\n")]))
+        logger = _Logger()
+        assert extractor.expand_nested_archives(str(tmp_path), logger) == 1
+        assert sorted(os.listdir(tmp_path)) == ["logs"]
+        assert os.listdir(tmp_path / "logs") == ["messages"]
+        assert logger.errors == []
+
+    def test_a_damaged_archive_holding_only_a_compressed_dump_is_kept(self, tmp_path):
+        full = _tar_bytes([("vmcore.xz", lzma.compress(_makedumpfile() + _RNG_BYTES))])
+        arc = tmp_path / "upload.tar"
+        arc.write_bytes(full[:len(full) // 2])
+        before = _sha(arc)
+        logger = _Logger()
+        extractor.expand_nested_archives(str(tmp_path), logger)
+        assert _sha(arc) == before
+        assert os.listdir(tmp_path) == ["upload.tar"]
+        assert len(logger.errors) == 1 and "(vmcore.xz)" in logger.errors[0], logger.errors
 
     def test_a_short_extraction_is_not_trusted(self, tmp_path, monkeypatch):
         arc = tmp_path / "crash.tar"
