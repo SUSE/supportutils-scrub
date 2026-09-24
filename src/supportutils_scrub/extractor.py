@@ -6,7 +6,8 @@ import logging
 import tarfile
 import subprocess
 
-from supportutils_scrub.processor import append_scrubbed
+from supportutils_scrub.processor import (append_scrubbed, archive_dump_member,
+                                          is_dump_member_name)
 
 
 _ARCHIVE_SUFFIXES = ('.tar.gz', '.tar.bz2', '.tar.xz', '.tgz', '.tbz', '.tbz2', '.txz')
@@ -102,32 +103,67 @@ def walk_supportconfig(folder_path):
 _NESTED_ARCHIVE_SUFFIXES = _ARCHIVE_SUFFIXES + ('.tar',)
 
 
+def _first_dump_member(members):
+    """The name of the first regular-file member that marks a memory dump."""
+    for member in members:
+        if member.isfile() and is_dump_member_name(member.name):
+            return member.name
+    return None
+
+
 def expand_nested_archives(root_dir, logger=None, max_depth=5):
     """Unpack tar archives found anywhere under root_dir so their contents get
     scrubbed like regular files. Each archive is extracted into a sibling
-    folder named after it (extension stripped) and then removed — the output
+    folder named after it (extension stripped) and then removed; the output
     stays unpacked. Repeats up to max_depth times for archives-in-archives.
-    An archive that cannot be unpacked is removed too: shipping it unscrubbed
-    would leak whatever it contains. Returns the number of archives unpacked.
+
+    An archive that carries a memory dump (a kdump tar, a getappcore bundle)
+    is left whole: a dump is never scrubbed, rewritten or deleted. The member
+    list is read as a stream first and stops at the first dump member, so a
+    200 GB kdump tar is not decompressed to be told apart.
+
+    An archive that cannot be unpacked is removed: shipping it unscrubbed
+    would leak whatever it contains. Unless it carries a dump; then it stays
+    in place and the error names it. Returns the number of archives unpacked.
     """
     unpacked = 0
+    kept = set()
     for _ in range(max_depth):
         archives = [p for p in walk_supportconfig(root_dir)
-                    if p.lower().endswith(_NESTED_ARCHIVE_SUFFIXES)]
+                    if p.lower().endswith(_NESTED_ARCHIVE_SUFFIXES)
+                    and p not in kept]
         if not archives:
             break
         for archive in archives:
             rel = os.path.relpath(archive, root_dir)
+            if archive_dump_member(archive):
+                if logger:
+                    logger.info(f"{rel}: carries a memory dump; left whole, never scrubbed")
+                kept.add(archive)
+                continue
             dest = os.path.join(os.path.dirname(archive),
                                 strip_archive_ext(os.path.basename(archive)))
             base_dest, n = dest, 1
             while os.path.exists(dest):
                 dest = f"{base_dest}_{n}"
                 n += 1
+            loaded = []
             try:
                 with tarfile.open(archive, 'r:*') as tar:
+                    try:
+                        members = tar.getmembers()
+                    finally:
+                        # what was read before any damage, for the dump check
+                        loaded = tar.members
+                    # the stream listing stops after a member cap; a dump
+                    # further in is caught here, before anything is written
+                    if _first_dump_member(members):
+                        if logger:
+                            logger.info(f"{rel}: carries a memory dump; left whole, never scrubbed")
+                        kept.add(archive)
+                        continue
                     os.makedirs(dest)
-                    for member in tar.getmembers():
+                    for member in members:
                         # Untrusted content: regular files and dirs only, no
                         # symlinks/devices, no paths escaping dest.
                         if not (member.isfile() or member.isdir()):
@@ -139,6 +175,13 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                     logger.info(f"Unpacked nested archive: {rel}")
                 unpacked += 1
             except Exception as e:
+                dump = _first_dump_member(loaded)
+                if dump:
+                    if logger:
+                        logger.error(f"Could not unpack nested archive {rel}: {e}; it carries "
+                                     f"a memory dump ({dump}), left in place, never scrubbed")
+                    kept.add(archive)
+                    continue
                 if logger:
                     logger.error(f"Could not unpack nested archive {rel}: {e} — removed (cannot scrub its contents)")
             try:

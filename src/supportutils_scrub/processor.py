@@ -6,6 +6,7 @@ import gzip
 import lzma
 import re
 import shutil
+import tarfile
 import time
 import zlib
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
@@ -157,6 +158,81 @@ def looks_binary(path):
             return b'\x00' in f.read(_TEXT_PROBE)
     except OSError:
         return False
+
+
+# A kernel dump or an application core holds memory, not text: it is never
+# scrubbed, rewritten or deleted. The head says what it is: the flattened
+# makedumpfile format, the compressed kdump format, or an ELF core (a
+# /proc/vmcore copy or an application core), whose e_type is 4 in the
+# byte order its e_ident declares.
+_DUMP_HEAD_BYTES = 20
+_ELF_ET_CORE = 4
+
+
+def is_memory_dump(path):
+    """True when the file's head is a kernel dump or an ELF core."""
+    try:
+        with open(path, 'rb') as f:
+            head = f.read(_DUMP_HEAD_BYTES)
+    except OSError:
+        return False
+    if head.startswith(b'makedumpfile') or head.startswith(b'KDUMP   '):
+        return True
+    if head[:4] == b'\x7fELF' and len(head) >= 18:
+        order = {1: 'little', 2: 'big'}.get(head[5])
+        if order and int.from_bytes(head[16:18], order) == _ELF_ET_CORE:
+            return True
+    return False
+
+
+# Archive members that mark a memory dump: a kernel dump (vmcore, vmcore.flat,
+# vmcore-incomplete; not the vmcore-dmesg.txt beside it), an application core
+# (core, core.<pid>, core.<pid>.<anything>) or the opencore.ini a getappcore
+# bundle carries next to its core.
+_CORE_MEMBER = re.compile(r'^core(\.\d+)?(\.|$)')
+# The member listing stops after this many members without a hit, so a big
+# dump-less archive is not walked to its end just to be told apart.
+_DUMP_LISTING_CAP = 2000
+# Tar archive names; only one that carries a dump survives the nested-archive
+# pass, the rest are unpacked and removed.
+_ARCHIVE_NAME_SUFFIXES = _TAR_SUFFIXES + ('.tar',)
+
+
+def is_dump_member_name(name):
+    """True when an archive member's basename marks a memory dump."""
+    base = os.path.basename(name or '')
+    if base == 'opencore.ini':
+        return True
+    if base.startswith('vmcore') and not base.endswith('.txt'):
+        return True
+    return bool(_CORE_MEMBER.match(base))
+
+
+def archive_dump_member(path, limit=None):
+    """The name of the first regular-file member that marks a memory dump,
+    or None. The archive is read as a stream (never loaded whole), stopping
+    at the first hit or after `limit` members (default _DUMP_LISTING_CAP).
+    An archive that cannot be read proves nothing and yields None, from the
+    point the damage starts."""
+    if limit is None:
+        limit = _DUMP_LISTING_CAP
+    try:
+        with tarfile.open(path, 'r|*') as tar:
+            for count, member in enumerate(tar, 1):
+                if member.isfile() and is_dump_member_name(member.name):
+                    return member.name
+                if count >= limit:
+                    break
+    except MemoryError:
+        raise
+    except Exception:
+        pass
+    return None
+
+
+def is_archive_name(base_name):
+    """True when a name declares a tar archive (compressed or plain)."""
+    return base_name.lower().endswith(_ARCHIVE_NAME_SUFFIXES)
 
 
 def read_compressed_text(path, ext, opener):
@@ -365,6 +441,23 @@ class FileProcessor:
         # Tree-walking callers ignore the result and rely on the logged
         # warnings; file mode uses it to refuse shipping a bad lone output.
         base_name = os.path.basename(file_path)
+
+        # A kernel dump or a core is never probed as text, rewritten or
+        # removed, whatever its name. Ahead of every other branch, the name
+        # based sa/obj removal included.
+        if is_memory_dump(file_path):
+            if not dry_run:
+                logger.info(f"{base_name}: memory dump, left unchanged (never scrubbed)")
+            return True
+
+        # A tar archive reaches the tree walk only when the nested-archive
+        # pass left it whole because it carries a dump (a getappcore bundle,
+        # a kdump tar). It is not text either; one that carries no dump falls
+        # through to the binary report below.
+        if is_archive_name(base_name) and archive_dump_member(file_path):
+            if not dry_run:
+                logger.info(f"{base_name}: archive carrying a memory dump, left whole (never scrubbed)")
+            return True
 
         if BINARY_SA_PATTERN.match(base_name) or BINARY_OBJ_PATTERN.match(base_name):
             if dry_run:
