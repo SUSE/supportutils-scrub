@@ -56,6 +56,7 @@ from supportutils_scrub.processor import (compressed_opener, compression_magic_o
     FileProcessor, BINARY_SA_PATTERN, BINARY_OBJ_PATTERN,
     SAR_XZ_PATTERN, SAR_PLAIN_PATTERN, _SCRUB_INFO_HEADER,
     compressed_opener, is_memory_dump, is_archive_name, looks_binary,
+    is_dump_head, _TEXT_PROBE,
 )
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 
@@ -347,6 +348,19 @@ def _stageable_compressed(path):
         return None
     if not compression_magic_ok(path, comp[0]):
         return None                     # misnamed: process_file handles it
+    # Only a text payload is staged: a compressed dump, core or other binary
+    # would be decompressed, scrubbed as text and recompressed over itself.
+    # Left to the in-worker stream path, which probes the same head and
+    # leaves it unchanged.
+    try:
+        with comp[1](path, 'rb') as f:
+            head = f.read(_TEXT_PROBE)
+    except MemoryError:
+        raise
+    except Exception:
+        return None                     # damaged: the stream path salvages
+    if b'\x00' in head or is_dump_head(head):
+        return None
     return comp
 
 

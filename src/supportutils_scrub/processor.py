@@ -178,9 +178,17 @@ def _is_elf_core_head(head):
 
 
 def is_dump_head(head):
-    """True when head starts a kernel dump or an ELF core."""
-    return (head.startswith(b'makedumpfile') or head.startswith(b'KDUMP   ')
-            or _is_elf_core_head(head))
+    """True when head starts a kernel dump or an ELF core.
+
+    Both kdump signatures are followed by binary fields: the flattened
+    header pads its 16-byte signature with NUL bytes, and KDUMP plus three
+    spaces is followed by an int32 header_version. A NUL within the head is
+    required beside the signature, so a log line that merely starts with
+    "makedumpfile: saving to ..." or "KDUMP   enabled ..." stays text."""
+    head = head[:_DUMP_HEAD_BYTES]
+    if head.startswith(b'makedumpfile') or head.startswith(b'KDUMP   '):
+        return b'\x00' in head
+    return _is_elf_core_head(head)
 
 
 def is_memory_dump(path):
@@ -633,8 +641,7 @@ class FileProcessor:
             return 'damaged'
 
         if b'\x00' in first_seg[:_TEXT_PROBE]:
-            warn(f"{base_name}: {ext[1:]} payload is not text — left unchanged "
-                 f"(text-scrubbing it would destroy the payload)")
+            self._leave_binary_payload(first_seg, base_name, ext, logger, dry_run, warn)
             return 'done'
 
         if not more:
@@ -805,6 +812,18 @@ class FileProcessor:
             return 'failed'
 
     @staticmethod
+    def _leave_binary_payload(head, base_name, ext, logger, dry_run, warn):
+        """A compressed payload that is not text is left unchanged: a dump or
+        a core is reported at info like its plain counterpart, any other
+        binary as before."""
+        if is_dump_head(head[:_DUMP_HEAD_BYTES]):
+            if not dry_run:
+                logger.info(f"{base_name}: memory dump, left unchanged (never scrubbed)")
+            return
+        warn(f"{base_name}: {ext[1:]} payload is not text — left unchanged "
+             f"(text-scrubbing it would destroy the payload)")
+
+    @staticmethod
     def _remove_quietly(path):
         try:
             os.remove(path)
@@ -822,8 +841,7 @@ class FileProcessor:
                  f"decompressed — left as it is, its content is NOT scrubbed")
             return False
         if b'\x00' in data[:_TEXT_PROBE]:
-            warn(f"{base_name}: {ext[1:]} payload is not text — left unchanged "
-                 f"(text-scrubbing it would destroy the payload)")
+            self._leave_binary_payload(data, base_name, ext, logger, dry_run, warn)
             return True
         text = data.decode('utf-8', 'surrogateescape')
         del data

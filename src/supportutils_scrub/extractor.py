@@ -6,11 +6,13 @@ import logging
 import tarfile
 import subprocess
 
-from supportutils_scrub.processor import (append_scrubbed, archive_dump_member,
-                                          is_dump_member)
+from supportutils_scrub.processor import (append_scrubbed, is_dump_member,
+                                          _TAR_SUFFIXES, _ARCHIVE_NAME_SUFFIXES)
 
 
-_ARCHIVE_SUFFIXES = ('.tar.gz', '.tar.bz2', '.tar.xz', '.tgz', '.tbz', '.tbz2', '.txz')
+# One suffix list for every module: compressed tars (a top-level input), and
+# the same plus a plain .tar for archives nested inside one.
+_ARCHIVE_SUFFIXES = _TAR_SUFFIXES
 
 
 def strip_archive_ext(name: str) -> str:
@@ -100,7 +102,7 @@ def walk_supportconfig(folder_path):
 
 
 # Nested archives also include plain .tar; tarfile 'r:*' auto-detects.
-_NESTED_ARCHIVE_SUFFIXES = _ARCHIVE_SUFFIXES + ('.tar',)
+_NESTED_ARCHIVE_SUFFIXES = _ARCHIVE_NAME_SUFFIXES
 
 
 def _first_dump_member(tar, members):
@@ -112,6 +114,24 @@ def _first_dump_member(tar, members):
     return None
 
 
+def _extract_verified(tar, members, dest):
+    """Extract members into dest and check each regular file landed whole
+    (its size on disk is the member's size). Raises on the first failure."""
+    for member in members:
+        # Untrusted content: regular files and dirs only, no
+        # symlinks/devices, no paths escaping dest.
+        if not (member.isfile() or member.isdir()):
+            continue
+        if not _is_safe_path(dest, member.name):
+            continue
+        tar.extract(member, path=dest)
+        if member.isfile():
+            target = os.path.join(dest, member.name)
+            got = os.path.getsize(target)
+            if got != member.size:
+                raise OSError(f"{member.name}: {got} of {member.size} bytes extracted")
+
+
 def expand_nested_archives(root_dir, logger=None, max_depth=5):
     """Unpack tar archives found anywhere under root_dir so their contents get
     scrubbed like regular files. Each archive is extracted into a sibling
@@ -119,13 +139,16 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
     stays unpacked. Repeats up to max_depth times for archives-in-archives.
 
     An archive that carries a memory dump (a kdump tar, a getappcore bundle)
-    is left whole: a dump is never scrubbed, rewritten or deleted. The member
-    list is read as a stream first and stops at the first dump member, so a
-    200 GB kdump tar is not decompressed to be told apart.
+    is unpacked like any other, so the text beside the dump (opencore.ini,
+    vmcore-dmesg.txt, the member names) is scrubbed; the dump itself is
+    copied out byte for byte and the tree walk leaves it unchanged. An
+    archive is removed only after a complete extraction, every regular file
+    written at its full size.
 
     An archive that cannot be unpacked is removed: shipping it unscrubbed
     would leak whatever it contains. Unless it carries a dump; then it stays
-    in place and the error names it. Returns the number of archives unpacked.
+    in place, is named in the error, and the partial extraction is removed.
+    Returns the number of archives unpacked.
     """
     unpacked = 0
     kept = set()
@@ -137,11 +160,6 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
             break
         for archive in archives:
             rel = os.path.relpath(archive, root_dir)
-            if archive_dump_member(archive):
-                if logger:
-                    logger.info(f"{rel}: carries a memory dump; left whole, never scrubbed")
-                kept.add(archive)
-                continue
             dest = os.path.join(os.path.dirname(archive),
                                 strip_archive_ext(os.path.basename(archive)))
             base_dest, n = dest, 1
@@ -154,34 +172,28 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                     try:
                         members = tar.getmembers()
                     except Exception:
-                        # the members read before the damage, for the check
-                        # below: a damaged archive that holds a dump stays
+                        # the members read before the damage decide whether
+                        # the archive is kept
                         dump = _first_dump_member(tar, tar.members)
                         raise
-                    # the stream listing stops after a member cap; a dump
-                    # further in is caught here, before anything is written
-                    if _first_dump_member(tar, members):
-                        if logger:
-                            logger.info(f"{rel}: carries a memory dump; left whole, never scrubbed")
-                        kept.add(archive)
-                        continue
                     os.makedirs(dest)
-                    for member in members:
-                        # Untrusted content: regular files and dirs only, no
-                        # symlinks/devices, no paths escaping dest.
-                        if not (member.isfile() or member.isdir()):
-                            continue
-                        if not _is_safe_path(dest, member.name):
-                            continue
-                        tar.extract(member, path=dest)
+                    try:
+                        _extract_verified(tar, members, dest)
+                    except Exception:
+                        dump = _first_dump_member(tar, members)
+                        raise
                 if logger:
                     logger.info(f"Unpacked nested archive: {rel}")
                 unpacked += 1
             except Exception as e:
                 if dump:
+                    # dest did not exist before this archive: only what the
+                    # failed extraction wrote is removed
+                    shutil.rmtree(dest, ignore_errors=True)
                     if logger:
                         logger.error(f"Could not unpack nested archive {rel}: {e}; it carries "
-                                     f"a memory dump ({dump}), left in place, never scrubbed")
+                                     f"a memory dump ({dump}), left in place and never "
+                                     f"scrubbed, the partial extraction removed")
                     kept.add(archive)
                     continue
                 if logger:
