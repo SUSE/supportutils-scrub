@@ -280,12 +280,14 @@ class _BlockReader:
     def __init__(self, blocks):
         self._blocks = blocks
         self._buf = b''
+        self.consumed = []              # every block handed out, in order
 
     def read(self, n=-1):
         while n < 0 or len(self._buf) < n:
             block = next(self._blocks, None)
             if block is None:
                 break
+            self.consumed.append(block)
             self._buf += block
         if n < 0:
             out, self._buf = self._buf, b''
@@ -334,14 +336,24 @@ def _python_decompressed_head(suffix, blocks, n):
     out = b''
     if dec == 'zstandard':
         import zstandard
-        reader = zstandard.ZstdDecompressor().stream_reader(_BlockReader(blocks))
+        source = _BlockReader(blocks)
+        reader = zstandard.ZstdDecompressor().stream_reader(source)
         while len(out) < n:
             try:
                 piece = reader.read(n - len(out))
             except Exception:
                 return out, False
             if not piece:
-                return out, True
+                # An empty read only says the input ran out, which a frame
+                # cut short does too. Whether the frame really ended is the
+                # decoder's frame-end state over the same input; that input
+                # gave fewer than n bytes, so the replay is bounded as well.
+                try:
+                    dobj = zstandard.ZstdDecompressor().decompressobj()
+                    dobj.decompress(b''.join(source.consumed))
+                    return out, bool(dobj.eof)
+                except Exception:
+                    return out, False
             out += piece
         return out, False
     for block in blocks:

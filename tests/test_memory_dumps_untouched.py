@@ -534,6 +534,17 @@ class TestMemberVerdicts:
         assert _verdicts3([(name, core), ("core.9.zst", text)]) == \
             {name: processor.UNKNOWN, "core.9.zst": processor.UNKNOWN}
 
+    def test_a_truncated_zst_core_is_unknown_not_a_clean_end(self):
+        # compressible, so the cut falls before any output: an empty read
+        # from the decoder must not pass for the end of the frame
+        name = _SYSTEMD_CORE + ".zst"
+        data = _zstd(_elf_core() + b"\x00" * (1 << 20) + _RNG_BYTES)
+        assert _verdicts3([(name, data[:8])]) == {name: processor.UNKNOWN}
+        assert _verdicts3([(name, data[:len(data) // 2])])[name] != processor.NOT_A_DUMP
+
+    def test_a_complete_short_zst_text_is_still_not_a_dump(self):
+        assert _verdicts3([("core.9.zst", _zstd(b"hi\n"))]) == {"core.9.zst": processor.NOT_A_DUMP}
+
     def test_a_huge_declared_dictionary_is_unknown_not_a_memory_error(self):
         name = "vmcore.xz"
         data = _xz_with_dict(_makedumpfile(), 40)
@@ -803,6 +814,18 @@ class TestExpandNestedArchives:
         assert len(logger.errors) == 1, logger.errors
         assert f"({name}: could not inspect)" in logger.errors[0]
         assert "unsafe path" in logger.errors[0]
+
+    def test_a_damaged_archive_of_a_truncated_zst_core_is_kept(self, tmp_path):
+        name = _SYSTEMD_CORE + ".zst"
+        data = _zstd(_elf_core() + b"\x00" * (1 << 20) + _RNG_BYTES)
+        full = _tar_bytes([(name, data)])
+        arc = tmp_path / "cores.tar"
+        arc.write_bytes(full[:512 + 8])           # the member cut after 8 bytes
+        before = _sha(arc)
+        logger = _Logger()
+        extractor.expand_nested_archives(str(tmp_path), logger)
+        assert _sha(arc) == before and os.listdir(tmp_path) == ["cores.tar"]
+        assert len(logger.errors) == 1 and name in logger.errors[0], logger.errors
 
     def test_without_a_decompressor_a_damaged_archive_of_a_zst_core_is_kept(
             self, tmp_path, monkeypatch):
