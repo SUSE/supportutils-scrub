@@ -29,6 +29,60 @@ def warn_private_ip(config, file=None):
         print(file=out)
 
 
+#: the pseudonyms a new mapping hands out (host-1, user1, dom1.<tld>); a
+#: mapping that already holds the older forms keeps them, so one case never
+#: mixes two. host-N because the kernel names SCSI adapters host0, host1 ...
+#: and dom from 1 because Xen calls its control domain dom0.
+_FORMS = {'hostname': ('host-{}', 'hostname_{}', re.compile(r'^hostname_\d+$')),
+          'user': ('user{}', 'user_{}', re.compile(r'^user_\d+$')),
+          'domain': ('dom{}', 'domain_{}', re.compile(r'^domain_\d+\.'))}
+
+
+def _known(mappings):
+    """Every real name and every pseudonym the mapping holds, lower case."""
+    out = set()
+    for sec in (mappings or {}).values():
+        if isinstance(sec, dict):
+            for k, v in sec.items():
+                out.add(str(k).lower())
+                out.add(str(v).lower())
+    return out
+
+
+class _Pseudonyms:
+    """Hands out the next pseudonym of one kind. It is never a name or a
+    pseudonym the mapping already knows (a host really called host-3 makes
+    the counter skip 3), and a number is never handed out twice. A mapping
+    that holds the older forms in any of the three kinds keeps the older
+    forms for all of them."""
+
+    def __init__(self, kind, section, mappings):
+        new, old, _old_re = _FORMS[kind]
+        legacy = any(_FORMS[k][2].match(str(v))
+                     for k in _FORMS
+                     for sec in ((mappings or {}).get(k) or {}, section if k == kind else {})
+                     if isinstance(sec, dict) for v in sec.values())
+        self.form = old if legacy else new
+        # the older forms counted from the section size; kept, so a case
+        # scrubbed before keeps numbering as it did
+        self.n = len(section) if legacy else 1
+        self.known = _known(mappings) | {str(k).lower() for k in section} \
+            | {str(v).lower() for v in section.values()}
+
+    def reserve(self, names):
+        """The real names this run is about to map: none becomes a pseudonym."""
+        self.known.update(str(n).lower() for n in names)
+
+    def next(self, suffix=''):
+        while True:
+            base = self.form.format(self.n)
+            self.n += 1
+            if base.lower() not in self.known and (base + suffix).lower() not in self.known:
+                self.known.add(base.lower())
+                self.known.add((base + suffix).lower())
+                return base
+
+
 def _next_fake_tld(counter):
     letters = 'abcdefghijklmnopqrstuvwxyz'
     a, b, c = counter // 676, (counter // 26) % 26, counter % 26
@@ -45,7 +99,11 @@ def build_hierarchical_domain_map(all_domains, existing_mappings):
 
     domain_dict = existing_mappings.get('domain', {})
     tld_map = existing_mappings.get('tld_map', {})
-    base_domain_counter = len(domain_dict)
+    names = _Pseudonyms('domain', domain_dict, existing_mappings)
+    names.reserve(sorted_domains)
+    # sub-domain pseudonyms continue past those the mapping holds: a fresh
+    # count per run gave two sub-domains one pseudonym
+    used_subs = {str(v).lower() for v in domain_dict.values()}
     sub_domain_counter = 0
 
     for domain in sorted_domains:
@@ -55,16 +113,17 @@ def build_hierarchical_domain_map(all_domains, existing_mappings):
         parent_domain = '.'.join(parts[1:])
 
         if parent_domain in domain_dict:
-            obfuscated_sub_part = f"sub_{sub_domain_counter}"
+            while f"sub_{sub_domain_counter}.{domain_dict[parent_domain]}".lower() in used_subs:
+                sub_domain_counter += 1
+            domain_dict[domain] = f"sub_{sub_domain_counter}.{domain_dict[parent_domain]}"
+            used_subs.add(domain_dict[domain].lower())
             sub_domain_counter += 1
-            domain_dict[domain] = f"{obfuscated_sub_part}.{domain_dict[parent_domain]}"
         else:
             real_tld = parts[-1].lower()
             if real_tld not in tld_map:
                 tld_map[real_tld] = _next_fake_tld(len(tld_map))
             fake_tld = tld_map[real_tld]
-            domain_dict[domain] = f"domain_{base_domain_counter}.{fake_tld}"
-            base_domain_counter += 1
+            domain_dict[domain] = f"{names.next('.' + fake_tld)}.{fake_tld}"
 
     return domain_dict, tld_map
 
@@ -110,7 +169,7 @@ def extract_hostnames(report_files, additional_hostnames, mappings, config=None)
     raw = mappings.get('hostname', {})
     hostname_dict = {k: v for k, v in raw.items()
                      if k.lower() not in _preserved}
-    counter = len(raw)
+    names = _Pseudonyms('hostname', raw, mappings)
     all_hostnames = []
 
     for f in report_files:
@@ -127,6 +186,7 @@ def extract_hostnames(report_files, additional_hostnames, mappings, config=None)
                 HostnameScrubber.extract_hostnames_from_cluster(f))
 
     all_hostnames.extend(additional_hostnames)
+    names.reserve(all_hostnames)
     for h in all_hostnames:
         # however a name arrived here -- harvested, seeded with --hostname, or
         # carried in from an older mapping file -- a preserved one is never
@@ -134,8 +194,7 @@ def extract_hostnames(report_files, additional_hostnames, mappings, config=None)
         if h.lower() in _preserved:
             continue
         if h not in hostname_dict:
-            hostname_dict[h] = f"hostname_{counter}"
-            counter += 1
+            hostname_dict[h] = names.next()
     return hostname_dict
 
 
@@ -196,7 +255,7 @@ def extract_hostnames_from_adopted_paths(root, config=None):
 
 def extract_usernames(report_files, additional_usernames, mappings):
     username_dict = mappings.get('user', {})
-    counter = len(username_dict)
+    names = _Pseudonyms('user', username_dict, mappings)
     all_usernames = []
 
     msg_files = {'messages.txt', 'security-apparmor.txt', 'sssd.txt'}
@@ -209,10 +268,10 @@ def extract_usernames(report_files, additional_usernames, mappings):
             all_usernames.extend(UsernameScrubber.extract_usernames_from_messages(f))
 
     all_usernames.extend(additional_usernames)
+    names.reserve(all_usernames)
     for u in all_usernames:
         if u not in username_dict:
-            username_dict[u] = f"user_{counter}"
-            counter += 1
+            username_dict[u] = names.next()
     return username_dict
 
 
