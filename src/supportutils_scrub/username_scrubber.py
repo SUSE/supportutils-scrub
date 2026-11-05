@@ -20,14 +20,27 @@ class UsernameScrubber(Scrubber):
         "uid", "gid", "pid", "sudo", "su", "login", "session", "auth",
     }
 
+    # An account may carry the name of a system directory or an everyday log
+    # word ("boot"). Replacing it as a whole word rewrites /boot/grub2 and
+    # "first boot" in every file, so such a name is never learned, and one
+    # an older mapping file carries is not replaced either.
+    COMMON_WORDS = {
+        "boot", "etc", "home", "opt", "srv", "tmp", "usr", "var", "proc", "sys",
+        "dev", "run", "mnt", "media", "lib", "lib64", "sbin", "efi", "grub",
+        "grub2", "kernel", "system", "default", "local", "user", "users",
+        "guest", "test", "data", "backup", "admin", "service", "snapshots",
+    }
+
     def __init__(self, username_dict):
         self.username_dict = username_dict
+        replaced = {k: v for k, v in username_dict.items()
+                    if k.lower() not in self.COMMON_WORDS}
         # Trie-regex: factoring shared prefixes lets the C engine dispatch by
         # character (O(text)), instead of a flat alternation backtracking through
         # 1000+ usernames at every position. The callback fires only on matches.
         self._re = None
-        if username_dict:
-            self._re = re.compile(r'\b(?:' + build_trie_pattern(username_dict.keys()) + r')\b')
+        if replaced:
+            self._re = re.compile(r'\b(?:' + build_trie_pattern(replaced.keys()) + r')\b')
 
     @property
     def mapping(self):
@@ -43,6 +56,8 @@ class UsernameScrubber(Scrubber):
         if len(username) < 3:
             return True
         if username in UsernameScrubber.EXCLUDED_USERS:
+            return True
+        if username.lower() in UsernameScrubber.COMMON_WORDS:
             return True
         if len(username) == 6 and username.endswith("adm"):
             return True
