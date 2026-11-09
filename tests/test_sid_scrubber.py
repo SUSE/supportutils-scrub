@@ -73,3 +73,38 @@ def test_sidadm_alone_does_not_invent_a_sid():
     s, out = _scrub(text)
     assert s.sid_dict == {}
     assert out == text
+
+
+# The SAP Diagnostics Agent runs as its own SID with an SMDA<nn> instance; it is
+# monitoring infrastructure, so its SID and its <sid>adm user stay as they are.
+AGENT_PS = ("daaadm 14123 13988 1.1 /usr/sap/DAA/SMDA98/exe/jstart -appTrc -nodeId=0 "
+            "pf=/usr/sap/DAA/SYS/profile/DAA_SMDA98_host1\n"
+            "prdadm 4069 1 hdbindexserver -port 30040 /usr/sap/PRD/HDB00\n")
+
+
+def test_the_diagnostics_agent_and_its_user_are_never_scrubbed():
+    s, out = _scrub(AGENT_PS + "SAPDAA_98.service loaded active running\n")
+    assert s.sid_dict == {'PRD': 'HA1'}
+    assert '/usr/sap/DAA/SMDA98/exe/jstart' in out and 'DAA_SMDA98_host1' in out
+    assert 'daaadm' in out and 'SAPDAA_98' in out
+    # the system's own SID is still scrubbed
+    assert 'prdadm' not in out and 'ha1adm' in out and '/usr/sap/HA1/HDB00' in out
+
+
+def test_an_agent_seen_in_a_later_file_is_dropped_from_what_was_learned(tmp_path):
+    from supportutils_scrub.pipeline import extract_sids
+    first = tmp_path / 'systemd.txt'
+    first.write_text("SAPDAA_98.service loaded active running\nSAPPRD_00.service\n")
+    later = tmp_path / 'open-files.txt'
+    later.write_text("jstart 14123 daaadm /usr/sap/DAA/SMDA98/exe/jstart\n")
+    assert extract_sids([str(first), str(later)], {}) == {'PRD': 'HA2'}
+
+
+def test_an_older_mapping_cannot_rename_the_agent():
+    s = SIDScrubber(mappings={'sid': {'DAA': 'HA1', 'PRD': 'HA2'}})
+    s.pre_scan(AGENT_PS)
+    assert s.sid_dict == {'PRD': 'HA2'}
+    # and a text scrubbed with the old table alone leaves the agent it shows
+    old = SIDScrubber(mappings={'sid': {'DAA': 'HA1', 'PRD': 'HA2'}})
+    out = old.scrub(AGENT_PS)
+    assert 'daaadm' in out and '/usr/sap/DAA/SMDA98' in out and 'ha2adm' in out

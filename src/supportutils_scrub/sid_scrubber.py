@@ -36,6 +36,21 @@ _DISCOVERY = [
 ]
 
 
+# The SAP Diagnostics Agent (DAA by default) runs as its own SID with an SMDA<nn>
+# instance. It is monitoring infrastructure, not the customer's system, and the
+# agent read as a workload once its SID was renamed, so its SID and its <sid>adm
+# user are never scrubbed: never learned, dropped from an older mapping when the
+# capture shows the agent, and left alone in a text that shows it.
+_AGENT = [
+    re.compile(r'/usr/sap/(' + _SID + r')/SMDA\d\d(?![A-Za-z0-9])'),
+    re.compile(r'(?<![A-Za-z0-9])(' + _SID + r')_SMDA\d\d(?![A-Za-z0-9])'),
+]
+
+
+def _agents(text: str) -> set:
+    return {m.group(1) for rx in _AGENT for m in rx.finditer(text)}
+
+
 def _valid(sid: str) -> bool:
     return sid.upper() not in _RESERVED
 
@@ -48,6 +63,7 @@ class SIDScrubber(Scrubber):
         if mappings:
             self.sid_dict = dict(mappings.get('sid', {}))
         self._counter = len(self.sid_dict)
+        self.agent_sids: set = set()
 
     @property
     def mapping(self):
@@ -59,12 +75,15 @@ class SIDScrubber(Scrubber):
 
     def _add(self, sid: str) -> None:
         sid = sid.upper()
-        if not _valid(sid) or sid in self.sid_dict:
+        if not _valid(sid) or sid in self.sid_dict or sid in self.agent_sids:
             return
         self.sid_dict[sid] = self._fake(self._counter)
         self._counter += 1
 
     def pre_scan(self, text: str) -> None:
+        for sid in _agents(text):
+            self.agent_sids.add(sid)
+            self.sid_dict.pop(sid, None)
         for rx in _DISCOVERY:
             for m in rx.finditer(text):
                 self._add(m.group(1))
@@ -78,7 +97,10 @@ class SIDScrubber(Scrubber):
         # Few SIDs per capture (1-3); sequential per-SID substitution is cheap and
         # keeps each replacement explicit. Underscore counts as a boundary, so the
         # standalone rule catches SEP, SEP_D00, /usr/sap/SEP and rsc_SAP_SEP_D00.
+        agents = _agents(text)
         for sid, fake in self.sid_dict.items():
+            if sid in agents:
+                continue
             low, flow = sid.lower(), fake.lower()
             text = re.sub(r'SAP' + sid + r'(?![A-Za-z0-9])', 'SAP' + fake, text)
             text = re.sub(r'(?<![A-Za-z0-9])' + low + r'adm(?![A-Za-z0-9])',
