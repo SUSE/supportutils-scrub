@@ -215,6 +215,34 @@ def test_interrupted_stdin_still_saves_the_mapping(monkeypatch, tmp_path, exc, c
     assert 'QAB' in _saved(tmp_path)['sid']
 
 
+def test_preload_of_an_archive_learns_no_extraction_folder_name(tmp_path):
+    import tarfile
+    from test_preload import _node, _args, _Logger as _PLogger
+    from supportutils_scrub.modes import preload as preload_mode
+    a = _node(tmp_path, 'nodea', ['nodea'])
+    arc = tmp_path / 'scc_nodea_260821.txz'
+    with tarfile.open(arc, 'w:xz') as t:
+        t.add(a, arcname=a.name)
+    mapping = tmp_path / 'shared.json'
+    preload_mode.run_preload_mode(_args([arc], mapping, tmp_path), _PLogger())
+    assert not [h for h in json.load(open(mapping))['hostname'] if 'scrubbed' in h]
+
+
+def test_preload_keeps_an_encrypted_mapping_encrypted(monkeypatch, tmp_path):
+    import getpass
+    from test_preload import _node, _args, _Logger as _PLogger
+    from supportutils_scrub.modes import preload as preload_mode
+    pw = 'example-passphrase'
+    Translator.save_datasets_encrypted(str(tmp_path / 'case.json'), {}, pw)
+    enc = tmp_path / 'case.json.enc'
+    monkeypatch.setattr(getpass, 'getpass', lambda *a: pw)
+    a = _node(tmp_path, 'nodea', ['nodea', 'peer1'])
+    preload_mode.run_preload_mode(_args([a], enc, tmp_path, _enc_passphrase=pw),
+                                  _PLogger())
+    assert not (tmp_path / 'case.json').exists()
+    assert 'peer1' in audit.load_mappings_file(str(enc))['hostname']
+
+
 def test_relative_mapping_path_is_saved(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     Translator.save_datasets('rel.json', {})

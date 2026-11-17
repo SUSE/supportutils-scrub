@@ -21,7 +21,7 @@ import tempfile
 import tarfile
 
 from supportutils_scrub import det
-from supportutils_scrub.audit import get_secure_tmp_base
+from supportutils_scrub.audit import get_secure_tmp_base, save_mappings
 from supportutils_scrub.domain_scrubber import DomainScrubber
 from supportutils_scrub.extractor import (is_archive_path, walk_supportconfig,
                                           extract_tgz_archive)
@@ -32,7 +32,7 @@ from supportutils_scrub.pipeline import (extract_and_map_domains,
                                          extract_usernames, extract_serials,
                                          extract_sids, is_supportconfig_folder,
                                          dataset_paths)
-from supportutils_scrub.translator import Translator
+from supportutils_scrub.main import EXIT_ERROR
 from supportutils_scrub.username_scrubber import UsernameScrubber
 
 _TEXT_SCAN_MAX = 8 << 20      # per loose/non-supportconfig file
@@ -109,8 +109,8 @@ def run_preload_mode(args, logger):
     from supportutils_scrub.config_reader import ConfigReader
     # the operator's hostname_preserve list decides what is never given a
     # mapping, and this pass is what writes the mapping file
-    config = ConfigReader(DEFAULT_CONFIG_PATH).read_config(
-        getattr(args, 'config', None))
+    config = getattr(args, '_preloaded_config', None) or \
+        ConfigReader(DEFAULT_CONFIG_PATH).read_config(getattr(args, 'config', None))
     mappings = {}
     if args.mappings and os.path.exists(args.mappings):
         mappings = load_mappings_file(args.mappings)
@@ -128,9 +128,11 @@ def run_preload_mode(args, logger):
             tmp = tempfile.mkdtemp(prefix='scrub-preload-',
                                    dir=get_secure_tmp_base())
             try:
-                extract_tgz_archive(path, logger, extract_base=tmp,
-                                    mode=_tar_mode(path))
-                _learn_tree(tmp, mappings, seeds, config=config)
+                # learn from the extracted tree itself, as archive mode
+                # does: its <name>_scrubbed folder is not a host name
+                _, tree = extract_tgz_archive(path, logger, extract_base=tmp,
+                                              mode=_tar_mode(path))
+                _learn_tree(tree, mappings, seeds, config=config)
             except (tarfile.TarError, OSError) as e:
                 logger.warning(f"preload: cannot read {path}: {e}")
             finally:
@@ -149,8 +151,19 @@ def run_preload_mode(args, logger):
         cfg = getattr(args, '_preloaded_config', None)
         ds = getattr(cfg, 'dataset_dir', None) or get_secure_tmp_base()
         out = dataset_paths(ds, datetime.now().strftime('%Y%m%d_%H%M%S'))[0]
-    Translator.save_datasets(out, mappings)
     err = sys.stderr
+    if out.endswith('.enc'):
+        # rewritten in place, so it stays encrypted; the saver adds .enc
+        if not getattr(args, '_enc_passphrase', None):
+            print(f"[!] {out} is encrypted: a passphrase is needed to rewrite it",
+                  file=err)
+            sys.exit(EXIT_ERROR)
+        out = out[:-len('.enc')]
+    try:
+        out = save_mappings(args, out, mappings)
+    except Exception as e:
+        print(f"[!] Mapping file not saved: {e}", file=err)
+        sys.exit(EXIT_ERROR)
     print(f"| Mapping file              : {out}", file=err)
     print(f"| Preload                   : {len(mappings['hostname'])} hostname(s), "
           f"{len(mappings['domain'])} domain(s), {len(mappings['user'])} user(s), "
