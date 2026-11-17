@@ -1,7 +1,8 @@
-from ipaddress import IPv4Address, IPv4Network
+from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
 
 from supportutils_scrub.det import dhash
 from supportutils_scrub.ip_scrubber import IPScrubber
+from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.scrub_config import ScrubConfig
 
@@ -106,6 +107,32 @@ def test_public_ip_gate():
 def test_state_reflects_loaded_cursor_without_scrubbing():
     s = _ip(mappings={'state': {'pool_cursor_public': 4096}})
     assert s.state['pool_cursor_public'] == 4096
+
+
+def _v6(deterministic=False):
+    cfg = ScrubConfig(obfuscate_ipv6=True, obfuscate_private_ip=False)
+    return IPv6Scrubber(cfg, mappings={}, deterministic=deterministic)
+
+
+def test_ipv6_det_fake_does_not_depend_on_what_was_seen_first():
+    host = "2001:db8:1:2::5"
+    a = _v6(deterministic=True)
+    a.scrub("route 2001:db8:1::/48 via fe80::1")
+    b = _v6(deterministic=True)
+    c = _v6(deterministic=True)
+    c.scrub("prefix 2001:db8:1:2::/64")
+    assert a.scrub(host) == b.scrub(host) == c.scrub(host)
+
+
+def test_ipv6_fakes_never_come_from_ula():
+    for det in (False, True):
+        s = _v6(deterministic=det)
+        out = s.scrub("route 2001:db8:1::/48 host 2001:db8:5:6::7 keep fd00::1")
+        assert "fd00::1" in out
+        for fake in s.mapping.values():
+            addr = IPv6Address(fake)
+            assert addr in IPv6Network("3fff::/20") or addr in IPv6Network("2001:db8::/32")
+            assert addr not in IPv6Network("fc00::/7")
 
 
 def _mac(deterministic=False, mappings=None):

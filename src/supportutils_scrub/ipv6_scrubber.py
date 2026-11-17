@@ -1,4 +1,4 @@
-# ipv6_scrubber.py 
+# ipv6_scrubber.py
 
 
 import re
@@ -15,8 +15,11 @@ MULTICAST   = ipaddress.IPv6Network("ff00::/8")
 LINK_LOCAL  = ipaddress.IPv6Network("fe80::/10")
 ULA         = ipaddress.IPv6Network("fc00::/7")
 
-FAKE_POOL_DB8   = ipaddress.IPv6Network("2001:db8::/32")  
-FAKE_POOL_ULA = ipaddress.IPv6Network("fd00::/8") 
+# Fakes come from documentation space only (RFC 3849, RFC 9637), never from
+# ranges that real data keeps unscrubbed (ULA, link-local). /48s get their
+# own pool so a hashed /64 can never land inside a /48 fake.
+FAKE_POOL_DB8 = ipaddress.IPv6Network("2001:db8::/32")
+FAKE_POOL_48  = ipaddress.IPv6Network("3fff::/20")
 GLOBAL_UNICAST = ipaddress.IPv6Network("2000::/3")
 
 
@@ -39,6 +42,10 @@ class IPv6Scrubber(Scrubber):
                 self._subnet_map[ipaddress.IPv6Network(k)] = ipaddress.IPv6Network(v)
             except Exception:
                 pass
+        # Deterministic (--jobs) workers look up only the subnets every worker
+        # starts with, so a fake never depends on what one worker saw first.
+        self._preloaded = sorted(self._subnet_map.items(),
+                                 key=lambda kv: kv[0].prefixlen, reverse=True)
 
         state = (mappings or {}).get('state', {})
         self._pool_cursor: int = int(state.get('ipv6_pool_cursor', 0))
@@ -56,10 +63,10 @@ class IPv6Scrubber(Scrubber):
             return False
         return True
 
-    
+
     def _pick_pool(self, prefixlen: int) -> ipaddress.IPv6Network:
 
-        return FAKE_POOL_ULA if prefixlen <= 48 else FAKE_POOL_DB8
+        return FAKE_POOL_48 if prefixlen <= 48 else FAKE_POOL_DB8
 
     def _alloc_fake_subnet(self, prefixlen: int) -> ipaddress.IPv6Network:
         pool = self._pick_pool(prefixlen)
@@ -91,7 +98,7 @@ class IPv6Scrubber(Scrubber):
     def _alloc_fake_subnet_det(self, real_net: ipaddress.IPv6Network) -> ipaddress.IPv6Network:
         """Allocate a fake subnet as a pure hash of the real subnet, so parallel
         workers produce identical mappings without coordination. The fake pools
-        are huge (>=2^32 slots) so collisions are negligible."""
+        are huge (>=2^28 slots) so collisions are negligible."""
         from supportutils_scrub.det import dhash
         prefixlen = real_net.prefixlen
         pool = self._pick_pool(prefixlen)
@@ -114,26 +121,32 @@ class IPv6Scrubber(Scrubber):
         return fake
 
     def _choose_mapping_prefix(self, ip: ipaddress.IPv6Address, explicit_pfx: Optional[int]) -> int:
-        """Prefer explicit prefix but never broader than /48; default to /64."""
+        """Prefer explicit prefix but never broader than /48; default to /64.
+        Deterministic mode always anchors at /48 so an address maps the same
+        whether or not a worker saw its route."""
+        if self.deterministic:
+            return 48
         if explicit_pfx is not None and 0 <= explicit_pfx <= 128:
-            return max(48, explicit_pfx) 
+            return max(48, explicit_pfx)
         return 64
 
     def _map_in_known_subnets(self, ip: ipaddress.IPv6Address) -> Optional[str]:
-        for real, fake in sorted(self._subnet_map.items(), key=lambda kv: kv[0].prefixlen, reverse=True):
+        known = self._preloaded if self.deterministic else sorted(
+            self._subnet_map.items(), key=lambda kv: kv[0].prefixlen, reverse=True)
+        for real, fake in known:
             if ip in real:
                 offset = int(ip) - int(real.network_address)
                 return str(ipaddress.IPv6Address(int(fake.network_address) + offset))
         return None
 
-    def _fake_for(self, ip):
+    def _fake_for(self, ip, explicit_pfx=None):
         """Return (and cache) the fake address for a validated real IPv6."""
         fake = self.ipv6_map.get(str(ip))
         if fake:
             return fake
         fake = self._map_in_known_subnets(ip)
         if not fake:
-            anchor_pfx = self._choose_mapping_prefix(ip, None)
+            anchor_pfx = self._choose_mapping_prefix(ip, explicit_pfx)
             real_subnet = ipaddress.IPv6Network((int(ip) & ~((1 << (128 - anchor_pfx)) - 1), anchor_pfx))
             fake_subnet = self._get_or_create_fake_subnet(real_subnet)
             host_off = int(ip) - int(real_subnet.network_address)
@@ -145,7 +158,7 @@ class IPv6Scrubber(Scrubber):
     def scrub_text(self, text: str):
         """Scrub all IPv6 addresses in text. Returns (new_text, ipv6_map, ipv6_subnet_map, state)."""
         if not self._should_obfuscate() or not text:
-            return text, dict(self.ipv6_map), {str(k): str(v) for k, v in self._subnet_map.items()}, {'ipv6_pool_cursor': self._pool_cursor}
+            return text, dict(self.ipv6_map), self.subnet_map, self.state
 
         def repl(m: Match) -> str:
             token = m.group(0)
@@ -192,26 +205,7 @@ class IPv6Scrubber(Scrubber):
             if self._skip_scope(ip):
                 return token
 
-            if str(ip) in self.ipv6_map:
-                fake_ip = self.ipv6_map[str(ip)]
-                return f"{fake_ip}/{explicit_pfx}" if explicit_pfx is not None else fake_ip
-
-            mapped = self._map_in_known_subnets(ip)
-            if mapped:
-                self.ipv6_map[str(ip)] = mapped
-                self._fakes.add(mapped)
-                return f"{mapped}/{explicit_pfx}" if explicit_pfx is not None else mapped
-
-            anchor_pfx = self._choose_mapping_prefix(ip, explicit_pfx)
-            real_subnet = ipaddress.IPv6Network((int(ip) & ~((1 << (128 - anchor_pfx)) - 1), anchor_pfx))
-            fake_subnet = self._get_or_create_fake_subnet(real_subnet)
-
-            host_off = int(ip) - int(real_subnet.network_address)
-            fake_ip = ipaddress.IPv6Address(int(fake_subnet.network_address) + host_off)
-            fake_s = str(fake_ip)
-
-            self.ipv6_map[str(ip)] = fake_s
-            self._fakes.add(fake_s)
+            fake_s = self._fake_for(ip, explicit_pfx)
             return f"{fake_s}/{explicit_pfx}" if explicit_pfx is not None else fake_s
 
         def repl_af_inet6(m: Match) -> str:
@@ -226,9 +220,7 @@ class IPv6Scrubber(Scrubber):
 
         new_text = _AF_INET6_RE.sub(repl_af_inet6, text)
         new_text = CANDIDATE_V6.sub(repl, new_text)
-        state = {'ipv6_pool_cursor': self._pool_cursor}
-        subnet_map_str = {str(k): str(v) for k, v in self._subnet_map.items()}
-        return new_text, dict(self.ipv6_map), subnet_map_str, state
+        return new_text, dict(self.ipv6_map), self.subnet_map, self.state
 
     @property
     def mapping(self):
@@ -263,42 +255,3 @@ class IPv6Scrubber(Scrubber):
                     continue
             found.append(token)
         return found
-
-    def scrub_ipv6(self, token: str) -> str:
-        """Scrub a single IPv6 token (with or without /prefix)."""
-        if not self._should_obfuscate() or not token:
-            return token
-        try:
-            iface = ipaddress.IPv6Interface(token) if '/' in token else ipaddress.IPv6Interface(f"{token}/128")
-            ip = iface.ip
-            explicit_pfx = iface.network.prefixlen if '/' in token else None
-        except Exception:
-            return token
-
-        if self._skip_scope(ip):
-            return token
-
-        if str(ip) in self.ipv6_map:
-            fake_ip = self.ipv6_map[str(ip)]
-            return f"{fake_ip}/{explicit_pfx}" if explicit_pfx is not None else fake_ip
-
-        mapped = self._map_in_known_subnets(ip)
-        if mapped:
-            self.ipv6_map[str(ip)] = mapped
-            return f"{mapped}/{explicit_pfx}" if explicit_pfx is not None else mapped
-
-        anchor_pfx = self._choose_mapping_prefix(ip, explicit_pfx)
-        real_subnet = ipaddress.IPv6Network((int(ip) & ~((1 << (128 - anchor_pfx)) - 1), anchor_pfx))
-        fake_subnet = self._get_or_create_fake_subnet(real_subnet)
-        host_off = int(ip) - int(real_subnet.network_address)
-        fake_ip = ipaddress.IPv6Address(int(fake_subnet.network_address) + host_off)
-        fake_s = str(fake_ip)
-        self.ipv6_map[str(ip)] = fake_s
-        return f"{fake_s}/{explicit_pfx}" if explicit_pfx is not None else fake_s
-
-    def ipv6_tcprewrite_rules(self) -> List[Tuple[str, str]]:
-        """Return real/fake subnet pairs for tcprewrite-like tools."""
-        pairs: List[Tuple[str, str]] = []
-        for real, fake in sorted(self._subnet_map.items(), key=lambda kv: kv[0].prefixlen, reverse=True):
-            pairs.append((str(real), str(fake)))
-        return pairs
