@@ -1,6 +1,7 @@
 # email_scrubber.py
 import re
 from supportutils_scrub.scrubber import Scrubber
+from supportutils_scrub.domain_scrubber import is_preserved_domain
 
 EMAIL_RE = re.compile(
     r'(?<![A-Za-z0-9._%+-])'
@@ -65,7 +66,9 @@ class EmailScrubber(Scrubber):
             if email.startswith(_SCRUBBED_LOCAL_PREFIXES):
                 return email
             domain = email.split('@')[1].lower()
-            if domain in _SAFE_DOMAINS:
+            # SUSE addresses are public: module authors, packagers, the
+            # security team. The domain is not scrubbed either.
+            if domain in _SAFE_DOMAINS or is_preserved_domain(domain):
                 return email
             return self._get_fake_email(email)
 

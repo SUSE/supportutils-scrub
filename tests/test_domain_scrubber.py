@@ -143,3 +143,25 @@ class TestFilenamesAreNotDomains:
             "10.0.0.6 node1.corp.internal node1", trusted=True)
         assert "node1.corp.internal" in domains
         assert "corp.internal" in domains
+
+
+class TestVendorDomains:
+    def test_vendor_domains_are_never_mapped(self):
+        from supportutils_scrub.pipeline import build_hierarchical_domain_map
+        dmap, _ = build_hierarchical_domain_map(
+            {"suse.com", "registry.suse.com", "www.suse.com", "example.com"}, {})
+        assert set(dmap) == {"example.com"}
+
+    def test_old_mapping_cannot_rename_vendor_urls(self):
+        legacy = {"suse.com": "dom7.aae", "registry.suse.com": "sub_0.dom7.aae",
+                  "example.com": "dom1.aaa"}
+        out = DomainScrubber(legacy).scrub(
+            "SUSE LLC <https://www.suse.com/> registry.suse.com/suse/toolbox "
+            "mirror.example.com")
+        assert "https://www.suse.com/" in out
+        assert "registry.suse.com/suse/toolbox" in out
+        assert "mirror.dom1.aaa" in out
+
+    def test_lookalike_customer_domain_still_scrubbed(self):
+        out = DomainScrubber({"notsuse.com": "dom1.aaa"}).scrub("notsuse.com")
+        assert out == "dom1.aaa"

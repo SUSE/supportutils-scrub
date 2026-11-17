@@ -31,6 +31,22 @@ _SINGLE_LABEL_BAN = {
 # mapping file written before this rule cannot bring it back.
 PRESERVED_DOMAINS = frozenset({"metadata.google.internal", "google.internal"})
 
+# SUSE's own domains name the vendor, never the customer: rpm signatures,
+# registry and update URLs in every capture. Kept with all their sub-domains,
+# so registry.suse.com is not given a top-level pseudonym of its own. The
+# scrubber had this list until the 67332ba rewrite dropped it; verify and the
+# email scrubber read it from here.
+VENDOR_DOMAINS = frozenset({"suse.com", "suse.de", "suse.cz", "suse.net",
+                            "suse.org", "opensuse.org", "opensuse.com",
+                            "novell.com", "susecloud.net"})
+
+
+def is_preserved_domain(d: str) -> bool:
+    d = _norm(d)
+    if d in PRESERVED_DOMAINS:
+        return True
+    return any(d == v or d.endswith("." + v) for v in VENDOR_DOMAINS)
+
 _EXTENSION_TLDS = frozenset({"so", "la", "py"})
 
 _VALID_TLDS = frozenset({
@@ -132,7 +148,7 @@ class DomainScrubber(Scrubber):
             _norm(real): fake
             for real, fake in (domain_dict or {}).items()
             if _is_valid_domain(real, trusted=True)
-            and _norm(real) not in PRESERVED_DOMAINS
+            and not is_preserved_domain(real)
         }
 
         self._ordered_domains = _sort_specific_first(self.domain_dict.keys(), trusted=True)

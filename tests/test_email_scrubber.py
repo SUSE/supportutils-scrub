@@ -45,3 +45,13 @@ class TestEmailScrub:
         s = _make()
         s.scrub("mail alice@test.org")
         assert "alice@test.org" in s.mapping
+
+
+def test_suse_addresses_are_kept_customer_ones_are_not():
+    from supportutils_scrub.email_scrubber import EmailScrubber
+    out = EmailScrubber().scrub(
+        "author: Jane Doe <jdoe@suse.de>\nsigner: <security@suse.com>\n"
+        "owner: admin@corp.example.net")
+    assert "jdoe@suse.de" in out
+    assert "security@suse.com" in out
+    assert "admin@corp.example.net" not in out

@@ -90,9 +90,9 @@ def _next_fake_tld(counter):
 
 
 def build_hierarchical_domain_map(all_domains, existing_mappings):
-    from supportutils_scrub.domain_scrubber import PRESERVED_DOMAINS
+    from supportutils_scrub.domain_scrubber import is_preserved_domain
     valid_domains = {d for d in all_domains
-                     if '.' in d and d.strip().lower() not in PRESERVED_DOMAINS}
+                     if '.' in d and not is_preserved_domain(d)}
     # label count first (parents before children), then the name: a tie
     # that fell back to set order varied with the per-process hash seed
     sorted_domains = sorted(valid_domains, key=lambda d: (len(d.split('.')), d))

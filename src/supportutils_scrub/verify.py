@@ -5,6 +5,7 @@ import re
 import ipaddress
 
 from supportutils_scrub.processor import compressed_opener, compression_magic_ok
+from supportutils_scrub.domain_scrubber import VENDOR_DOMAINS, is_preserved_domain
 
 _CATEGORIES = [
     ('ip',       'IPv4 address',  'ip'),
@@ -19,10 +20,8 @@ _CATEGORIES = [
 
 _MIN_VALUE_LEN = 6
 
-_SAFE_DOMAIN_VALUES = {
-    'susecloud.net',
-    'suse.org', 'suse.com', 'suse.de', 'suse.net',
-    'opensuse.org',
+# The SUSE domains the scrubber leaves alone, plus names verify alone ignores.
+_SAFE_DOMAIN_VALUES = set(VENDOR_DOMAINS) | {
     'microsoft.com', 'microsoft.net',   # upstream vendor
     'windowsupdate.com', 'windows.com',
     'digicert.com', 'verisign.com',      # certificate authorities
@@ -139,8 +138,7 @@ _EMAIL_RE = re.compile(
 _SAFE_EMAIL_DOMAINS = {
     'example.com', 'example.org', 'example.net',
     'localhost', 'localhost.localdomain',
-    'suse.com', 'suse.de', 'suse.net',           # vendor
-    'novell.com', 'microfocus.com',             # vendor legacy
+    'microfocus.com',                            # vendor legacy
     'kernel.org', 'linux.it', 'vger.kernel.org',# kernel upstream
     'gnu.org', 'fsf.org', 'gcc.gnu.org',        # GNU/FSF
     'redhat.com', 'fedoraproject.org',           # upstream
@@ -148,9 +146,8 @@ _SAFE_EMAIL_DOMAINS = {
     'apache.org', 'mozilla.org',                 # upstream
     'sourceforge.net', 'github.com', 'gitlab.com',
     'googlegroups.com', 'lists.sf.net',
-    'opensuse.org', 'opensuse.com',              # community
-    'suse.org',                                   # vendor community
 }
+_SAFE_EMAIL_DOMAINS |= VENDOR_DOMAINS
 
 # Short pseudo-TLDs from locale/gettext data (e.g. en@quot.mo)
 _FAKE_EMAIL_TLDS = {'mo', 'po', 'gmo'}
@@ -165,7 +162,6 @@ _SAFE_EMAIL_DOMAINS.update({
     'defaultv4iddomain.com',   # NFS idmapd default
     'localdomain',
     'scrubbed.local',          # our own fake email domain
-    'susecloud.net',           # SUSE public cloud infrastructure
 })
 
 _SECRET_PATTERNS = [
@@ -289,7 +285,7 @@ def _extract_identity_from_original(original_folder):
         if any(t.lower().endswith(s) for s in _safe_identity_suffixes):
             continue
         # Skip vendor/infrastructure domains
-        if t.lower() in _SAFE_DOMAIN_VALUES:
+        if t.lower() in _SAFE_DOMAIN_VALUES or is_preserved_domain(t):
             continue
         filtered.add(t)
     return filtered
@@ -421,7 +417,7 @@ def _build_terms(mappings: dict):
         for real_val in mappings.get(key, {}):
             if len(real_val) < _MIN_VALUE_LEN:
                 continue
-            if real_val.lower() in _SAFE_DOMAIN_VALUES:
+            if real_val.lower() in _SAFE_DOMAIN_VALUES or is_preserved_domain(real_val):
                 continue
             if real_val in all_fake_values or _FAKE_VALUE_RE.match(real_val):
                 continue
@@ -517,6 +513,7 @@ def _scan_one_file(fpath_fname, scan_ctx):
                             domain = email.split('@')[1].lower()
                             tld = domain.rsplit('.', 1)[-1] if '.' in domain else domain
                             if domain not in _SAFE_EMAIL_DOMAINS \
+                                    and not is_preserved_domain(domain) \
                                     and tld not in _FAKE_EMAIL_TLDS:
                                 file_findings.append({
                                     'file': rel, 'line': lineno,
