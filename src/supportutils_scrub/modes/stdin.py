@@ -16,7 +16,7 @@ from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
 from supportutils_scrub.serial_scrubber import SerialScrubber
 from supportutils_scrub.sid_scrubber import SIDScrubber
-from supportutils_scrub.processor import FileProcessor
+from supportutils_scrub.processor import FileProcessor, ScrubError
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers,
     extract_and_map_domains, extract_hostnames, extract_usernames,
@@ -138,6 +138,7 @@ def run_stdin_mode(args, logger):
     # so it is saved however the input ends: EOF, Ctrl-C or a closed pipe.
     file_processor = None
     interrupted = False
+    failed = False
     try:
         if getattr(args, 'stream', False):
             import select
@@ -188,12 +189,18 @@ def run_stdin_mode(args, logger):
         interrupted = True
     except BrokenPipeError:
         _drop_stdout()
+    except (ScrubError, MemoryError) as e:
+        # nothing more is written: the rest of the input would go out unscrubbed
+        print(f"[!] Scrub failed, output stopped: {e}", file=sys.stderr)
+        failed = True
     finally:
         if file_processor is not None:
             _finish(args, file_processor, tld_map, keyword_scrubber,
                     dataset_path, audit_path, verbose_flag)
     if interrupted:
         sys.exit(130)
+    if failed:
+        sys.exit(EXIT_ERROR)
 
 
 def _finish(args, file_processor, tld_map, keyword_scrubber,

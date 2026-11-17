@@ -259,3 +259,17 @@ def test_relative_mapping_path_is_saved(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     Translator.save_datasets('rel.json', {})
     assert (tmp_path / 'rel.json').exists()
+
+
+def test_stdin_stops_output_when_a_scrubber_fails(monkeypatch, tmp_path, capsysbinary):
+    from supportutils_scrub.modes import stdin as stdin_mode
+    from supportutils_scrub.processor import FileProcessor, ScrubError
+
+    def boom(self, *a, **k):
+        raise ScrubError("ip scrub failed")
+    monkeypatch.setattr(FileProcessor, 'process_text', boom)
+    _feed(monkeypatch, b'peer 203.0.113.7 ok\n')
+    with pytest.raises(SystemExit) as e:
+        stdin_mode.run_stdin_mode(_stdin_args(tmp_path), _Logger())
+    assert e.value.code == 1
+    assert b'203.0.113.7' not in capsysbinary.readouterr().out
