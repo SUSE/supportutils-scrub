@@ -40,14 +40,25 @@ _AUTH_VALUE_RE = re.compile(
     r'([A-Za-z0-9+/._~-]+={0,2})'
 )
 
-# RFC 3986 userinfo. The user and password classes exclude '/' and '@', so the
-# match cannot run past the authority into a path or query containing '@'.
+# RFC 3986 userinfo. Neither class crosses '/', so the match cannot run past
+# the authority into a path or query containing '@'. The password may hold an
+# unencoded '@' (P@ssw0rd): the userinfo ends at the last '@' before the path.
 _URL_CRED_RE = re.compile(
     r'(?i)\b([a-z][a-z0-9+.-]*://)'
     r'([^\s/:@"\'<>]+)'
-    r'(?::([^\s/@"\'<>]*))?'
+    r'(?::([^\s/"\'<>]*))?'
     r'@'
 )
+
+_DIGEST_USER_RE = re.compile(r'(?i)(\bdigest\s[^\n]*?\busername\s*=\s*")([^"]+)(")')
+
+# SUSE Customer Center system logins, wherever they appear (SUSEConnect,
+# zypper, logs), and the username= of a zypp credentials file that
+# supportconfig copies into updates.txt. Its sed masks password= only.
+_SCC_LOGIN_RE = re.compile(r'\bSCC_[0-9A-Fa-f]{16,}(?![0-9A-Za-z_])')
+_ZYPP_CREDS_RE = re.compile(
+    r'(?m)^# /etc/zypp/credentials\.d/\S+\n(?:(?!#==\[).*\n?)*')
+_CREDS_USER_RE = re.compile(r'(?im)^(username[ \t]*=[ \t]*)(\S+)')
 
 # Conventional, non-secret logins that identify a protocol rather than a
 # person. Skipped only when no password accompanies them.
@@ -166,6 +177,15 @@ class AuthScrubber(Scrubber):
         """
         if 'authorization' in text.lower():
             text = _AUTH_VALUE_RE.sub(self._replace_header, text)
+            text = _DIGEST_USER_RE.sub(
+                lambda m: m.group(1) + self._scrub_login(m.group(2)) + m.group(3), text)
         if '://' in text:
             text = _URL_CRED_RE.sub(self._replace_url, text)
+        if '/etc/zypp/credentials.d/' in text:
+            text = _ZYPP_CREDS_RE.sub(
+                lambda s: _CREDS_USER_RE.sub(
+                    lambda m: m.group(1) + self._scrub_login(m.group(2)), s.group(0)),
+                text)
+        if 'SCC_' in text:
+            text = _SCC_LOGIN_RE.sub(lambda m: self._scrub_login(m.group(0)), text)
         return text
