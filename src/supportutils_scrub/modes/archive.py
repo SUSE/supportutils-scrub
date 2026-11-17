@@ -106,7 +106,7 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
                 print(f"        {basename}")
             before = {s.name: len(s.mapping) for s in file_processor.scrubbers}
             t0 = time.perf_counter()
-            if file_processor.process_file(report_file, logger, verbose_flag) is False:
+            if not file_processor.process_file(report_file, logger, verbose_flag):
                 failed.append(report_file)
             file_times.append((basename, time.perf_counter() - t0))
             hits = [name for name, prev in before.items()

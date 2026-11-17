@@ -258,3 +258,15 @@ def test_interrupt_never_removes_an_input_scrubbed_in_place(tmp_path, monkeypatc
     handlers[-1](2, None)
     assert (mine / "x.txt").exists()
     assert not (tmp_path / "other_scrubbed").exists()
+
+
+@pytest.mark.skipif(not __import__("shutil").which("zstd"), reason="needs zstd")
+def test_lone_zst_log_is_scrubbed_not_refused(tmp_path):
+    import subprocess
+    f = tmp_path / "x.log.zst"
+    f.write_bytes(subprocess.run(["zstd", "-qc"], input=b"client 8.8.8.8 up\n",
+                                 capture_output=True, check=True).stdout)
+    file_mode.run_file_mode(_args([f], tmp_path), _Logger())
+    [out] = [p for p in tmp_path.iterdir() if "_scrubbed" in p.name]
+    body = subprocess.run(["zstd", "-dc", str(out)], capture_output=True).stdout
+    assert b"client" in body and b"8.8.8.8" not in body

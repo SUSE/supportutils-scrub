@@ -185,7 +185,7 @@ def run_folder_mode(args, logger):
                     print(f"        {basename}")
                 t0 = time.perf_counter()
                 try:
-                    if file_processor.process_file(report_file, logger, verbose_flag) is False:
+                    if not file_processor.process_file(report_file, logger, verbose_flag):
                         failed.append(report_file)
                 finally:
                     file_times.append((basename, time.perf_counter() - t0))

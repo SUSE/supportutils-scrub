@@ -245,7 +245,7 @@ class TestCompressedDumps:
 
     @pytest.mark.parametrize("payload,expected", [
         (_makedumpfile() + _RNG_BYTES, False),
-        (b"\x00" + b"text\n" * 400, False),
+        (b"\x00\x01text\x00\x02\n" * 400, False),
         (b"plain text 198.51.100.77\n" * 400, True),
     ], ids=["dump", "binary", "text"])
     def test_only_a_compressed_text_payload_is_stageable(self, tmp_path, monkeypatch,

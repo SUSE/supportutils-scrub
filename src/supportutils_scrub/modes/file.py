@@ -9,8 +9,8 @@ from supportutils_scrub.domain_scrubber import DomainScrubber
 from supportutils_scrub.hostname_scrubber import HostnameScrubber
 from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.processor import (
-    FileProcessor, compressed_opener, scrubbed_output_name,
-    strip_compression_ext, compression_magic_ok, looks_binary,
+    FileProcessor, single_file_compression, scrubbed_output_name,
+    strip_compression_ext, compression_magic_ok, looks_binary, is_binary_head,
     _iter_line_segments, _SEG_BYTES, _TEXT_PROBE,
 )
 from supportutils_scrub.pipeline import (
@@ -38,7 +38,7 @@ def scrub_loose_file(input_path, mappings, args, config, keyword_scrubber,
 
     Returns (output_path, mappings, file_processor); raises ScrubRefused."""
     name = os.path.basename(input_path)
-    comp = compressed_opener(name)
+    comp = single_file_compression(name)
     drop_ext = False
 
     # Cheap streaming checks before anything is read whole or copied: a
@@ -62,7 +62,7 @@ def scrub_loose_file(input_path, mappings, args, config, keyword_scrubber,
                 raise
             except Exception:
                 head = b''  # damaged head; the salvage path decides later
-            if b'\x00' in head:
+            if is_binary_head(head):
                 raise ScrubRefused(f"{name}: {ext[1:]} payload is not text "
                                    f"— nothing to scrub")
     elif is_pcap(input_path):

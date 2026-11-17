@@ -39,12 +39,10 @@ from supportutils_scrub.ip_scrubber import IPScrubber
 from supportutils_scrub.pipeline import build_chain, merge_state
 import gzip
 import subprocess
-from supportutils_scrub.processor import (compressed_opener, compression_magic_ok,
-                                          _SCRUB_INFO_HEADER as _HEADER,
-    FileProcessor, BINARY_SA_PATTERN, BINARY_OBJ_PATTERN,
-    SAR_XZ_PATTERN, SAR_PLAIN_PATTERN, _SCRUB_INFO_HEADER,
-    compressed_opener, is_memory_dump, is_archive_name, looks_binary,
-    is_dump_head, _TEXT_PROBE,
+from supportutils_scrub.processor import (
+    FileProcessor, BINARY_SA_PATTERN, BINARY_OBJ_PATTERN, _SCRUB_INFO_HEADER,
+    compressed_opener, compression_magic_ok, is_memory_dump, is_archive_name,
+    looks_binary, is_binary_head, _TEXT_PROBE,
 )
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 
@@ -121,7 +119,7 @@ def _discover_chunk(payload):
     with open(path, 'rb') as f:
         f.seek(start)
         data = f.read(end - start)
-    return ip.discover(data.decode('utf-8', errors='ignore'))
+    return ip.discover(data.decode('utf-8', errors='surrogateescape'))
 
 
 # --- worker-side context ----------------------------------------------------
@@ -177,14 +175,7 @@ def _scrub_batch(payload):
         for path in batch:
             before = {s.name: len(s.mapping) for s in fp.scrubbers}
             t0 = time.perf_counter()
-            try:
-                ok = fp.process_file(path, logger, verbose)
-            except MemoryError:
-                raise
-            except Exception as e:
-                logger.error(f"Error processing file {path}: {e}")
-                ok = False
-            if ok is False:
+            if not fp.process_file(path, logger, verbose):
                 failed.append(path)
             times.append((os.path.basename(path), time.perf_counter() - t0))
             grew = [name for name, prev in before.items() if len(fp[name].mapping) > prev]
@@ -247,7 +238,6 @@ def _chunk_bounds(path, jobs):
 def _is_chunkable(path):
     base = os.path.basename(path)
     if (BINARY_SA_PATTERN.match(base) or BINARY_OBJ_PATTERN.match(base)
-            or SAR_XZ_PATTERN.match(base) or SAR_PLAIN_PATTERN.match(base)
             or compressed_opener(base)):
         return False  # special-cased in process_file; leave whole
     try:
@@ -287,10 +277,9 @@ def _assemble_chunks(path, parts, changed):
 
 def _stageable_compressed(path):
     """(ext, opener) when this compressed log is worth staging for the pool:
-    a healthy .gz/.xz/.bz2 stream (not a sar binary) above the threshold."""
-    base = os.path.basename(path)
-    comp = compressed_opener(base)
-    if not comp or SAR_XZ_PATTERN.match(base):
+    a healthy .gz/.xz/.bz2 stream above the threshold."""
+    comp = compressed_opener(os.path.basename(path))
+    if not comp:
         return None
     try:
         if os.path.getsize(path) <= _COMPRESSED_CHUNK_THRESHOLD:
@@ -310,7 +299,7 @@ def _stageable_compressed(path):
         raise
     except Exception:
         return None                     # damaged: the stream path salvages
-    if b'\x00' in head or is_dump_head(head):
+    if is_binary_head(head):
         return None
     return comp
 
@@ -375,8 +364,8 @@ def _recompress(staged, path, ext, opener, logger):
             with open(staged, 'rb') as src:
                 if ext == '.gz':
                     fh = open(tmp, 'wb')
-                    out = gzip.GzipFile(filename=label[:-len(ext)], mode='wb',
-                                        fileobj=fh)
+                    # no FNAME: the original name may carry a real hostname
+                    out = gzip.GzipFile(filename='', mode='wb', fileobj=fh)
                 else:
                     fh = None
                     out = opener(tmp, 'wb')
@@ -397,6 +386,7 @@ def _recompress(staged, path, ext, opener, logger):
             raise ValueError(f"read back {read_back} of {size} bytes")
         if not compression_magic_ok(tmp, ext):
             raise ValueError(f"result is not a {ext[1:]} stream")
+        shutil.copymode(path, tmp)
         os.replace(tmp, path)
         return True
     except Exception as e:
