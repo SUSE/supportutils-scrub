@@ -5,20 +5,31 @@ import re
 import ipaddress
 
 from supportutils_scrub.processor import compressed_opener, compression_magic_ok
-from supportutils_scrub.domain_scrubber import is_preserved_domain
+from supportutils_scrub.domain_scrubber import is_preserved_domain, _VALID_TLDS
+from supportutils_scrub.ldap_dn_scrubber import _is_safe_ad_value
+from supportutils_scrub.mac_scrubber import MACScrubber
+from supportutils_scrub.scrubber import is_pseudonym
+from supportutils_scrub.trie_re import build_trie_pattern
+from supportutils_scrub.username_scrubber import UsernameScrubber
 
+# (mapping section, label, match mode, minimum length). The minimum follows
+# what each scrubber itself replaces: keywords at any length, names from 3.
 _CATEGORIES = [
-    ('ip',       'IPv4 address',  'ip'),
-    ('ipv6',     'IPv6 address',  'substring'),
-    ('mac',      'MAC address',   'mac_re'),
-    ('domain',   'domain',        'domain'),
-    ('hostname', 'hostname',      'boundary'),
-    ('user',     'username',      'boundary'),
-    ('keyword',  'keyword',       'substring'),
-    ('serial',   'serial/UUID',   'substring'),
+    ('ip',          'IPv4 address',  'ip',          6),
+    ('ipv6',        'IPv6 address',  'ipv6',        6),
+    ('mac',         'MAC address',   'mac',         6),
+    ('domain',      'domain',        'domain',      4),
+    ('hostname',    'hostname',      'word_i',      3),
+    ('user',        'username',      'word',        3),
+    ('keyword',     'keyword',       'substring_i', 1),
+    ('serial',      'serial/UUID',   'substring_i', 6),
+    ('sid',         'SAP SID',       'sid',         3),
+    ('ldap_dn',     'LDAP name',     'word_i',      3),
+    ('email',       'email address', 'substring_i', 6),
+    ('password',    'password',      'secret',      6),
+    ('auth',        'credential',    'secret',      6),
+    ('cloud_token', 'cloud token',   'secret',      6),
 ]
-
-_MIN_VALUE_LEN = 6
 
 # Names verify alone ignores; the SUSE domains the scrubber leaves alone are
 # checked with is_preserved_domain.
@@ -29,23 +40,20 @@ _SAFE_DOMAIN_VALUES = {
     'globalsign.com', 'comodo.com',
 }
 
-# Mirrors the lookbehind/lookahead in ip_scrubber.CIDR_RE so that IPs embedded
-# in version strings (e.g. "nftables-1.4.4.2" or "upower-lang-1.90.7.13+git")
-# are not flagged as leaks.
-# Must match CIDR_RE boundaries in ip_scrubber.py
-_IP_BOUNDARY = r'(?<![A-Za-z0-9.\-]){}(?![A-Za-z0-9.\-+])'
-
 # ---------------------------------------------------------------------------
 # 1. IP allowlist — structural guarantee
 # ---------------------------------------------------------------------------
 # After scrubbing, every IPv4 in the output must be in one of these safe ranges.
 # Anything else is flagged as a potential leak.
+# Deliberately not the scrubber's pattern: verify must see what the scrubber
+# misses. A sentence dot, an underscore and a dash range ("a-b") end an
+# address; a package name before a dash ("nftables-1.4.4.2"), a further dotted
+# number (an OID) or "+" after it (a version) do not.
 _OCTET = r'(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)'
-_IP_RE = re.compile(
-    rf'(?<![A-Za-z0-9.\-])'
-    rf'({_OCTET}\.{_OCTET}\.{_OCTET}\.{_OCTET})'
-    rf'(?![A-Za-z0-9.\-+])'
-)
+_IPV4 = rf'{_OCTET}\.{_OCTET}\.{_OCTET}\.{_OCTET}'
+_IP_LEFT = r'(?<![A-Za-z0-9.])(?<![A-Za-z]-)'
+_IP_RIGHT = rf'(?![A-Za-z0-9+]|\.\d|-(?!{_IPV4}))'
+_IP_RE = re.compile(rf'{_IP_LEFT}({_IPV4}){_IP_RIGHT}')
 
 _SAFE_IPV4_ALWAYS = [
     # Fake pools used by ip_scrubber
@@ -107,12 +115,39 @@ def _looks_like_version_context(line, match_start):
 # ---------------------------------------------------------------------------
 # 2. MAC OUI allowlist
 # ---------------------------------------------------------------------------
-_MAC_RE = re.compile(
+# A run of hex octets with one separator. Six octets are a MAC; a few longer
+# runs carry one at a known offset: a DHCP client-id (01:<mac>), a DUID-LL
+# (00:03:00:01:<mac>), a DUID-LLT (00:01:00:01:<time>:<mac>) and the iptables
+# MAC= field (<dst mac>:<src mac>:<ethertype>). Other runs (fingerprints, key
+# dumps) are not MACs.
+_HEX_RUN_RE = re.compile(
     r'(?<![0-9A-Fa-f:])'
-    r'((?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2})'
-    r'(?![0-9A-Fa-f:])',
-    re.IGNORECASE
+    r'([0-9A-Fa-f]{2}([:-])[0-9A-Fa-f]{2}(?:\2[0-9A-Fa-f]{2}){4,})'
+    r'(?![0-9A-Fa-f:]|-[0-9A-Fa-f])'
 )
+
+
+def _find_macs(line):
+    for m in _HEX_RUN_RE.finditer(line):
+        octets = m.group(1).split(m.group(2))
+        n = len(octets)
+        if n == 6:
+            yield m.group(1)
+            continue
+        if m.group(2) != ':':
+            continue
+        head = [o.lower() for o in octets[:4]]
+        if n == 7 and head[0] == '01':
+            yield ':'.join(octets[1:])
+        elif n == 10 and head == ['00', '03', '00', '01']:
+            yield ':'.join(octets[4:])
+        elif n == 14 and head == ['00', '01', '00', '01']:
+            yield ':'.join(octets[8:])
+        elif n == 14 and line[max(0, m.start() - 4):m.start()] == 'MAC=':
+            yield ':'.join(octets[:6])
+            yield ':'.join(octets[6:12])
+
+
 _FAKE_MAC_OUI = '00:1a:2b'  # fake OUI used by mac_scrubber
 
 
@@ -164,34 +199,70 @@ _SAFE_EMAIL_DOMAINS.update({
     'scrubbed.local',          # our own fake email domain
 })
 
+# Independent of the password scrubber: any key whose name ends in a secret
+# word (db_password, MYSQL_ROOT_PASSWORD, SecretAccessKey, system_token, ...),
+# quoted or not, with a value of any length.
+_SECRET_NAME = (r'[\w.-]*(?:pass(?:word|wd|phrase)?|pwd|pw|secret|secret[_-]?key'
+                r'|token|authtok|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)')
+_SECRET_VALUE = (r'(?:"(?P<dq>[^"\n]*)"|\'(?P<sq>[^\'\n]*)\''
+                 r'|(?P<u>[^\s"\'`,;<>(){}\[\]]+))')
+
 _SECRET_PATTERNS = [
-    # PEM-encoded keys and certificates
-    (re.compile(r'-----BEGIN\s+(RSA |DSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----'), 'private key'),
-    (re.compile(r'-----BEGIN CERTIFICATE-----'), 'certificate'),
-    # API keys / tokens (generic high-entropy after keyword)
-    (re.compile(r'(?i)(?:api[_-]?key|apikey|secret[_-]?key|access[_-]?token|auth[_-]?token)\s*[:=]\s*["\']?([A-Za-z0-9+/=_-]{20,})', re.IGNORECASE), 'api key/token'),
-    # AWS access key IDs
+    (re.compile(r'-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'), 'private key'),
     (re.compile(r'AKIA[0-9A-Z]{16}'), 'AWS access key'),
-    # JWT tokens
     (re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+'), 'JWT token'),
-    # Generic password assignments — only "password" and "passwd" with = delimiter
-    # Skip values already redacted by supportconfig or our scrubber
-    # mirrors password_scrubber._PASSWORD_RE: same names, same value charset
-    (re.compile(r'(?i)\b(?:password|passwd|secret|token|apikey|api_key|passphrase)\s*[:=]\s*["\']?(?!\*REMOVED)(?!scrubbed_pass_)([^\s"\'<>]{8,})'), 'password value'),
-    # mirrors password_scrubber._ATTR_PAIR_RE: name="passwd" value="..."
-    (re.compile(r'(?i)name\s*=\s*(["\'])(?:password|passwd|secret|token|apikey|api_key|passphrase)\1[^>]*?value\s*=\s*(["\'])(?!\*REMOVED)(?!scrubbed_pass_)([^"\'<>]{6,})\2'), 'password value'),
+    (re.compile(rf'(?i)(?<![\w.-])["\']?{_SECRET_NAME}["\']?\s*(?P<sep>[:=])\s*{_SECRET_VALUE}'),
+     'password value'),
+    (re.compile(rf'(?i)<{_SECRET_NAME}>(?P<u>[^<\n]+)</'), 'password value'),
+    (re.compile(rf'(?i)name\s*=\s*(["\']){_SECRET_NAME}\1[^>]*?value\s*=\s*(["\'])(?P<u>[^"\'<>]*)\2'),
+     'password value'),
+    (re.compile(r'(?i)(?<![\w.-])(?:bindpw|rootpw)\s+(?P<u>\S+)'), 'password value'),
+    (re.compile(r'(?i)\bldap\w*(?:\s[^\n]*?)?\s-w\s+(?P<u>\S+)'), 'password value'),
+    # /etc/zypp/credentials.d: the SCC login is a credential in its own right
+    (re.compile(r'(?i)\busername\s*=\s*(?P<u>SCC_[0-9a-f]+)'), 'SCC credential'),
 ]
+_SECRET_HINTS = ('pass', 'pw', 'secret', 'token', 'key', 'authtok', 'credential',
+                 '-----begin', 'akia', 'eyj', 'scc_', ' -w ')
+_SECRET_PLACEHOLDER_RE = re.compile(
+    r'(?i)\*.*|\$.*|%.*|<.*|\{\{.*|/.*|none|null|nil|n/a|yes|no|true|false|on|off|x+|-+')
+
+
+def _secret_value(m):
+    gd = m.groupdict()
+    for k in ('dq', 'sq', 'u'):
+        if gd.get(k) is not None:
+            return gd[k]
+    return None
+
+
+def _is_real_secret(val, sep=None):
+    v = val.strip().strip('"\'')
+    if not v or _SECRET_PLACEHOLDER_RE.fullmatch(v) or is_pseudonym(v):
+        return False
+    # "passwd: password changed", "pam_unix(passwd:chauthtok)": prose
+    if sep == ':' and v.isalpha() and v.islower():
+        return False
+    return True
+
+
+def _find_secrets(line):
+    for pat, label in _SECRET_PATTERNS:
+        for m in pat.finditer(line):
+            val = _secret_value(m)
+            if val is not None and not _is_real_secret(val, m.groupdict().get('sep')):
+                continue
+            yield label, m.group(0).strip()[:80]
+
 
 # An HTTP Basic credential that survived scrubbing. The scrubbed form is still
 # valid base64 of "login:secret", so the test cannot be "does it decode" — it
-# is whether the login half is one of the pseudonyms a scrubber allocates.
+# is whether both halves are pseudonyms a scrubber allocates.
 # The trailing lookahead stops the base64 class from matching the leading
 # letters of a wholesale replacement such as "Basic SCRUBBED_BASIC_1".
 _BASIC_CRED_RE = re.compile(
     r'(?i)(?:proxy-)?authorization"?\s*[:=]\s*"?basic[ \t]+'
     r'([A-Za-z0-9+/]+={0,2})(?![A-Za-z0-9+/=_-])'
 )
-_SCRUBBED_LOGIN_PREFIXES = ('SCRUBBED_', 'scrubbed_', 'email_')
 
 
 def _basic_is_credential(blob):
@@ -207,15 +278,44 @@ def _basic_is_credential(blob):
         return False
     if ':' not in decoded or not decoded.isprintable():
         return False
-    return not decoded.startswith(_SCRUBBED_LOGIN_PREFIXES)
+    login, _, secret = decoded.partition(':')
+    return not (is_pseudonym(login) and is_pseudonym(secret))
 
 
-# LDAP / Kerberos patterns
-_LDAP_DN_RE = re.compile(r'(?:CN|OU|DC|O|L|ST|C)=[^,\s]{2,}(?:,\s*(?:CN|OU|DC|O|L|ST|C)=[^,\s]{2,}){2,}', re.IGNORECASE)
+# LDAP / Kerberos patterns. Values may hold spaces ("CN=John Smith"); a DN
+# needs a DC= part, which keeps certificate subjects (CN, O, C) out.
+_LDAP_DN_RE = re.compile(
+    r'(?<![A-Za-z])(?:CN|OU|DC|O|L|ST|C)=[^,=\n]+(?:,\s*(?:CN|OU|DC|O|L|ST|C)=[^,=\n]+){2,}',
+    re.IGNORECASE)
+_DN_PART_RE = re.compile(r'(?i)(?<![A-Za-z])(CN|OU|DC)=([^,=\n]+)')
+_SAFE_DC_VALUES = {'example', 'local', 'localdomain', 'test', 'invalid'}
+
+
+def _dn_is_leak(dn):
+    if 'sysdb' in dn.lower():
+        return False
+    parts = _DN_PART_RE.findall(dn)
+    if not any(t.upper() == 'DC' for t, _ in parts):
+        return False
+    for typ, val in parts:
+        val = val.strip().strip('"\'>)')
+        if typ.upper() == 'DC':
+            val = re.match(r'[\w-]*', val).group(0).lower()
+            if val in _VALID_TLDS or val in _SAFE_DC_VALUES:
+                continue
+        elif _is_safe_ad_value(val):
+            continue
+        if not val or is_pseudonym(val) or is_preserved_domain(val):
+            continue
+        return True
+    return False
+
+
 # Require local part >= 3 alphanumeric chars, realm looks like an FQDN
 # (at least one dot). Avoids binary garbage like "HEH@HHEHP" that happens
 # to look like user@REALM but has no domain structure.
-_KERBEROS_RE = re.compile(r'(?<![A-Za-z0-9@])([A-Za-z][A-Za-z0-9]{2,})@([A-Z][A-Z0-9]+(?:\.[A-Z][A-Z0-9]+)+)', re.ASCII)
+_KERBEROS_RE = re.compile(
+    r'(?<![A-Za-z0-9@])([A-Za-z][A-Za-z0-9]{2,})@([A-Z][A-Z0-9-]*(?:\.[A-Z][A-Z0-9-]*)+)', re.ASCII)
 
 # URL with potentially real hostnames
 _URL_RE = re.compile(r'https?://([A-Za-z0-9.-]+)')
@@ -258,7 +358,7 @@ def _extract_identity_from_original(original_folder):
     }
     # IPs/MACs that are safe and should not be tracked as identity
     _safe_identity_prefixes = (
-        '127.', '0.0.', '255.', '224.', '::1', 'fe80:', 'fd', 'ff0',  # loopback, broadcast, multicast, link-local, ULA, IPv6 multicast
+        '127.', '0.0.', '255.', '224.', '::1', 'fe80:', 'ff0',  # loopback, broadcast, multicast, link-local, IPv6 multicast
         '10.', '172.16.', '172.17.', '172.18.', '172.19.',
         '172.20.', '172.21.', '172.22.', '172.23.', '172.24.',
         '172.25.', '172.26.', '172.27.', '172.28.', '172.29.',
@@ -279,7 +379,7 @@ def _extract_identity_from_original(original_folder):
         if t.isdigit():
             continue
         # Skip safe/private IPs and link-local/ULA IPv6
-        if any(t.startswith(p) for p in _safe_identity_prefixes):
+        if any(t.startswith(p) for p in _safe_identity_prefixes) or _ULA_RE.match(t):
             continue
         # Skip local/mDNS/ARPA domains
         if any(t.lower().endswith(s) for s in _safe_identity_suffixes):
@@ -289,6 +389,9 @@ def _extract_identity_from_original(original_folder):
             continue
         filtered.add(t)
     return filtered
+
+
+_ULA_RE = re.compile(r'(?i)fd[0-9a-f]{2}:')
 
 
 def _safe_read(filepath):
@@ -377,73 +480,91 @@ def _parse_hardware_txt(folder, identity):
 
 
 # ---------------------------------------------------------------------------
-# Core: build terms from mappings (original approach)
+# Core: build terms from mappings
 # ---------------------------------------------------------------------------
 
-# Skip our own fake replacement values in mapping keys.
-# Used with both match() (anchored) and search() (anywhere, e.g. inside LDAP DNs).
-# Counter-style fakes are decimal; --jobs runs use 12-hex-char dhash values.
-_FAKE_VALUE_RE = re.compile(
-    r'(?:hostname_\d+|user_\d+|domain_\d+|keyword_\d+'
-    r'|cn_(?:\d+|[0-9a-f]{12})|ou_(?:\d+|[0-9a-f]{12})'
-    r'|email_(?:\d+|[0-9a-f]{12})@scrubbed\.local'
-    r'|scrubbed_pass_(?:\d+|[0-9a-f]{12})|SCRUBBED_\w+_(?:\d+|[0-9a-f]{12})'
-    r'|SERIAL_\d+'
-    r'|00:1[Aa]:2[Bb]:[0-9A-Fa-f:]+|00000000-0000-)'
-)
+# Fakes that are not word pseudonyms: the MAC scrubber's OUI, zeroed UUIDs.
+_FAKE_HW_RE = re.compile(r'(?i)00:1a:2b:|00000000-0000-')
+
+# Names too common to search for at 3 characters; the username scrubber never
+# replaces the system words either.
+_GENERIC_NAMES = (UsernameScrubber.COMMON_WORDS | UsernameScrubber.EXCLUDED_USERS
+                  | {'localhost', 'linux', 'host', 'node', 'server', 'domain',
+                     'name', 'none', 'null', 'true', 'false'})
+
+_ALNUM_L, _ALNUM_R = r'(?<![A-Za-z0-9])', r'(?![A-Za-z0-9])'
+
+# mode -> (left boundary, right boundary, case-insensitive)
+_MODES = {
+    'ip':          (_IP_LEFT, _IP_RIGHT, False),
+    'ipv6':        (r'(?<![0-9A-Fa-f:])', r'(?![0-9A-Fa-f]|:[0-9A-Fa-f])', True),
+    'mac':         (r'(?<![0-9A-Fa-f])', r'(?![0-9A-Fa-f])', True),
+    'domain':      (r'(?<![A-Za-z0-9-])', r'(?![A-Za-z0-9-])', True),
+    'word':        (_ALNUM_L, _ALNUM_R, False),
+    'word_i':      (_ALNUM_L, _ALNUM_R, True),
+    'sid':         (_ALNUM_L, _ALNUM_R, False),
+    'secret':      (_ALNUM_L, _ALNUM_R, False),
+    'substring_i': ('', '', True),
+}
 
 
 def _build_terms(mappings: dict):
-    """
-    Build optimized lookup structures for mapping-based verification.
-    Returns (combined_re, match_labels, substring_set).
-      - combined_re: single compiled regex matching all boundary/ip terms
-      - match_labels: dict mapping matched string → category label
-      - substring_set: set of (real_val, label) for substring checks
-    """
-    # Collect all fake values so we skip them if they appear as keys
-    all_fake_values = set()
-    for cat_key in ('ip', 'ipv6', 'mac', 'domain', 'hostname', 'user',
-                    'keyword', 'serial', 'email', 'password', 'cloud_token',
-                    'auth'):
-        for fake_val in mappings.get(cat_key, {}).values():
-            all_fake_values.add(fake_val)
+    """Return ([(regex, case_insensitive)], {term: label}) for the mapping check.
 
-    regex_parts = []
-    match_labels = {}
-    substring_terms = []
+    One trie regex per match mode: a flat alternation with per-term
+    lookarounds took minutes on a large file with a few thousand terms.
+    """
+    fakes = set()
+    for key, _, _, _ in _CATEGORIES:
+        fakes.update(v for v in (mappings.get(key) or {}).values() if isinstance(v, str))
 
-    for key, label, mode in _CATEGORIES:
-        for real_val in mappings.get(key, {}):
-            if len(real_val) < _MIN_VALUE_LEN:
+    by_mode = {}
+    labels = {}
+    for key, label, mode, min_len in _CATEGORIES:
+        ci = _MODES[mode][2]
+        for real_val in mappings.get(key) or {}:
+            if not isinstance(real_val, str) or len(real_val) < min_len:
                 continue
-            if real_val.lower() in _SAFE_DOMAIN_VALUES:
+            low = real_val.lower()
+            if low in _SAFE_DOMAIN_VALUES:
                 continue
             # only a domain entry: a keyword or user that merely ends in
             # .suse.de is still the operator's and still verified
             if key == 'domain' and is_preserved_domain(real_val):
                 continue
-            if real_val in all_fake_values or _FAKE_VALUE_RE.match(real_val):
+            if real_val in fakes or is_pseudonym(real_val) or _FAKE_HW_RE.match(real_val):
                 continue
-            if mode == 'boundary':
-                regex_parts.append(r'\b' + re.escape(real_val) + r'\b')
-                match_labels[real_val] = label
-            elif mode == 'ip':
-                regex_parts.append(_IP_BOUNDARY.format(re.escape(real_val)))
-                match_labels[real_val] = label
-            elif mode == 'mac_re':
-                # Use same boundary as MAC_PATTERN to avoid matching inside longer hex strings
-                regex_parts.append(r'(?<![0-9A-Fa-f:])' + re.escape(real_val) + r'(?![0-9A-Fa-f:])')
-                match_labels[real_val] = label
-            elif mode == 'domain':
-                # Match same boundary as domain_scrubber: not preceded/followed by \w or -
-                regex_parts.append(r'(?<![\w\-])' + re.escape(real_val) + r'(?![\w\-])')
-                match_labels[real_val] = label
-            else:
-                substring_terms.append((real_val, label))
+            if mode in ('word', 'word_i') and low in _GENERIC_NAMES:
+                continue
+            # a lowercase word in the password map is prose the scrubber caught
+            if mode == 'secret' and real_val.isalpha() and (real_val.islower() or real_val.isupper()):
+                continue
+            terms = [real_val]
+            if mode == 'sid':
+                terms += ['SAP' + real_val, low + 'adm']
+            for t in terms:
+                t = t.lower() if ci else t
+                by_mode.setdefault(mode, set()).add(t)
+                labels.setdefault(t, label)
 
-    combined_re = re.compile('|'.join(regex_parts)) if regex_parts else None
-    return combined_re, match_labels, substring_terms
+    term_res = []
+    for mode, terms in by_mode.items():
+        left, right, ci = _MODES[mode]
+        rx = left + '(?:' + build_trie_pattern(terms) + ')' + right
+        term_res.append((re.compile(rx, re.IGNORECASE if ci else 0), ci))
+    return term_res, labels
+
+
+def _mapping_hits(text, term_res, labels):
+    for rx, ci in term_res:
+        for m in rx.finditer(text):
+            val = m.group(0)
+            label = labels.get(val.lower() if ci else val)
+            # Scrub leaves dotted quads in version context alone;
+            # agree with that instead of flagging them.
+            if label == 'IPv4 address' and _looks_like_version_context(text, m.start()):
+                continue
+            yield label, val
 
 
 # ---------------------------------------------------------------------------
@@ -460,30 +581,20 @@ def _scan_one_file(fpath_fname, scan_ctx):
     if comp and not compression_magic_ok(fpath, comp[0]):
         comp = None
     _open = comp[1] if comp else open
+    lineno = 0
+
+    def add(category, value):
+        file_findings.append({'file': rel, 'line': lineno,
+                              'category': category, 'value': value})
+
+    check_mac = scan_ctx['check_allowlist'] and scan_ctx['check_mac'] \
+        and fname not in MACScrubber.skip_files
     try:
         with _open(fpath, 'rt', encoding='utf-8', errors='ignore') as f:
             for lineno, line in enumerate(f, 1):
 
-                if scan_ctx['combined_re']:
-                    for m in scan_ctx['combined_re'].finditer(line):
-                        val = m.group(0)
-                        label = scan_ctx['match_labels'].get(val)
-                        if label:
-                            # Scrub leaves dotted quads in version context alone;
-                            # agree with that instead of flagging them.
-                            if label == 'IPv4 address' and \
-                                    _looks_like_version_context(line, m.start()):
-                                continue
-                            file_findings.append({
-                                'file': rel, 'line': lineno,
-                                'category': label, 'value': val,
-                            })
-                for real_val, label in scan_ctx['substring_terms']:
-                    if real_val in line:
-                        file_findings.append({
-                            'file': rel, 'line': lineno,
-                            'category': label, 'value': real_val,
-                        })
+                for label, val in _mapping_hits(line, scan_ctx['term_res'], scan_ctx['labels']):
+                    add(label, val)
 
                 if scan_ctx['check_allowlist'] and '.' in line:
                     for m in _IP_RE.finditer(line):
@@ -492,21 +603,12 @@ def _scan_one_file(fpath_fname, scan_ctx):
                             continue
                         if _looks_like_version_context(line, m.start()):
                             continue
-                        file_findings.append({
-                            'file': rel, 'line': lineno,
-                            'category': 'unlisted IPv4',
-                            'value': ip_str,
-                        })
+                        add('unlisted IPv4', ip_str)
 
-                if scan_ctx['check_allowlist'] and ':' in line:
-                    for m in _MAC_RE.finditer(line):
-                        mac_str = m.group(1)
+                if check_mac and (':' in line or '-' in line):
+                    for mac_str in _find_macs(line):
                         if not _is_safe_mac(mac_str):
-                            file_findings.append({
-                                'file': rel, 'line': lineno,
-                                'category': 'unlisted MAC',
-                                'value': mac_str,
-                            })
+                            add('unlisted MAC', mac_str)
 
                 if scan_ctx['check_patterns']:
                     if '@' in line:
@@ -514,80 +616,45 @@ def _scan_one_file(fpath_fname, scan_ctx):
                             email = m.group(1)
                             if any(email.endswith(s) for s in _SYSTEMD_SUFFIXES):
                                 continue
-                            domain = email.split('@')[1].lower()
+                            local, domain = email.split('@', 1)
+                            domain = domain.lower()
                             tld = domain.rsplit('.', 1)[-1] if '.' in domain else domain
                             if domain not in _SAFE_EMAIL_DOMAINS \
                                     and not is_preserved_domain(domain) \
-                                    and tld not in _FAKE_EMAIL_TLDS:
-                                file_findings.append({
-                                    'file': rel, 'line': lineno,
-                                    'category': 'email address',
-                                    'value': email,
-                                })
+                                    and tld not in _FAKE_EMAIL_TLDS \
+                                    and not is_pseudonym(local):
+                                add('email address', email)
 
-                        _fake_realms = {'LDAP', 'KRB5', 'KERBEROS', 'LOCAL', 'FILE', 'PROXY'}
                         for m in _KERBEROS_RE.finditer(line):
                             realm = m.group(2)
-                            if realm in _fake_realms:
+                            if is_pseudonym(realm) or is_preserved_domain(realm):
                                 continue
-                            file_findings.append({
-                                'file': rel, 'line': lineno,
-                                'category': 'Kerberos principal',
-                                'value': m.group(0),
-                            })
+                            add('Kerberos principal', m.group(0))
 
-                    if 'SCRUBBED_' not in line:
-                        for hint in scan_ctx['secret_hints']:
-                            if hint in line:
-                                for pat, label in _SECRET_PATTERNS:
-                                    if pat.search(line):
-                                        snippet = line.strip()[:80]
-                                        file_findings.append({
-                                            'file': rel, 'line': lineno,
-                                            'category': label,
-                                            'value': snippet,
-                                        })
-                                break
+                    low = line.lower()
+                    if any(h in low for h in _SECRET_HINTS):
+                        for label, snippet in _find_secrets(line):
+                            add(label, snippet)
 
                     if 'asic' in line and 'uthorization' in line:
                         for m in _BASIC_CRED_RE.finditer(line):
                             if _basic_is_credential(m.group(1)):
-                                file_findings.append({
-                                    'file': rel, 'line': lineno,
-                                    'category': 'HTTP Basic credential',
-                                    'value': line.strip()[:80],
-                                })
+                                add('HTTP Basic credential', line.strip()[:80])
 
-                    if '=' in line and ('CN=' in line or 'DC=' in line
-                                        or 'OU=' in line or 'cn=' in line
-                                        or 'dc=' in line or 'ou=' in line):
+                    if 'dc=' in low:
                         for m in _LDAP_DN_RE.finditer(line):
-                            dn_val = m.group(0)
-                            if 'example' in dn_val.lower():
-                                continue
-                            if 'sysdb' in dn_val.lower():
-                                continue
-                            if _FAKE_VALUE_RE.search(dn_val) or \
-                                    re.search(r'DC=domain_\d+', dn_val, re.IGNORECASE):
-                                continue
-                            file_findings.append({
-                                'file': rel, 'line': lineno,
-                                'category': 'LDAP DN',
-                                'value': dn_val[:80],
-                            })
+                            if _dn_is_leak(m.group(0)):
+                                add('LDAP DN', m.group(0).strip()[:80])
 
                 if scan_ctx['identity_lower']:
                     line_lower = line.lower()
                     for token, token_low in scan_ctx['identity_lower'].items():
                         if token_low in line_lower:
-                            file_findings.append({
-                                'file': rel, 'line': lineno,
-                                'category': 'system identity',
-                                'value': token,
-                            })
+                            add('system identity', token)
 
-    except Exception:
-        pass
+    except Exception as e:
+        # a file verify cannot read to the end is not a file it has verified
+        add('unreadable file', f'{type(e).__name__}: {e}'[:80])
     return file_findings
 
 
@@ -645,8 +712,8 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
         obfuscate_private = config.obfuscate_private_ip
     safe_nets = _build_safe_ipv4_nets(obfuscate_private_ip=obfuscate_private)
 
-    # --- Layer 1: mapping-based (optimized single-regex) ---
-    combined_re, match_labels, substring_terms = _build_terms(mappings)
+    # --- Layer 1: mapping-based (one trie regex per match mode) ---
+    term_res, labels = _build_terms(mappings)
 
     # --- Layer 5: identity tokens from original ---
     identity_tokens = set()
@@ -658,38 +725,40 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
             all_mapped.update(mappings.get(key, {}).keys())
         identity_tokens -= all_mapped
 
-    # Files that are safe to skip for pattern scanning (binary sar data is already deleted)
+    # Binary sar data is deleted by the scrub; the sarDATE text files are
+    # scanned, their header line names the host.
     _skip_binary_re = re.compile(r'^sa\d{8}(\.xz)?$')
-    # Also skip sar text files — they contain only numeric performance data, no sensitive info
-    _skip_sar_re = re.compile(r'^sar\d{8}$')
-
-    # Pre-compute cheap string hints for secret patterns to avoid regex on every line
-    _secret_hints = ['-----BEGIN', 'api_key', 'apikey', 'api-key', 'secret_key', 'secret-key',
-                     'access_token', 'access-token', 'auth_token', 'auth-token',
-                     'AKIA', 'eyJ', 'password', 'passwd', 'pass=', 'pass:']
 
     # Pre-lowercase identity tokens once
     identity_lower = {t: t.lower() for t in identity_tokens} if identity_tokens else {}
 
     file_list = []
-    for root, _, files in os.walk(folder_path):
+    for root, dirs, files in os.walk(folder_path):
+        # a real name left in a file or directory name leaks as well
+        for name in dirs + files:
+            rel = os.path.relpath(os.path.join(root, name), folder_path)
+            for label, val in _mapping_hits(name, term_res, labels):
+                findings.append({'file': rel, 'line': 0,
+                                 'category': f'{label} in file name', 'value': val})
         for fname in files:
-            if not _skip_binary_re.match(fname) and not _skip_sar_re.match(fname):
-                file_list.append((os.path.join(root, fname), fname))
+            fpath = os.path.join(root, fname)
+            if _skip_binary_re.match(fname) or os.path.islink(fpath) \
+                    or not os.path.isfile(fpath):
+                continue
+            file_list.append((fpath, fname))
 
     import sys
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
     scan_ctx = {
         'folder_path': folder_path,
-        'combined_re': combined_re,
-        'match_labels': match_labels,
-        'substring_terms': substring_terms,
+        'term_res': term_res,
+        'labels': labels,
         'check_allowlist': check_allowlist,
+        'check_mac': getattr(config, 'obfuscate_mac', True) if config else True,
         'check_patterns': check_patterns,
         'safe_nets': safe_nets,
         'identity_lower': identity_lower,
-        'secret_hints': _secret_hints,
     }
 
     total_files = len(file_list)

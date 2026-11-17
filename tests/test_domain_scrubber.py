@@ -197,7 +197,7 @@ class TestVendorDomainFollowUps:
         from supportutils_scrub.verify import _build_terms
         maps = {"keyword": {"acme-prod.susecloud.net": "keyword_1"},
                 "domain": {"registry.suse.com": "sub_0.dom7.aae"}}
-        combined_re, labels, substr = _build_terms(maps)
-        terms = set(labels) | {t for t, _ in substr}
+        _, labels = _build_terms(maps)
+        terms = set(labels)
         assert "acme-prod.susecloud.net" in terms
         assert "registry.suse.com" not in terms
