@@ -50,7 +50,7 @@ _URL_CRED_RE = re.compile(
     r'@'
 )
 
-_DIGEST_USER_RE = re.compile(r'(?i)(\bdigest\s[^\n]*?\busername\s*=\s*")([^"]+)(")')
+_DIGEST_USER_RE = re.compile(r'(?i)(\bdigest[ \t][^\n]*?\busername\s*=\s*")([^"]+)(")')
 
 # SUSE Customer Center system logins, wherever they appear (SUSEConnect,
 # zypper, logs), and the username= of a zypp credentials file that

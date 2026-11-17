@@ -15,11 +15,12 @@ _SECRET_NAMES = (r'password|passwd|passphrase|secret_key|secret|token|apikey'
 #: optionally quoted the way JSON writes it. A quoted value is taken whole,
 #: spaces included. An unquoted one stops at whitespace and at the , ; ) } ]
 #: that end it in a mount option list or a JSON/YAML flow, so
-#: "password=x,uid=1000" keeps its uid.
+#: "password=x,uid=1000" keeps its uid. A {SSHA} scheme tag is part of the
+#: value; '::' is LDIF's base64 separator.
 _PASSWORD_RE = re.compile(
-    r'(?i)(?P<prefix>(?P<name>' + _SECRET_NAMES + r')["\']?[ \t]*(?P<sep>[:=])[ \t]*)'
-    r'(?:(?P<q>["\'])(?P<qval>.+?)(?P=q)'
-    r'|(?P<val>[^\s"\'<>,;)}\]{[(][^\s"\'<>,;)}\]]*))'
+    r'(?i)(?P<prefix>(?P<name>' + _SECRET_NAMES + r')["\']?[ \t]*(?P<sep>::?|=)[ \t]*)'
+    r'(?:(?P<q>["\'])(?!(?P=q))(?P<qval>.+?)(?P=q)'
+    r'|(?P<val>(?:\{\w[\w-]*\})?[^\s"\'<>,;)}\]{[(][^\s"\'<>,;)}\]]*))'
 )
 
 #: <password>value</password>
@@ -57,13 +58,13 @@ _CLI_SECRET_RE = re.compile(
 # -w is the bind password only for the ldap tools; grep -w and ping -w are not.
 _LDAP_W_RE = re.compile(
     r'(?P<prefix>\bldap\w*(?:[ \t][^\n]*?)?[ \t]-w[ \t]+)'
-    r'(?:(?P<q>["\'])(?P<qval>.+?)(?P=q)|(?P<val>[^\s"\']+))'
+    r'(?:(?P<q>["\'])(?!(?P=q))(?P<qval>.+?)(?P=q)|(?P<val>[^\s"\']+))'
 )
 
 # slapd.conf and nslcd.conf separate the value with blanks: "bindpw value".
 _BLANK_SECRET_RE = re.compile(
     r'(?im)(?P<prefix>^[ \t]*(?:bindpw|rootpw)[ \t]+)'
-    r'(?:(?P<q>["\'])(?P<qval>.+?)(?P=q)|(?P<val>\S+))'
+    r'(?:(?P<q>["\'])(?!(?P=q))(?P<qval>.+?)(?P=q)|(?P<val>\S+))'
 )
 
 _PLACEHOLDER_LEAD = ('*', '<', '$', '-')
@@ -115,6 +116,9 @@ class PasswordScrubber(Scrubber):
             value = m.group('qval') or m.group('val')
             if _is_placeholder(value):
                 return m.group(0)
+            # corosync's "token: 3000" is a timeout in milliseconds.
+            if m.group('name').lower() == 'token' and value.isdigit():
+                return m.group(0)
             # "passwd: password changed" is the passwd program talking, and
             # "pam_unix(passwd:chauthtok)" or "(gdm-password:auth)" is a PAM
             # service:type pair. Neither is a key.
@@ -138,8 +142,11 @@ class PasswordScrubber(Scrubber):
             value = m.group('qval') or m.group('val')
             if value.startswith(_PLACEHOLDER_LEAD) or _is_placeholder(value):
                 return m.group(0)
-            # credentials=/etc/samba/cred.txt names the file, not the secret.
-            if m.group('prefix').lower() == 'credentials=' and value.startswith('/'):
+            # credentials=/etc/samba/cred.txt names the file, not the secret,
+            # and so does a zypper repo URL's ?credentials=<file>.
+            if m.group('prefix').lower() == 'credentials=' and (
+                    value.startswith('/')
+                    or (m.start() and m.string[m.start() - 1] in '?&')):
                 return m.group(0)
             quote = m.group('q') or ''
             return m.group('prefix') + quote + self._get_fake_password(value) + quote

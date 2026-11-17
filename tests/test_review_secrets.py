@@ -23,6 +23,8 @@ _PW = "Sup3r" + "S3cretValue"
     'ldapsearch -x -D cn=admin,dc=example,dc=com -w %s',
     'ldapsearch --bindpw %s -x',
     'password=%s,uid=1000,vers=3.0',
+    'userPassword:: %s',
+    'password: {SSHA}%s',
 ])
 def test_secret_key_forms(line):
     out = PasswordScrubber().scrub(line % _PW)
@@ -52,6 +54,11 @@ def test_mount_options_survive():
     "password: null",
     "mount -o credentials=/etc/samba/cred.txt,uid=0 //nas/s /mnt",
     "grep -w foo x; ping -w 5 host",
+    "ALL=(ALL) NOPASSWD: ALL",
+    "passwd: files sss",
+    "token: 5000",
+    '{"password": "", "user": "bob"}',
+    "baseurl=https://updates.example.com/r?credentials=SUSE_x86_64",
 ])
 def test_not_a_secret_is_untouched(line):
     assert PasswordScrubber().scrub(line) == line
