@@ -7,8 +7,9 @@ import tarfile
 import subprocess
 
 from supportutils_scrub.processor import (append_scrubbed, dump_member_verdict,
-                                          DUMP, NOT_A_DUMP,
-                                          _TAR_SUFFIXES, _ARCHIVE_NAME_SUFFIXES)
+                                          DUMP, NOT_A_DUMP, _zstd_open,
+                                          _TAR_SUFFIXES, _ARCHIVE_NAME_SUFFIXES,
+                                          _ZST_TAR_SUFFIXES)
 
 
 # One suffix list for every module: compressed tars (a top-level input), and
@@ -19,7 +20,7 @@ _ARCHIVE_SUFFIXES = _TAR_SUFFIXES
 def strip_archive_ext(name: str) -> str:
     """Strip a tar archive extension (handles double extensions like .tar.bz2)."""
     low = name.lower()
-    for suf in _ARCHIVE_SUFFIXES:
+    for suf in _ARCHIVE_NAME_SUFFIXES:
         if low.endswith(suf):
             return name[:-len(suf)]
     return os.path.splitext(name)[0]
@@ -65,7 +66,7 @@ def _member_relative_path(member, top_level):
 def _is_safe_path(target_dir: str, member_name: str) -> bool:
     """Return True if member_name extracts safely within target_dir."""
     norm = os.path.normpath(member_name)
-    if os.path.isabs(norm) or norm.startswith('..'):
+    if os.path.isabs(norm) or norm == '..' or norm.startswith('..' + os.sep):
         return False
     target = os.path.realpath(target_dir)
     dest   = os.path.realpath(os.path.join(target_dir, member_name))
@@ -102,8 +103,27 @@ def walk_supportconfig(folder_path):
     return report_files
 
 
-# Nested archives also include plain .tar; tarfile 'r:*' auto-detects.
+# Nested archives also include plain .tar and .tar.zst; tarfile 'r:*'
+# auto-detects the rest.
 _NESTED_ARCHIVE_SUFFIXES = _ARCHIVE_NAME_SUFFIXES
+
+
+def _unzstd(src, dst):
+    """Decompress a .tar.zst into dst. Raises when nothing came out (no
+    decompressor here, or not a zstd stream); returns the error of a stream
+    cut short, after writing what did decode, so the members before the
+    damage still decide whether the archive is kept for a dump."""
+    with open(dst, 'wb') as out:
+        try:
+            with _zstd_open(src, 'rb') as f:
+                shutil.copyfileobj(f, out)
+        except MemoryError:
+            raise
+        except Exception as e:
+            if not out.tell():
+                raise
+            return e
+    return None
 
 
 def _first_dump_member(tar, members):
@@ -119,6 +139,18 @@ def _first_dump_member(tar, members):
 def _dump_words(verdict):
     return ("a memory dump" if verdict == DUMP
             else "a member that could not be inspected and may be a memory dump")
+
+
+def _extract(tar, member, path):
+    """tar.extract without the archive's modes: a 0444 file or a 0555 dir
+    would stop the scrub from rewriting it or extracting into it."""
+    if hasattr(tarfile, 'data_filter'):
+        tar.extract(member, path=path, filter='data')
+        return
+    tar.extract(member, path=path)
+    target = os.path.join(path, member.name)
+    mode = os.lstat(target).st_mode
+    os.chmod(target, mode | (0o700 if member.isdir() else 0o600))
 
 
 def _extract_verified(tar, members, dest):
@@ -149,7 +181,7 @@ def _extract_verified(tar, members, dest):
                 if verdict != NOT_A_DUMP:
                     raise OSError(f"{member.name}: stored twice at one path and one copy "
                                   f"is {_dump_words(verdict)}; not extracted over it")
-        tar.extract(member, path=dest)
+        _extract(tar, member, dest)
         if member.isfile():
             got = os.path.getsize(target)
             if got != member.size:
@@ -193,10 +225,14 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                 n += 1
             dump = None
             created = False
+            unzst = archive + '.scrubtmp' if archive.lower().endswith(_ZST_TAR_SUFFIXES) else None
             try:
-                with tarfile.open(archive, 'r:*') as tar:
+                zst_error = _unzstd(archive, unzst) if unzst else None
+                with tarfile.open(unzst or archive, 'r:*') as tar:
                     try:
                         members = tar.getmembers()
+                        if zst_error:
+                            raise zst_error
                     except Exception:
                         # the members read before the damage decide whether
                         # the archive is kept
@@ -233,6 +269,9 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                     continue
                 if logger:
                     logger.error(f"Could not unpack nested archive {rel}: {e} — removed (cannot scrub its contents)")
+            finally:
+                if unzst and os.path.exists(unzst):
+                    os.remove(unzst)
             try:
                 os.remove(archive)
             except OSError as e:
@@ -286,29 +325,59 @@ def _extract_streaming(archive_path, cmd, clean_folder_path, clean_folder_name,
     the external tool, multi-threaded, both times."""
     members = [m for _tar, m in _stream_members(archive_path, cmd)]
     top_level = _common_top_level(members)
+    skipped = 0
     for tar, member in _stream_members(archive_path, cmd):
-        if member.issym() or member.islnk():
-            continue
-        relative_path = _member_relative_path(member, top_level)
-        if not relative_path:
-            continue
-        if not _is_safe_path(clean_folder_path, relative_path):
-            print(f"[!] Blocked unsafe path in archive: {member.name}")
-            continue
-        if member.isdir():
-            rel = relative_path.strip("/")
-            # the wrapper maps to its own name, not to "": recreating it would
-            # put an empty scc_host_date/ inside the output folder
-            if not rel or (top_level and rel == top_level):
-                continue
+        skipped += not _extract_top_member(tar, member, top_level, clean_folder_path,
+                                           clean_folder_name, tar_extract_base)
+    return skipped
+
+
+def _extract_top_member(tar, member, top_level, clean_folder_path,
+                        clean_folder_name, tar_extract_base):
+    """Extract one member of a top-level archive. Returns False for a FIFO,
+    a device or any other member that is no file, dir or link: written out,
+    it would hang the scrub on open(). A hard link becomes a copy of its
+    target when that is a regular file already extracted; symlinks are
+    skipped."""
+    if member.issym():
+        return True
+    if not (member.isfile() or member.isdir() or member.islnk()):
+        return False
+    relative_path = _member_relative_path(member, top_level)
+    if not relative_path:
+        return True
+    if not _is_safe_path(clean_folder_path, relative_path):
+        print(f"[!] Blocked unsafe path in archive: {member.name}")
+        return True
+    if member.isdir():
+        rel = relative_path.strip("/")
+        # the wrapper maps to its own name, not to "": recreating it would
+        # put an empty scc_host_date/ inside the output folder
+        if rel and not (top_level and rel == top_level):
             # made with our own mode, not the archive's
             os.makedirs(os.path.join(clean_folder_path, rel), exist_ok=True)
-            continue
+        return True
+    try:
+        if member.islnk():
+            src_rel = _member_relative_path(tarfile.TarInfo(member.linkname), top_level)
+            src = os.path.join(clean_folder_path, src_rel)
+            if (src_rel and _is_safe_path(clean_folder_path, src_rel)
+                    and os.path.isfile(src) and not os.path.islink(src)):
+                dst = os.path.join(clean_folder_path, relative_path)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copyfile(src, dst)
+            return True
         member.name = os.path.join(clean_folder_name, relative_path)
-        try:
-            tar.extract(member, path=tar_extract_base)
-        except Exception as e:
-            logging.warning(f"Skipping {member.name}: {e}")
+        _extract(tar, member, tar_extract_base)
+    except Exception as e:
+        logging.warning(f"Skipping {member.name}: {e}")
+    return True
+
+
+def _report_skipped(logger, skipped):
+    if skipped and logger:
+        logger.warning(f"{skipped} archive member(s) skipped: FIFOs or device "
+                       f"nodes, which hold no file content")
 
 
 def extract_tgz_archive(archive_path, logger, extract_base=None, mode="r:gz"):
@@ -332,8 +401,9 @@ def extract_tgz_archive(archive_path, logger, extract_base=None, mode="r:gz"):
     cmd = _decompressor_cmd(mode)
     if cmd:
         try:
-            _extract_streaming(archive_path, cmd, clean_folder_path,
-                               clean_folder_name, tar_extract_base)
+            skipped = _extract_streaming(archive_path, cmd, clean_folder_path,
+                                         clean_folder_name, tar_extract_base)
+            _report_skipped(logger, skipped)
             report_files = walk_supportconfig(clean_folder_path)
             print(f"[✓] Archive extracted ({cmd[0]}, multi-threaded) to: "
                   f"{clean_folder_path}")
@@ -349,33 +419,11 @@ def extract_tgz_archive(archive_path, logger, extract_base=None, mode="r:gz"):
     with tarfile.open(archive_path, mode) as tar:
         members = tar.getmembers()
         top_level = _common_top_level(members)
-
+        skipped = 0
         for member in members:
-            if member.issym() or member.islnk():
-                continue
-
-            relative_path = _member_relative_path(member, top_level)
-
-            if not relative_path:
-                continue
-
-            if member.isdir():
-                rel = relative_path.strip("/")
-                if (rel and not (top_level and rel == top_level)
-                        and _is_safe_path(clean_folder_path, rel)):
-                    os.makedirs(os.path.join(clean_folder_path, rel),
-                                exist_ok=True)
-                continue
-
-            if not _is_safe_path(clean_folder_path, relative_path):
-                print(f"[!] Blocked unsafe path in archive: {member.name}")
-                continue
-
-            member.name = os.path.join(clean_folder_name, relative_path)
-            try:
-                tar.extract(member, path=tar_extract_base)
-            except Exception as e:
-                logging.warning(f"Skipping {member.name}: {e}")
+            skipped += not _extract_top_member(tar, member, top_level, clean_folder_path,
+                                               clean_folder_name, tar_extract_base)
+        _report_skipped(logger, skipped)
 
     report_files = walk_supportconfig(clean_folder_path)
     if extract_base:
@@ -384,28 +432,47 @@ def extract_tgz_archive(archive_path, logger, extract_base=None, mode="r:gz"):
         print(f"[✓] Archive extracted to: {clean_folder_path}")
     return report_files, clean_folder_path
 
-def create_txz(source_dir, output_filename):
-    xz_bin = shutil.which('xz')
-    if xz_bin:
-        # Stream an uncompressed tar into multithreaded `xz -T0` so all cores
-        # are used. Python's lzma module is single-threaded; on a large
-        # supportconfig this compression step dominates the runtime.
-        with open(output_filename, 'wb') as out_f:
-            proc = subprocess.Popen([xz_bin, '-T0', '-c'],
-                                    stdin=subprocess.PIPE, stdout=out_f)
-            try:
-                with tarfile.open(fileobj=proc.stdin, mode='w|') as tar:
-                    tar.add(source_dir, arcname=os.path.basename(source_dir))
-            finally:
-                proc.stdin.close()
-                ret = proc.wait()
-            if ret != 0:
-                raise RuntimeError(f"xz exited with status {ret} while writing {output_filename}")
-        return
+def _anonymous_owner(info):
+    # the invoking account's uid and name would otherwise go into every member
+    info.uid = info.gid = 0
+    info.uname = info.gname = ''
+    return info
 
-    # Fallback: no xz binary available, use single-threaded lzma.
-    with tarfile.open(output_filename, 'w:xz') as tar:
-        tar.add(source_dir, arcname=os.path.basename(source_dir))
+
+def create_txz(source_dir, output_filename):
+    """Pack source_dir into output_filename. Written under a temporary name
+    and renamed on success, so a failure part way never leaves a partial
+    archive that looks complete."""
+    tmp = output_filename + '.tmp'
+    arcname = os.path.basename(source_dir)
+    try:
+        xz_bin = shutil.which('xz')
+        if xz_bin:
+            # Stream an uncompressed tar into multithreaded `xz -T0` so all cores
+            # are used. Python's lzma module is single-threaded; on a large
+            # supportconfig this compression step dominates the runtime.
+            with open(tmp, 'wb') as out_f:
+                proc = subprocess.Popen([xz_bin, '-T0', '-c'],
+                                        stdin=subprocess.PIPE, stdout=out_f)
+                try:
+                    with tarfile.open(fileobj=proc.stdin, mode='w|') as tar:
+                        tar.add(source_dir, arcname=arcname, filter=_anonymous_owner)
+                finally:
+                    proc.stdin.close()
+                    ret = proc.wait()
+                if ret != 0:
+                    raise RuntimeError(f"xz exited with status {ret} while writing {output_filename}")
+        else:
+            # Fallback: no xz binary available, use single-threaded lzma.
+            with tarfile.open(tmp, 'w:xz') as tar:
+                tar.add(source_dir, arcname=arcname, filter=_anonymous_owner)
+        os.replace(tmp, output_filename)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 def copy_folder_to_scrubbed(folder_path):
     """copy folder_path to {folder_path}_scrubbed/ and return (file_list, scrubbed_path)
