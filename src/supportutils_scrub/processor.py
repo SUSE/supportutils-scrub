@@ -7,6 +7,7 @@ import itertools
 import lzma
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import threading
@@ -25,9 +26,12 @@ SAR_PLAIN_PATTERN = re.compile(r'^sar\d{8}$')
 # Tar archives are excluded: their payload is a tar stream, not text.
 _TAR_SUFFIXES = ('.tar.gz', '.tgz', '.tar.xz', '.txz', '.tar.bz2', '.tbz', '.tbz2')
 _COMPRESS_OPENERS = {'.gz': gzip.open, '.xz': lzma.open, '.bz2': bz2.open}
-_COMPRESS_MAGIC = {'.gz': b'\x1f\x8b', '.xz': b'\xfd7zXZ\x00', '.bz2': b'BZh'}
+_COMPRESS_MAGIC = {'.gz': b'\x1f\x8b', '.xz': b'\xfd7zXZ\x00', '.bz2': b'BZh',
+                   '.zst': b'\x28\xb5\x2f\xfd'}
+# zstd archives nested in a supportconfig; never top-level inputs
+_ZST_TAR_SUFFIXES = ('.tar.zst', '.tzst')
 
-# How much of a decompressed payload is inspected for NUL bytes before deciding
+# How much of a payload is inspected (is_binary_head) before deciding
 # it is binary and must not be text-scrubbed.
 _TEXT_PROBE = 64 * 1024
 _READ_CHUNK = 1024 * 1024
@@ -61,10 +65,74 @@ def _iter_line_segments(read, seg_bytes):
         yield carry
 
 
+class _ZstdPipe:
+    """zstd(1) behind the binary file interface the compressed path uses,
+    for a Python without compression.zstd. A stream that does not decode
+    raises on the read that reaches its end, like the stdlib openers."""
+
+    def __init__(self, path, mode='rb'):
+        exe = shutil.which('zstd')
+        if not exe:
+            raise OSError("no zstd decompressor here")
+        self._reading = 'r' in mode
+        if self._reading:
+            self._proc = subprocess.Popen([exe, '-dcq', path], stdout=subprocess.PIPE,
+                                          stderr=subprocess.DEVNULL)
+            self._f = self._proc.stdout
+        else:
+            self._proc = subprocess.Popen([exe, '-qf', '-o', path], stdin=subprocess.PIPE,
+                                          stderr=subprocess.DEVNULL)
+            self._f = self._proc.stdin
+
+    def read(self, n=-1):
+        data = self._f.read(n)
+        if n and not data and self._proc.wait() != 0:
+            raise OSError("zstd stream does not decode")
+        return data
+
+    def write(self, data):
+        return self._f.write(data)
+
+    def close(self):
+        if self._f.closed:
+            return
+        self._f.close()
+        if self._reading:
+            if self._proc.poll() is None:
+                self._proc.kill()
+            self._proc.wait()
+        elif self._proc.wait() != 0:
+            raise OSError(f"zstd exited with status {self._proc.returncode}")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+try:
+    from compression.zstd import open as _zstd_open
+except ImportError:
+    _zstd_open = _ZstdPipe
+
+
+def single_file_compression(base_name):
+    """compressed_opener(), plus ('.zst', opener) for a single-file .zst.
+
+    .zst stays out of _COMPRESS_OPENERS: those openers are also used in
+    text mode (verify), which the zstd pipe does not offer."""
+    comp = compressed_opener(base_name)
+    low = base_name.lower()
+    if comp is None and low.endswith('.zst') and not low.endswith(_ZST_TAR_SUFFIXES):
+        return '.zst', _zstd_open
+    return comp
+
+
 def compressed_opener(base_name):
     """Return (ext, open_func) for single-file compressed names, else None."""
     low = base_name.lower()
-    if low.endswith(_TAR_SUFFIXES):
+    if low.endswith(_TAR_SUFFIXES + _ZST_TAR_SUFFIXES):
         return None
     for ext, opener in _COMPRESS_OPENERS.items():
         if low.endswith(ext):
@@ -108,27 +176,41 @@ def find_format_mismatches(root):
     return bad
 
 
+def _new_decompressor(ext):
+    if ext == '.zst':
+        from compression.zstd import ZstdDecompressor
+        return ZstdDecompressor()
+    if ext == '.gz':
+        return zlib.decompressobj(16 + zlib.MAX_WBITS)
+    if ext == '.xz':
+        return lzma.LZMADecompressor()
+    return bz2.BZ2Decompressor()
+
+
 def _salvage_decompressed(path, ext):
     """Bytes recoverable from a damaged stream: feed the raw file to an
     incremental decompressor and keep whatever it produced before it gave up.
     The stream openers discard their pending output when they hit the bad tail,
-    so this is what keeps a truncated log scrubbable instead of untouchable."""
-    if ext == '.gz':
-        dec = zlib.decompressobj(16 + zlib.MAX_WBITS)
-    elif ext == '.xz':
-        dec = lzma.LZMADecompressor()
-    else:
-        dec = bz2.BZ2Decompressor()
+    so this is what keeps a truncated log scrubbable instead of untouchable.
+    A multi-member file (concatenated gzip members, bz2 or xz streams) goes
+    on with a fresh decompressor after each complete one."""
+    if ext == '.zst' and _zstd_open is _ZstdPipe:
+        # zstd(1) writes out every frame it decoded before the damage
+        exe = shutil.which('zstd')
+        return subprocess.run([exe, '-dcq', path], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL).stdout if exe else b''
+    dec = _new_decompressor(ext)
     out = []
     try:
         with open(path, 'rb') as f:
-            while True:
-                block = f.read(_READ_CHUNK)
-                if not block:
-                    break
-                out.append(dec.decompress(block))
-                if getattr(dec, 'eof', False):
-                    break
+            data = f.read(_READ_CHUNK)
+            while data:
+                out.append(dec.decompress(data))
+                if dec.eof:
+                    data = dec.unused_data or f.read(_READ_CHUNK)
+                    dec = _new_decompressor(ext)
+                else:
+                    data = f.read(_READ_CHUNK)
     except MemoryError:
         # Out of memory is not stream damage: pretending it is would rewrite
         # a healthy file from a partial (or empty) salvage.
@@ -145,20 +227,40 @@ def _salvage_decompressed(path, ext):
     return b''.join(out)
 
 
-def _is_compressed_name(base_name):
-    """True when the name claims a single-file compressed log, i.e. the
-    branch that already has its own binary probe and must keep it."""
-    low = base_name.lower()
-    if low.endswith(_TAR_SUFFIXES):
+# Heads that are never text, whatever else they hold: pcap (both byte orders,
+# micro and nano), pcapng, ELF, gzip, xz, zstd, bzip2, SQLite, zip, a tar
+# (ustar at offset 257), and a UTF-16 BOM: decoded as UTF-8 no scrubber would
+# match it, so it stays a reported leave rather than a silent one.
+_BINARY_MAGIC = (b'\xd4\xc3\xb2\xa1', b'\xa1\xb2\xc3\xd4', b'\x4d\x3c\xb2\xa1',
+                 b'\xa1\xb2\x3c\x4d', b'\x0a\x0d\x0d\x0a', b'\x7fELF', b'\x1f\x8b',
+                 b'\xfd7zXZ\x00', b'\x28\xb5\x2f\xfd', b'BZh', b'SQLite format 3\x00',
+                 b'PK\x03\x04', b'\xff\xfe', b'\xfe\xff')
+_CONTROL_BYTES = bytes(b for b in range(32) if b not in b'\t\n\v\f\r\b\x1b') + b'\x7f'
+
+
+def is_binary_head(head):
+    """True when head (the first _TEXT_PROBE bytes) is not text.
+
+    A NUL alone does not decide it: a crash leaves runs of zero blocks in
+    messages or boot.log, and that log must still be scrubbed. Between its
+    NULs a binary has other control bytes or invalid UTF-8; past one in
+    twenty of the non-NUL bytes, it is binary."""
+    if (head.startswith(_BINARY_MAGIC) or head[257:262] == b'ustar'
+            or is_dump_head(head)):
+        return True
+    if b'\x00' not in head:
         return False
-    return any(low.endswith(ext) for ext in _COMPRESS_OPENERS)
+    rest = head.replace(b'\x00', b'')
+    odd = (len(rest) - len(rest.translate(None, _CONTROL_BYTES))
+           + rest.decode('utf-8', 'replace').count('\ufffd'))
+    return odd * 20 > len(rest)
 
 
 def looks_binary(path):
-    """True when a file's head holds NUL bytes, i.e. it is not text."""
+    """True when a file's head is not text (is_binary_head)."""
     try:
         with open(path, 'rb') as f:
-            return b'\x00' in f.read(_TEXT_PROBE)
+            return is_binary_head(f.read(_TEXT_PROBE))
     except OSError:
         return False
 
@@ -209,7 +311,7 @@ def is_memory_dump(path):
 _DUMP_LISTING_CAP = 2000
 # Tar archive names; only one that carries a dump survives the nested-archive
 # pass, the rest are unpacked and removed.
-_ARCHIVE_NAME_SUFFIXES = _TAR_SUFFIXES + ('.tar',)
+_ARCHIVE_NAME_SUFFIXES = _TAR_SUFFIXES + _ZST_TAR_SUFFIXES + ('.tar',)
 
 
 # A dump member may be stored compressed (vmcore.gz, vmcore.xz, core.<pid>.xz,
@@ -544,7 +646,7 @@ def read_compressed_text(path, ext, opener):
         # shipping it raw.
         status = 'truncated'
         data = _salvage_decompressed(path, ext)
-    if b'\x00' in data[:_TEXT_PROBE]:
+    if is_binary_head(data[:_TEXT_PROBE]):
         return None, 'binary'
     return data.decode('utf-8', 'surrogateescape'), status
 
@@ -561,11 +663,10 @@ def write_compressed_text(path, ext, opener, text, logger, label=None):
     tmp = path + '.scrubtmp'
     try:
         if ext == '.gz':
-            # gzip stores the original name in the header; writing through
-            # gzip.open(tmp) would record the temporary name.
+            # No name in the header: gzip.open(tmp) would record the temp
+            # name, and the original name can hold the real hostname.
             with open(tmp, 'wb') as fh:
-                with gzip.GzipFile(filename=os.path.basename(path)[:-len(ext)],
-                                   mode='wb', fileobj=fh) as out:
+                with gzip.GzipFile(filename='', mode='wb', fileobj=fh) as out:
                     out.write(data)
         else:
             with opener(tmp, 'wb') as out:
@@ -583,6 +684,7 @@ def write_compressed_text(path, ext, opener, text, logger, label=None):
         if not compression_magic_ok(tmp, ext):
             raise ValueError(f"result is not a {ext[1:]} stream")
 
+        shutil.copymode(path, tmp)
         os.replace(tmp, path)
         return True
     except Exception as e:
@@ -593,6 +695,16 @@ def write_compressed_text(path, ext, opener, text, logger, label=None):
         except OSError:
             pass
         return False
+
+
+def _gzip_header_names(path, ext):
+    """True for a gzip whose (first) header carries FNAME or FCOMMENT, free
+    text that can hold the real hostname; such a file is always rewritten."""
+    if ext != '.gz':
+        return False
+    with open(path, 'rb') as f:
+        head = f.read(4)
+    return len(head) == 4 and bool(head[3] & 0x18)
 
 
 def strip_compression_ext(name):
@@ -643,6 +755,10 @@ _CONFIG_GATES = {
     'domain':   lambda cfg: cfg.obfuscate_domain,
     'user':     lambda cfg: cfg.obfuscate_username,
 }
+
+
+class ScrubError(Exception):
+    """A scrubber failed on a file: that file must not be written as scrubbed."""
 
 
 class FileProcessor:
@@ -711,12 +827,26 @@ class FileProcessor:
         # the exact same file handling as the real run.
         #
         # Returns False when the file needed a scrubbed rewrite and did not
-        # get one (write failure, damaged beyond salvage, processing error) —
-        # its content may still hold unscrubbed data. Deliberate leaves
-        # (binary payloads, sa/obj removal, nothing matched) return True.
+        # get one (write failure, damaged beyond salvage, a scrubber that
+        # raised, MemoryError included, processing error) — the file is then
+        # left as it was and may still hold unscrubbed data. Never raises.
+        # Deliberate leaves (binary payloads, dumps, FIFOs and other
+        # non-regular files, sa/obj removal, nothing matched) return True.
         # Tree-walking callers ignore the result and rely on the logged
         # warnings; file mode uses it to refuse shipping a bad lone output.
         base_name = os.path.basename(file_path)
+
+        # A FIFO or device node would block open() forever; a symlink is
+        # written through to its target, which may lie outside the tree.
+        try:
+            regular = stat.S_ISREG(os.lstat(file_path).st_mode)
+        except OSError as e:
+            logger.error(f"Error processing file {file_path}: {e}")
+            return False
+        if not regular:
+            if not dry_run:
+                logger.info(f"{base_name}: not a regular file, left unchanged")
+            return True
 
         # A kernel dump or a core is never probed as text, rewritten or
         # removed, whatever its name. Ahead of every other branch, the name
@@ -747,71 +877,43 @@ class FileProcessor:
 
         # A binary payload under a plain name. The compressed branch has
         # probed for this since it existed, but a file whose name carries no
-        # compression extension reached the text path directly, where
-        # errors='ignore' drops every byte that is not valid UTF-8 and the
-        # banner goes in front. A packet capture came back from that with its
-        # magic gone and a fifth of its bytes missing; the same would hold for
-        # a core dump, a database or a disk image. Left unchanged and
-        # reported, like the unknown binary in _process_compressed: rewriting
-        # it as text destroys it, and the tree-wide report names it so the
-        # leave is never silent.
-        if not _is_compressed_name(base_name) and looks_binary(file_path):
+        # compression extension reached the text path directly, where it was
+        # decoded as text with the banner in front. A packet capture came back
+        # from that with its magic gone and a fifth of its bytes missing; the
+        # same would hold for a core dump, a database or a disk image. Left
+        # unchanged and reported, like the unknown binary in
+        # _process_compressed: rewriting it as text destroys it, and the
+        # tree-wide report names it so the leave is never silent.
+        if single_file_compression(base_name) is None and looks_binary(file_path):
             if not dry_run:
                 logger.error(f"{base_name}: binary content, not text "
                              f"- left unchanged (a text scrub would destroy it)")
             return True
 
-        is_sar_xz_file   = bool(SAR_XZ_PATTERN.match(base_name))
-        is_sar_plain_file = bool(SAR_PLAIN_PATTERN.match(base_name))
-
+        # sar text takes the same paths as any log: the whole file is scrubbed
+        # (sar -dp and -F print device-mapper names and mount points), and a
+        # sar*.xz keeps its name and compression.
         try:
-            if is_sar_xz_file:
-                with lzma.open(file_path, mode="rt", encoding="utf-8", errors="ignore") as f:
-                    first_line = f.readline()
-
-                scrubbed_first_line = self._scrub_content(first_line, base_name, logger)
-
-                if (scrubbed_first_line != first_line or self.decompress) and not dry_run:
-                    with lzma.open(file_path, mode="rt", encoding="utf-8", errors="ignore") as f:
-                        f.readline()
-                        rest = f.read()
-                    plain_path = file_path[:-3]
-                    header = _SCRUB_INFO_HEADER if scrubbed_first_line != first_line else ""
-                    with open(plain_path, mode="w", encoding="utf-8") as out_f:
-                        out_f.write(header + scrubbed_first_line + rest)
-                    os.remove(file_path)
-
-            elif is_sar_plain_file:
-                with open(file_path, mode="r", encoding="utf-8", errors="ignore") as f:
-                    first_line = f.readline()
-                    rest = f.read()
-
-                scrubbed_first_line = self._scrub_content(first_line, base_name, logger)
-
-                if scrubbed_first_line != first_line and not dry_run:
-                    with open(file_path, mode="w", encoding="utf-8") as out_f:
-                        out_f.write(_SCRUB_INFO_HEADER + scrubbed_first_line + rest)
-
-            elif compressed_opener(base_name):
-                ext, opener = compressed_opener(base_name)
-                return self._process_compressed(file_path, base_name, ext, opener, logger, dry_run)
-
-            else:
-                return self._process_plain(file_path, base_name, logger, dry_run)
-
+            comp = single_file_compression(base_name)
+            if comp:
+                return self._process_compressed(file_path, base_name, comp[0], comp[1],
+                                                logger, dry_run)
+            return self._process_plain(file_path, base_name, logger, dry_run)
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {str(e)}")
             return False
-        return True
 
     def _process_plain(self, file_path, base_name, logger, dry_run):
-        with open(file_path, mode="r", encoding="utf-8", errors="ignore") as file:
+        # Bytes that are not UTF-8 and CR/CRLF line ends go back as they came.
+        with open(file_path, mode="r", encoding="utf-8", errors="surrogateescape",
+                  newline="") as file:
             original_text = file.read()
 
         scrubbed_text = self._scrub_content(original_text, base_name, logger)
 
         if scrubbed_text != original_text and not dry_run:
-            with open(file_path, mode="w", encoding="utf-8") as out_f:
+            with open(file_path, mode="w", encoding="utf-8", errors="surrogateescape",
+                      newline="") as out_f:
                 out_f.write(_SCRUB_INFO_HEADER + scrubbed_text)
         return True
 
@@ -878,7 +980,7 @@ class FileProcessor:
         except Exception:
             return 'damaged'
 
-        if b'\x00' in first_seg[:_TEXT_PROBE]:
+        if is_binary_head(first_seg[:_TEXT_PROBE]):
             self._leave_binary_payload(first_seg, base_name, ext, logger, dry_run, warn)
             return 'done'
 
@@ -962,15 +1064,13 @@ class FileProcessor:
                 if not dry_run:
                     if to_plain:
                         out_fh = open(tmp, 'w', encoding='utf-8',
-                                      errors='surrogateescape')
+                                      errors='surrogateescape', newline='')
                         write = out_fh.write
                     elif ext == '.gz':
-                        # gzip stores the original name in the header; writing
-                        # through gzip.open(tmp) would record the temp name.
+                        # no name in the header, as in write_compressed_text
                         out_fh = open(tmp, 'wb')
-                        gz_inner = gzip.GzipFile(
-                            filename=base_name[:-len(ext)], mode='wb',
-                            fileobj=out_fh)
+                        gz_inner = gzip.GzipFile(filename='', mode='wb',
+                                                 fileobj=out_fh)
                         write = gz_inner.write
                     else:
                         out_fh = opener(tmp, 'wb')
@@ -1010,18 +1110,15 @@ class FileProcessor:
             if to_plain:
                 # --unpacked always converts; the header is prepended only
                 # when something was scrubbed, as in the whole-text path.
-                with open(tmp, 'r', encoding='utf-8',
-                          errors='surrogateescape') as src, \
-                     open(plain_path, 'w', encoding='utf-8',
-                          errors='surrogateescape') as dst:
+                with open(tmp, 'rb') as src, open(plain_path, 'wb') as dst:
                     if changed:
-                        dst.write(_SCRUB_INFO_HEADER)
+                        dst.write(_SCRUB_INFO_HEADER.encode('utf-8'))
                     shutil.copyfileobj(src, dst)
                 os.remove(tmp)
                 os.remove(file_path)
                 return 'done'
 
-            if not changed:
+            if not changed and not _gzip_header_names(file_path, ext):
                 os.remove(tmp)
                 return 'done'
 
@@ -1038,9 +1135,10 @@ class FileProcessor:
                 raise ValueError(f"read back {read_back} of {wrote} bytes")
             if not compression_magic_ok(tmp, ext):
                 raise ValueError(f"result is not a {ext[1:]} stream")
+            shutil.copymode(file_path, tmp)
             os.replace(tmp, file_path)
             return 'done'
-        except MemoryError:
+        except (MemoryError, ScrubError):
             self._remove_quietly(tmp)
             raise
         except Exception as e:
@@ -1078,7 +1176,7 @@ class FileProcessor:
             warn(f"{base_name}: {ext[1:]} stream is damaged and nothing could be "
                  f"decompressed — left as it is, its content is NOT scrubbed")
             return False
-        if b'\x00' in data[:_TEXT_PROBE]:
+        if is_binary_head(data[:_TEXT_PROBE]):
             self._leave_binary_payload(data, base_name, ext, logger, dry_run, warn)
             return True
         text = data.decode('utf-8', 'surrogateescape')
@@ -1105,16 +1203,18 @@ class FileProcessor:
         if self.decompress and not os.path.exists(plain_path):
             header = _SCRUB_INFO_HEADER if scrubbed_text != original_text else ""
             with open(plain_path, mode="w", encoding="utf-8",
-                      errors="surrogateescape") as out_f:
+                      errors="surrogateescape", newline="") as out_f:
                 out_f.write(header + scrubbed_text)
             os.remove(file_path)
-        elif scrubbed_text != original_text or truncated:
+        elif (scrubbed_text != original_text or truncated
+              or _gzip_header_names(file_path, ext)):
             # A damaged file is rewritten even when nothing matched: what ships
             # is then a complete stream of content the scrubbers have seen, not
             # a tail no consumer can read and no scrubber has checked.
+            changed = scrubbed_text != original_text or truncated
             return write_compressed_text(file_path, ext, opener,
-                                         _SCRUB_INFO_HEADER + scrubbed_text,
-                                         logger, base_name)
+                                         (_SCRUB_INFO_HEADER if changed else '')
+                                         + scrubbed_text, logger, base_name)
         return True
 
     def _scrub_content(self, text, basename, logger):
@@ -1131,8 +1231,10 @@ class FileProcessor:
                         learn(text)
                     else:
                         scrubber.scrub(text)
+                except MemoryError:
+                    raise
                 except Exception as e:
-                    logger.error(f"{scrubber.name} learn failed for {basename}: {e}")
+                    raise ScrubError(f"{scrubber.name} learn failed for {basename}: {e}") from e
             return text
 
         if not self.profile:
@@ -1144,8 +1246,10 @@ class FileProcessor:
                     continue
                 try:
                     text = scrubber.scrub(text)
+                except MemoryError:
+                    raise
                 except Exception as e:
-                    logger.error(f"{scrubber.name} scrub failed for {basename}: {e}")
+                    raise ScrubError(f"{scrubber.name} scrub failed for {basename}: {e}") from e
             return text
 
         nbytes = len(text)
@@ -1159,8 +1263,10 @@ class FileProcessor:
             t0 = time.perf_counter()
             try:
                 text = scrubber.scrub(text)
+            except MemoryError:
+                raise
             except Exception as e:
-                logger.error(f"{scrubber.name} scrub failed for {basename}: {e}")
+                raise ScrubError(f"{scrubber.name} scrub failed for {basename}: {e}") from e
             dt = time.perf_counter() - t0
             file_total += dt
             rec = self.prof.setdefault(scrubber.name, {'time': 0.0, 'bytes': 0, 'calls': 0})
