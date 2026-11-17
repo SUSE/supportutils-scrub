@@ -3,6 +3,7 @@
 import re
 from supportutils_scrub.scrubber import Scrubber
 from supportutils_scrub.trie_re import build_trie_pattern
+from supportutils_scrub.domain_scrubber import is_preserved_domain
 
 # Loopback names that never identify anyone.
 LOOPBACK_HOSTNAMES = {
@@ -171,6 +172,10 @@ class HostnameScrubber(Scrubber):
                     if fields and fields[0].lower() in METADATA_ADDRESSES:
                         # every name on this line is an alias of the cloud's
                         # metadata service, not a host anyone owns
+                        continue
+                    if any('.' in f and is_preserved_domain(f) for f in fields[1:]):
+                        # smt-ec2.susecloud.net smt-ec2, registry.suse.com:
+                        # a SUSE server pinned here, its aliases are SUSE's too
                         continue
                     for field in fields[1:]:
                         short_name = field.split('.')[0]

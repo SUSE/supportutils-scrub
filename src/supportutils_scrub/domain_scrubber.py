@@ -19,11 +19,6 @@ _SINGLE_LABEL_BAN = {
     "net", "org", "com", "edu", "gov", "mil", "int", "arpa"
 }
 
-# Country-code TLDs that are also file extensions carried by every capture:
-# shared objects, libtool archives and Python scripts. Deliberately only these
-# three. Extensions that collide with a TLD a customer plausibly uses (.in, .co,
-# .it, .ch, .is, .pl, .md) stay learnable, because renaming a README is cosmetic
-# while missing a real domain is a leak. See _is_valid_domain.
 # The cloud instance-metadata service, the domain half of the hostname rule:
 # every instance of that cloud resolves it, it names a service and not a
 # customer, and rewriting it costs the reader the context that the line is
@@ -40,13 +35,11 @@ VENDOR_DOMAINS = frozenset({"suse.com", "suse.de", "suse.cz", "suse.net",
                             "suse.org", "opensuse.org", "opensuse.com",
                             "novell.com", "susecloud.net"})
 
-
-def is_preserved_domain(d: str) -> bool:
-    d = _norm(d)
-    if d in PRESERVED_DOMAINS:
-        return True
-    return any(d == v or d.endswith("." + v) for v in VENDOR_DOMAINS)
-
+# Country-code TLDs that are also file extensions carried by every capture:
+# shared objects, libtool archives and Python scripts. Deliberately only these
+# three. Extensions that collide with a TLD a customer plausibly uses (.in, .co,
+# .it, .ch, .is, .pl, .md) stay learnable, because renaming a README is cosmetic
+# while missing a real domain is a leak. See _is_valid_domain.
 _EXTENSION_TLDS = frozenset({"so", "la", "py"})
 
 _VALID_TLDS = frozenset({
@@ -91,6 +84,12 @@ _VALID_TLDS = frozenset({
 
 def _norm(d: str) -> str:
     return d.strip().rstrip(".").lower()
+
+def is_preserved_domain(d: str) -> bool:
+    d = _norm(d)
+    if d in PRESERVED_DOMAINS:
+        return True
+    return any(d == v or d.endswith("." + v) for v in VENDOR_DOMAINS)
 
 def _labels_count(d: str) -> int:
     return _norm(d).count(".") + 1
@@ -152,9 +151,9 @@ class DomainScrubber(Scrubber):
         }
 
         self._ordered_domains = _sort_specific_first(self.domain_dict.keys(), trusted=True)
-        # Also match underscore-encoded forms (cloudregister credentials and
-        # similar filename encodings turn smt.susecloud.net into
-        # smt_susecloud_net); replace with the fake encoded the same way.
+        # Also match underscore-encoded forms (credential file names and
+        # similar encodings turn repo.example.com into repo_example_com);
+        # replace with the fake encoded the same way.
         self._scrub_lookup: Dict[str, str] = dict(self.domain_dict)
         for real, fake in self.domain_dict.items():
             self._scrub_lookup.setdefault(real.replace('.', '_'), fake.replace('.', '_'))

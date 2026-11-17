@@ -9,7 +9,7 @@ import logging
 import shutil
 from supportutils_scrub.config import DEFAULT_CONFIG_PATH
 from supportutils_scrub.ip_scrubber import IPScrubber
-from supportutils_scrub.domain_scrubber import DomainScrubber
+from supportutils_scrub.domain_scrubber import DomainScrubber, is_preserved_domain
 from supportutils_scrub.hostname_scrubber import HostnameScrubber
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
 from supportutils_scrub.username_scrubber import UsernameScrubber
@@ -90,7 +90,6 @@ def _next_fake_tld(counter):
 
 
 def build_hierarchical_domain_map(all_domains, existing_mappings):
-    from supportutils_scrub.domain_scrubber import is_preserved_domain
     valid_domains = {d for d in all_domains
                      if '.' in d and not is_preserved_domain(d)}
     # label count first (parents before children), then the name: a tie
@@ -105,6 +104,10 @@ def build_hierarchical_domain_map(all_domains, existing_mappings):
     # count per run gave two sub-domains one pseudonym
     used_subs = {str(v).lower() for v in domain_dict.values()}
     sub_domain_counter = 0
+    # an older mapping's entry for a preserved domain is dropped here, so it
+    # is not saved again; its pseudonym stays reserved for this run above
+    for d in [d for d in domain_dict if is_preserved_domain(d)]:
+        del domain_dict[d]
 
     for domain in sorted_domains:
         if domain in domain_dict:
@@ -131,6 +134,10 @@ def build_hierarchical_domain_map(all_domains, existing_mappings):
 def extract_and_map_domains(report_files, additional_domains, mappings):
     all_domains = set()
     for domain in additional_domains:
+        if is_preserved_domain(domain):
+            logging.warning(f"--domain {domain}: a SUSE or cloud metadata "
+                            "domain is never scrubbed; use --keywords to "
+                            "scrub it anyway")
         DomainScrubber._add_domain_and_parents(domain, all_domains)
 
     files_to_scan = {

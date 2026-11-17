@@ -165,3 +165,39 @@ class TestVendorDomains:
     def test_lookalike_customer_domain_still_scrubbed(self):
         out = DomainScrubber({"notsuse.com": "dom1.aaa"}).scrub("notsuse.com")
         assert out == "dom1.aaa"
+
+
+class TestVendorDomainFollowUps:
+    def test_old_vendor_entry_is_not_saved_again(self):
+        from supportutils_scrub.pipeline import build_hierarchical_domain_map
+        old = {"domain": {"suse.com": "dom7.aae", "example.com": "dom1.aaa"}}
+        dmap, _ = build_hierarchical_domain_map({"other.example.org"}, old)
+        assert "suse.com" not in dmap
+        assert dmap["example.com"] == "dom1.aaa"
+        assert "dom7.aae" not in {v.split(".", 1)[-1] for v in dmap.values()}
+
+    def test_seeding_a_vendor_domain_warns(self, caplog):
+        from supportutils_scrub.pipeline import extract_and_map_domains
+        with caplog.at_level("WARNING"):
+            dmap, _ = extract_and_map_domains([], ["tenant.susecloud.net"], {})
+        assert "tenant.susecloud.net" not in dmap
+        assert "--keywords" in caplog.text
+
+    def test_hosts_line_of_a_vendor_server_teaches_no_hostname(self, tmp_path):
+        from supportutils_scrub.hostname_scrubber import HostnameScrubber
+        f = tmp_path / "network.txt"
+        f.write_text("# /etc/hosts\n"
+                     "192.0.2.10 smt-ec2.susecloud.net smt-ec2\n"
+                     "192.0.2.11 registry.suse.com\n"
+                     "192.0.2.12 dbnode.example.com dbnode\n")
+        assert HostnameScrubber.extract_hostnames_from_hosts(str(f)) == \
+            ["dbnode", "dbnode"]
+
+    def test_verify_still_checks_a_keyword_under_a_vendor_suffix(self):
+        from supportutils_scrub.verify import _build_terms
+        maps = {"keyword": {"acme-prod.susecloud.net": "keyword_1"},
+                "domain": {"registry.suse.com": "sub_0.dom7.aae"}}
+        combined_re, labels, substr = _build_terms(maps)
+        terms = set(labels) | {t for t, _ in substr}
+        assert "acme-prod.susecloud.net" in terms
+        assert "registry.suse.com" not in terms

@@ -5,7 +5,7 @@ import re
 import ipaddress
 
 from supportutils_scrub.processor import compressed_opener, compression_magic_ok
-from supportutils_scrub.domain_scrubber import VENDOR_DOMAINS, is_preserved_domain
+from supportutils_scrub.domain_scrubber import is_preserved_domain
 
 _CATEGORIES = [
     ('ip',       'IPv4 address',  'ip'),
@@ -20,8 +20,9 @@ _CATEGORIES = [
 
 _MIN_VALUE_LEN = 6
 
-# The SUSE domains the scrubber leaves alone, plus names verify alone ignores.
-_SAFE_DOMAIN_VALUES = set(VENDOR_DOMAINS) | {
+# Names verify alone ignores; the SUSE domains the scrubber leaves alone are
+# checked with is_preserved_domain.
+_SAFE_DOMAIN_VALUES = {
     'microsoft.com', 'microsoft.net',   # upstream vendor
     'windowsupdate.com', 'windows.com',
     'digicert.com', 'verisign.com',      # certificate authorities
@@ -147,7 +148,6 @@ _SAFE_EMAIL_DOMAINS = {
     'sourceforge.net', 'github.com', 'gitlab.com',
     'googlegroups.com', 'lists.sf.net',
 }
-_SAFE_EMAIL_DOMAINS |= VENDOR_DOMAINS
 
 # Short pseudo-TLDs from locale/gettext data (e.g. en@quot.mo)
 _FAKE_EMAIL_TLDS = {'mo', 'po', 'gmo'}
@@ -417,7 +417,11 @@ def _build_terms(mappings: dict):
         for real_val in mappings.get(key, {}):
             if len(real_val) < _MIN_VALUE_LEN:
                 continue
-            if real_val.lower() in _SAFE_DOMAIN_VALUES or is_preserved_domain(real_val):
+            if real_val.lower() in _SAFE_DOMAIN_VALUES:
+                continue
+            # only a domain entry: a keyword or user that merely ends in
+            # .suse.de is still the operator's and still verified
+            if key == 'domain' and is_preserved_domain(real_val):
                 continue
             if real_val in all_fake_values or _FAKE_VALUE_RE.match(real_val):
                 continue
