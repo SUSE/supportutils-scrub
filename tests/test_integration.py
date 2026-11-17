@@ -146,10 +146,10 @@ class TestUsernameIntegration:
         assert "user_1" in result
 
     def test_username_with_ip_and_mac(self):
-        fp = _full_processor(username_dict={"admin": "user_0"})
-        text = "admin logged in from 10.0.0.5 via 52:54:00:AA:BB:CC"
+        fp = _full_processor(username_dict={"jdoe": "user_0"})
+        text = "jdoe logged in from 10.0.0.5 via 52:54:00:AA:BB:CC"
         result = fp.process_text(text, _FakeLogger(), False)
-        assert "admin" not in result
+        assert "jdoe" not in result
         assert "10.0.0.5" not in result
         assert "52:54:00:AA:BB:CC" not in result
 
