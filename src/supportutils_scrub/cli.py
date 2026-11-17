@@ -182,7 +182,20 @@ def main():
         print("[!] --encrypt-mappings and --no-mappings are mutually exclusive.", file=sys.stderr)
         sys.exit(1)
 
+    # preload rewrites --mappings in place: an encrypted one stays encrypted
+    if args.preload and args.mappings and args.mappings.endswith('.enc'):
+        args.encrypt_mappings = True
+
     if args.encrypt_mappings and not args.no_mappings:
+        # checked before any scrubbing: finding out after the run would
+        # leave only a choice between no mapping and a plaintext one
+        try:
+            import cryptography.fernet  # noqa: F401
+        except ImportError:
+            print("[!] --encrypt-mappings needs the Python 'cryptography' package.\n"
+                  "    Install it (zypper in python3-cryptography, or pip install "
+                  "cryptography) or drop the option.", file=sys.stderr)
+            sys.exit(2)
         try:
             args._enc_passphrase = get_encryption_passphrase()
         except RuntimeError as e:

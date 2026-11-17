@@ -7,7 +7,7 @@ import hashlib
 import pwd
 import socket
 from datetime import datetime, timezone
-from supportutils_scrub.translator import Translator
+from supportutils_scrub.translator import Translator, open_private
 
 _err = sys.stderr
 
@@ -77,12 +77,11 @@ def save_mappings(args, dataset_path, dataset_dict):
     if args.no_mappings:
         print("[!] Mapping file not written (--no-mappings).", file=_err)
         return None
+    # Raises on failure: never fall back to a plaintext mapping, and never
+    # report a mapping that was not written.
     if getattr(args, '_enc_passphrase', None):
-        try:
-            return Translator.save_datasets_encrypted(
-                dataset_path, dataset_dict, args._enc_passphrase)
-        except Exception as e:
-            print(f"[!] Encrypted mapping failed: {e}, falling back to plain.", file=_err)
+        return Translator.save_datasets_encrypted(
+            dataset_path, dataset_dict, args._enc_passphrase)
     Translator.save_datasets(dataset_path, dataset_dict)
     return dataset_path
 
@@ -100,10 +99,8 @@ def sha256_file(path):
 
 def write_audit_log(audit_path, record):
     try:
-        os.makedirs(os.path.dirname(audit_path), exist_ok=True)
-        with open(audit_path, 'w', encoding='utf-8') as f:
+        with open_private(audit_path) as f:
             json.dump(record, f, indent=4)
-        os.chmod(audit_path, 0o600)
     except Exception as e:
         print(f"[!] Could not write audit log: {e}", file=_err)
 
@@ -167,10 +164,8 @@ def write_report(report_path, archives, version, verify_findings=None):
             'findings': verify_findings,
         }
     try:
-        os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
-        with open(report_path, 'w', encoding='utf-8') as f:
+        with open_private(report_path) as f:
             json.dump(data, f, indent=2)
-        os.chmod(report_path, 0o600)
         print(f"[✓] Coverage report written to:  {report_path}", file=_err)
     except Exception as e:
         print(f"[!] Could not write report to {report_path}: {e}", file=sys.stderr)

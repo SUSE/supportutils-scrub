@@ -1,9 +1,12 @@
+import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
-from supportutils_scrub import cli
+from supportutils_scrub import audit, cli
 from supportutils_scrub.audit import _redacted_argv
+from supportutils_scrub.translator import Translator
 from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.scrub_config import ScrubConfig
 
@@ -53,3 +56,48 @@ def test_audit_argv_redacts_both_forms():
     assert _redacted_argv(['--hostname=node1.example.com', '--domain',
                            'example.com', 'x.txz']) == \
         ['--hostname=<redacted>', '--domain', '<redacted>', 'x.txz']
+
+
+def test_encrypt_without_cryptography_stops_before_scrubbing(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, 'cryptography', None)
+    assert _main(monkeypatch, ['--encrypt-mappings', str(tmp_path)]) == 2
+
+
+def _save_args(**kw):
+    return SimpleNamespace(**{"no_mappings": False, "_enc_passphrase": None, **kw})
+
+
+def test_failed_encryption_never_writes_plaintext(monkeypatch, tmp_path):
+    def boom(*a):
+        raise RuntimeError('no')
+    monkeypatch.setattr(Translator, 'save_datasets_encrypted', boom)
+    dest = tmp_path / 'm.json'
+    with pytest.raises(RuntimeError):
+        audit.save_mappings(_save_args(_enc_passphrase='x' * 8), str(dest), {'ip': {}})
+    assert not dest.exists()
+
+
+def test_failed_plain_save_raises(tmp_path):
+    (tmp_path / 'f').write_text('')
+    with pytest.raises(OSError):
+        audit.save_mappings(_save_args(), str(tmp_path / 'f' / 'm.json'), {})
+
+
+def test_mapping_is_created_private(tmp_path):
+    old = os.umask(0)
+    try:
+        Translator.save_datasets(str(tmp_path / 'new.json'), {})
+        existing = tmp_path / 'old.json'
+        existing.write_text('{}')
+        existing.chmod(0o644)
+        Translator.save_datasets(str(existing), {})
+    finally:
+        os.umask(old)
+    assert (tmp_path / 'new.json').stat().st_mode & 0o777 == 0o600
+    assert existing.stat().st_mode & 0o777 == 0o600
+
+
+def test_relative_mapping_path_is_saved(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Translator.save_datasets('rel.json', {})
+    assert (tmp_path / 'rel.json').exists()

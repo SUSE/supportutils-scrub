@@ -1,6 +1,15 @@
 import os
 import json
-import logging
+
+
+def open_private(path, mode='w'):
+    """Open for writing, created 0600 so the file is never readable by
+    others, not even between create and chmod."""
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)   # an existing file keeps its old mode otherwise
+    return os.fdopen(fd, mode, **({} if 'b' in mode else {'encoding': 'utf-8'}))
+
 
 class Translator:
 
@@ -14,16 +23,8 @@ class Translator:
 
     @staticmethod
     def save_datasets(file_path, dataset_dict):
-
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        try:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(dataset_dict, f, indent=4)
-            os.chmod(file_path, 0o600)
-        except PermissionError:
-            logging.error(f"Permission denied writing {file_path}. Run with appropriate privileges.")
-        except Exception as e:
-            logging.error(f"Failed to save datasets to {file_path}: {e}")
+        with open_private(file_path) as f:
+            json.dump(dataset_dict, f, indent=4)
 
     @staticmethod
     def save_datasets_encrypted(file_path, dataset_dict, passphrase: str) -> str:
@@ -43,9 +44,7 @@ class Translator:
         )
         token = Fernet(key).encrypt(json.dumps(dataset_dict).encode('utf-8'))
         enc_path = file_path + '.enc'
-        os.makedirs(os.path.dirname(enc_path), exist_ok=True)
-        with open(enc_path, 'wb') as f:
+        with open_private(enc_path, 'wb') as f:
             f.write(token)
-        os.chmod(enc_path, 0o600)
         return enc_path
 
