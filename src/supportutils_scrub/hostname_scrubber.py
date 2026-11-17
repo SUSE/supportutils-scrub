@@ -46,8 +46,8 @@ PRODUCT_DEFAULT_HOSTNAMES = {
 # the name identifies a service rather than a customer.
 #
 # This set is OR'd into WELL_KNOWN_HOSTNAMES only. It must NOT join
-# PRODUCT_DEFAULT_HOSTNAMES: that set also builds the corruption mask
-# (_preserve_re), which matches case-insensitively and would then protect the
+# PRODUCT_DEFAULT_HOSTNAMES: that set is also the scrub regex's protected
+# branch, which matches case-insensitively and would then protect the
 # 'metadata' inside a customer host named metadata-01 from being scrubbed.
 CLOUD_METADATA_HOSTNAMES = {
     "metadata", "metadata.google.internal",
@@ -56,6 +56,18 @@ CLOUD_METADATA_HOSTNAMES = {
 # Addresses that only ever serve instance metadata. Every name on such a line
 # is an alias of that service, so nothing on it is learned.
 METADATA_ADDRESSES = {"169.254.169.254", "fd00:ec2::254"}
+
+# Service aliases (/etc/hosts: "192.0.2.10 ldap.example.com ldap"). They name
+# a role every site has, not a host, and once learned they rewrite ldap_uri,
+# /var/spool/mail and http_proxy and rename ldap.txt. Never learned from the
+# hosts file or the cluster; the counterpart of UsernameScrubber.COMMON_WORDS.
+SERVICE_WORDS = {
+    "ldap", "ldaps", "mail", "mailhost", "smtp", "imap", "imaps", "pop",
+    "pop3", "proxy", "ntp", "dns", "www", "ftp", "http", "https", "backup",
+    "db", "sql", "nfs", "kdc", "kerberos", "gateway", "router", "loghost",
+    "syslog", "relay", "mirror", "repo", "time", "timehost", "print",
+    "printer", "vpn", "radius", "samba", "cifs", "iscsi", "ipa", "puppet",
+}
 
 WELL_KNOWN_HOSTNAMES = (LOOPBACK_HOSTNAMES | PRODUCT_DEFAULT_HOSTNAMES
                         | CLOUD_METADATA_HOSTNAMES)
@@ -86,7 +98,8 @@ class HostnameScrubber(Scrubber):
         self.hostname_dict = hostname_dict
         self._re = None
         self._lookup = {}
-        if hostname_dict:
+        trie = build_trie_pattern(k.lower() for k in hostname_dict)
+        if trie:
             # Boundaries: \b is not enough — underscore must count as a
             # boundary or the hostname survives inside SAP instance profile
             # tokens (DAA_SMDA98_<host>) and scc_<host>_<date> path names,
@@ -94,58 +107,30 @@ class HostnameScrubber(Scrubber):
             # straight onto the hostname). The trailing lookahead keeps
             # digits so sibling hosts (web01 vs web012) stay distinct.
             # Case-insensitive: NetBIOS/SAP contexts uppercase the hostname.
+            #
+            # Product strings (uyuni-server) are matched in the same pass as a
+            # second branch, so a learned host named 'server' cannot corrupt
+            # them, while a learned uyuni-site7 still wins over the bare
+            # product prefix because its branch is tried first.
             self._lookup = {k.lower(): v for k, v in hostname_dict.items()}
-            self._re = re.compile(r'(?<![A-Za-z])(?:'
-                                  + build_trie_pattern(self._lookup.keys())
-                                  + r')(?![A-Za-z0-9])', re.IGNORECASE)
+            preserve = '|'.join(re.escape(n) for n in
+                                sorted(PRODUCT_DEFAULT_HOSTNAMES, key=len, reverse=True))
+            self._re = re.compile(r'(?P<h>(?<![A-Za-z])(?:' + trie
+                                  + r')(?![A-Za-z0-9]))|(?<![A-Za-z0-9])(?:'
+                                  + preserve + r')(?![A-Za-z0-9])', re.IGNORECASE)
 
     @property
     def mapping(self):
         return self.hostname_dict
 
-    # Preserved strings are protected against CORRUPTION too, not only
-    # direct replacement: a learned hostname that happens to be a substring
-    # with a token boundary (a customer host literally named "server" would
-    # turn "uyuni-server" into "uyuni-hostname_N") must not touch them.
-    # Occurrences are masked with sentinels before substitution and restored
-    # after. The mask pattern is compiled once per process.
-    _PRESERVE_RE = None
-    # Restoring with one str.replace per saved occurrence is O(occurrences x
-    # text length) — a log dense in preserved names (a uyuni container's
-    # boot.txt mentions uyuni-server thousands of times) takes hours on a
-    # large file. A single regex pass over the sentinels is O(text) instead.
-    _SENTINEL_RE = re.compile('\x00PRESERVED(\\d+)\x00')
-
-    @classmethod
-    def _preserve_re(cls):
-        if cls._PRESERVE_RE is None:
-            names = sorted(PRODUCT_DEFAULT_HOSTNAMES, key=len, reverse=True)
-            cls._PRESERVE_RE = re.compile(
-                r'(?<![A-Za-z0-9])(?:' + '|'.join(re.escape(n) for n in names)
-                + r')(?![A-Za-z0-9])', re.IGNORECASE)
-        return cls._PRESERVE_RE
-
     def scrub(self, text):
         if not self._re:
             return text
-        pre = self._preserve_re()
-        saved = []
-        if pre.search(text):
-            def _mask(m):
-                saved.append(m.group(0))
-                return f"\x00PRESERVED{len(saved) - 1}\x00"
-            text = pre.sub(_mask, text)
-            text = self._re.sub(lambda m: self._lookup[m.group(0).lower()], text)
 
-            # A literal sentinel already present in the input (NUL bytes do
-            # reach scrub(): looks_binary probes only the file head, and the
-            # --jobs chunk path never probes at all) must not raise — an
-            # IndexError here would void the whole hostname pass for the file.
-            def _restore(m):
-                i = int(m.group(1))
-                return saved[i] if i < len(saved) else m.group(0)
-            return self._SENTINEL_RE.sub(_restore, text)
-        return self._re.sub(lambda m: self._lookup[m.group(0).lower()], text)
+        def _sub(m):
+            h = m.group('h')
+            return m.group(0) if h is None else self._lookup[h.lower()]
+        return self._re.sub(_sub, text)
 
 
     @staticmethod
@@ -160,7 +145,8 @@ class HostnameScrubber(Scrubber):
                 if line.startswith('# /etc/hosts'):
                     in_hosts_section = True
                     continue
-                if line.startswith('# /etc/host.conf'):
+                if line.startswith('# /etc/host.conf') or (
+                        in_hosts_section and line.startswith('#==[')):
                     break
                 if in_hosts_section:
                     if line.strip() == "" or line.startswith('#'):
@@ -181,7 +167,7 @@ class HostnameScrubber(Scrubber):
                         short_name = field.split('.')[0]
                         if len(short_name) < 4:
                             continue
-                        if short_name.lower() not in excluded_hostnames:
+                        if short_name.lower() not in excluded_hostnames | SERVICE_WORDS:
                             hostnames.append(short_name)
 
         return hostnames
@@ -230,7 +216,7 @@ class HostnameScrubber(Scrubber):
 
         def take(name):
             short = (name or "").strip().split(".")[0]
-            if len(short) < 4 or short in excluded:
+            if len(short) < 4 or short in excluded or short.lower() in SERVICE_WORDS:
                 return
             if re.fullmatch(r"[0-9a-fA-F:.]+", short):
                 return                       # an address, not a name
