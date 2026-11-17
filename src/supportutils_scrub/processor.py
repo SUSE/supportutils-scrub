@@ -167,7 +167,7 @@ def find_format_mismatches(root):
     bad = []
     for dirpath, _dirs, files in os.walk(root):
         for name in files:
-            comp = compressed_opener(name)
+            comp = single_file_compression(name)
             if not comp:
                 continue
             path = os.path.join(dirpath, name)

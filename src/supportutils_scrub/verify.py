@@ -4,7 +4,8 @@ import os
 import re
 import ipaddress
 
-from supportutils_scrub.processor import compressed_opener, compression_magic_ok
+import codecs
+from supportutils_scrub.processor import single_file_compression, compression_magic_ok
 from supportutils_scrub.domain_scrubber import is_preserved_domain, _VALID_TLDS
 from supportutils_scrub.ldap_dn_scrubber import _is_safe_ad_value
 from supportutils_scrub.mac_scrubber import MACScrubber
@@ -578,16 +579,40 @@ def _mapping_hits(text, term_res, labels):
 # Public API
 # ---------------------------------------------------------------------------
 
+class _ZstdText:
+    # line iterator over a .zst; the zstd opener is binary only
+    def __init__(self, path, mode='rt', encoding='utf-8', errors='ignore'):
+        self._raw = single_file_compression(path)[1](path, 'rb')
+        self._dec = codecs.getincrementaldecoder(encoding)(errors)
+
+    def __iter__(self):
+        pending = ''
+        while True:
+            chunk = self._raw.read(1 << 20)
+            pending += self._dec.decode(chunk, final=not chunk)
+            lines = pending.splitlines(keepends=True)
+            pending = lines.pop() if lines and chunk and not lines[-1].endswith('\n') else ''
+            yield from lines
+            if not chunk:
+                return
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._raw.close()
+
+
 def _scan_one_file(fpath_fname, scan_ctx):
     fpath, fname = fpath_fname
     rel = os.path.relpath(fpath, scan_ctx['folder_path'])
     file_findings = []
-    comp = compressed_opener(fname)
+    comp = single_file_compression(fname)
     # A name that lies about its content must still be scanned: reading it
     # through the decompressor would raise and silently skip the file.
     if comp and not compression_magic_ok(fpath, comp[0]):
         comp = None
-    _open = comp[1] if comp else open
+    _open = (_ZstdText if comp[0] == '.zst' else comp[1]) if comp else open
     lineno = 0
 
     def add(category, value):

@@ -179,3 +179,16 @@ def test_public_ips_kept_on_purpose_are_not_findings():
     assert not _is_safe_ipv4("192.168.1.1", nets)
     nets = _build_safe_ipv4_nets()
     assert not _is_safe_ipv4("8.8.8.8", nets)
+
+
+def test_verify_reads_a_zst_log(tmp_path):
+    import shutil, subprocess
+    if not shutil.which('zstd'):
+        import pytest
+        pytest.skip('no zstd')
+    from supportutils_scrub.verify import verify_scrubbed_folder
+    log = tmp_path / 'messages-20260101'
+    log.write_text('peer realnode01 ok\n')
+    subprocess.run(['zstd', '-q', '--rm', str(log)], check=True)
+    found = verify_scrubbed_folder(str(tmp_path), {'hostname': {'realnode01': 'host-1'}})
+    assert any(f['value'] == 'realnode01' for f in found)
