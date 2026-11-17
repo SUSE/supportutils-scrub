@@ -1,6 +1,8 @@
 from ipaddress import IPv4Address, IPv4Network
 
+from supportutils_scrub.det import dhash
 from supportutils_scrub.ip_scrubber import IPScrubber
+from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.scrub_config import ScrubConfig
 
 
@@ -104,3 +106,46 @@ def test_public_ip_gate():
 def test_state_reflects_loaded_cursor_without_scrubbing():
     s = _ip(mappings={'state': {'pool_cursor_public': 4096}})
     assert s.state['pool_cursor_public'] == 4096
+
+
+def _mac(deterministic=False, mappings=None):
+    return MACScrubber(ScrubConfig(obfuscate_mac=True), mappings=mappings or {},
+                       deterministic=deterministic)
+
+
+def test_macs_inside_longer_colon_runs_are_scrubbed():
+    s = _mac()
+    out = s.scrub("IN=eth0 MAC=52:54:00:12:34:56:52:54:00:ab:cd:ef:08:00 SRC=\n"
+                  "client-id 01:52:54:00:12:34:57\n"
+                  "duid 00:03:00:01:52:54:00:12:34:58\n"
+                  "duid 00:01:00:01:2a:3b:4c:5d:52:54:00:12:34:59\n").lower()
+    for real in ("52:54:00:12:34:56", "52:54:00:ab:cd:ef", "52:54:00:12:34:57",
+                 "52:54:00:12:34:58", "52:54:00:12:34:59"):
+        assert real not in out
+        assert s.mapping[real].lower() in out
+    assert ":08:00 src=" in out
+    assert "client-id 01:00:1a:2b:" in out
+    assert "duid 00:03:00:01:00:1a:2b:" in out
+
+
+def test_other_hex_runs_are_left_alone():
+    text = ("fe80::5054:ff:fe12:3456 2001:db8:0:0:0:0:0:1 12:34:56 "
+            "MD5:de:ad:be:ef:00:11:22:33:44:55:66:77:88:99:aa:bb "
+            "01:02:03:04:05:06:07:08 02:52:54:00:12:34:56 "
+            "MAC=52:54:00:12:34:56:08:00")
+    s = _mac()
+    assert s.scrub(text) == text
+    assert s.mapping == {}
+
+
+def test_mac_fake_collision_is_resolved():
+    real = "52:54:00:12:34:56"
+    h = dhash(real, 3).upper()
+    taken = f"00:1A:2B:{h[0:2]}:{h[2:4]}:{h[4:6]}"
+    s = _mac(deterministic=True, mappings={'mac': {'52:54:00:00:00:01': taken}})
+    s.scrub(real)
+    assert s.mapping[real] not in (taken, real)
+
+    s = _mac(mappings={'mac': {'52:54:00:00:00:01': '00:1A:2B:00:00:01'}})
+    s.scrub(real)
+    assert s.mapping[real] != '00:1A:2B:00:00:01'
