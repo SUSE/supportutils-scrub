@@ -12,7 +12,9 @@ class KeywordScrubber(Scrubber):
     def __init__(self, keyword_file=None, cmd_keywords=None, mappings=None):
         self.keyword_file = keyword_file
         self.cmd_keywords = cmd_keywords or []
-        self.keyword_dict = dict((mappings or {}).get('keyword', {}))
+        # keywords match case-insensitively through a lowercased lookup
+        self.keyword_dict = {str(k).lower(): v for k, v in
+                             (mappings or {}).get('keyword', {}).items() if str(k).strip()}
         self._counter = len(self.keyword_dict)
         self._re = None
         self.load_keywords()
@@ -43,11 +45,8 @@ class KeywordScrubber(Scrubber):
     def _build_re(self):
         # One trie-factored regex for all keywords: a single pass over the text
         # instead of one re.sub (full scan + string rebuild) per keyword.
-        if self.keyword_dict:
-            trie = build_trie_pattern(self.keyword_dict.keys())
-            self._re = re.compile('(?:' + trie + ')', re.IGNORECASE)
-        else:
-            self._re = None
+        trie = build_trie_pattern(self.keyword_dict.keys())
+        self._re = re.compile('(?:' + trie + ')', re.IGNORECASE) if trie else None
 
     def _next_fake(self):
         self._counter += 1
