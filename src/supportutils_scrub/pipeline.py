@@ -1,6 +1,6 @@
 # pipeline.py — shared extraction, mapping, and scrubber-init helpers
 
-from supportutils_scrub.processor import _iter_line_segments
+from supportutils_scrub.processor import _iter_line_segments, compressed_opener
 import os
 import sys
 import re
@@ -316,7 +316,9 @@ def _pre_scan_file(scrubber, fpath):
         pass
 
 
-def extract_serials(report_files, mappings):
+def extract_serials(report_files, mappings, config=None):
+    if config is not None and not getattr(config, 'obfuscate_serial', True):
+        return dict(mappings.get('serial', {}))
     scrubber = SerialScrubber(mappings=mappings)
     target_files = {'basic-environment.txt', 'boot.txt', 'hardware.txt'}
     for fpath in report_files:
@@ -343,22 +345,37 @@ def extract_sids(report_files, mappings):
     return scrubber.sid_dict
 
 
+def _keyword_file(args, config):
+    if args.keyword_file:
+        return args.keyword_file
+    path = getattr(config, 'key_words_file', None)
+    if not getattr(config, 'use_key_words_file', False) or not path:
+        return None
+    if os.path.isfile(path):
+        return path
+    # the shipped config enables this with a path most hosts do not have,
+    # so the warning stays off stdout (--quiet prints only the output path)
+    print(f"[!] key_words_file not found: {path} (use_key_words_file is set)",
+          file=sys.stderr)
+    return None
+
+
 def init_scrubbers(args, config, logger):
     mappings = {}
-    mapping_keywords = []
     if args.mappings:
         mappings = load_mappings_file(args.mappings)
-        mapping_keywords = list(mappings.get('keyword', {}).keys())
     from supportutils_scrub import det as _det
     _det.ensure_key(mappings)
 
     cmd_keywords = []
     if args.keywords:
         cmd_keywords = [kw.strip() for kw in re.split(r'[,\s;]+', args.keywords.strip()) if kw.strip()]
-    combined = set(cmd_keywords).union(mapping_keywords)
 
+    # The mapping's keywords keep their pseudonyms; only new ones are numbered.
     try:
-        keyword_scrubber = KeywordScrubber(keyword_file=args.keyword_file, cmd_keywords=list(combined))
+        keyword_scrubber = KeywordScrubber(keyword_file=_keyword_file(args, config),
+                                           cmd_keywords=list(dict.fromkeys(cmd_keywords)),
+                                           mappings=mappings)
         if not keyword_scrubber.is_loaded():
             keyword_scrubber = None
     except Exception as e:
@@ -374,6 +391,148 @@ def init_scrubbers(args, config, logger):
         sys.exit(1)
 
     return mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber
+
+
+def split_names(value):
+    return re.split(r'[,\s;]+', value) if value else []
+
+
+def chain_seed(mappings, hostname_dict, domain_dict, username_dict,
+               serial_dict, sid_dict, keyword_scrubber):
+    """The mappings plus this run's learned dicts: what build_chain needs."""
+    seed = dict(mappings)
+    seed.update(hostname=hostname_dict, domain=domain_dict, user=username_dict,
+                serial=serial_dict, sid=sid_dict,
+                keyword=keyword_scrubber.keyword_dict if keyword_scrubber else {})
+    return seed
+
+
+def build_chain(seed, config, deterministic=False, include_ldap=True):
+    """The scrubber chain every mode runs, serial or --jobs, in this order."""
+    from supportutils_scrub.sid_scrubber import SIDScrubber
+    from supportutils_scrub.email_scrubber import EmailScrubber
+    from supportutils_scrub.auth_scrubber import AuthScrubber
+    from supportutils_scrub.password_scrubber import PasswordScrubber
+    from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
+    from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
+
+    keyword = None
+    if seed.get('keyword'):
+        keyword = KeywordScrubber(mappings={'keyword': seed['keyword']})
+
+    serial = None
+    if getattr(config, 'obfuscate_serial', True):
+        serial = SerialScrubber(mappings=seed)
+        serial.serial_dict = dict(seed.get('serial') or {})
+
+    sid = SIDScrubber(mappings=seed)
+    sid.sid_dict = dict(seed.get('sid') or {})
+
+    # Named so the auth scrubber can delegate to them: a login it decodes out
+    # of a Basic header has to land on the same pseudonym as the same identity
+    # written in clear elsewhere in the capture.
+    email = EmailScrubber(mappings=seed, deterministic=deterministic)
+    username = UsernameScrubber(dict(seed.get('user') or {}))
+    # Ahead of the email scrubber on purpose: in a URL the userinfo and host
+    # together (user@host) match an email address exactly, so if email ran
+    # first it would swallow both and the login would stop being
+    # distinguishable from the host it authenticates against.
+    auth = AuthScrubber(mappings=seed, deterministic=deterministic,
+                        email_scrubber=email, username_scrubber=username)
+
+    chain = [
+        IPScrubber(config, mappings=seed),
+        IPv6Scrubber(config, mappings=seed, deterministic=deterministic),
+        MACScrubber(config, mappings=seed, deterministic=deterministic),
+        keyword,
+        auth,
+        # Email must run before hostname/domain: once the domain part is
+        # rewritten the address no longer matches EMAIL_RE and the local
+        # part (often firstname.lastname) would survive.
+        email,
+        HostnameScrubber(dict(seed.get('hostname') or {}), config=config),
+        DomainScrubber(dict(seed.get('domain') or {})),
+    ]
+    if include_ldap:
+        chain.append(LdapDnScrubber(mappings=seed, deterministic=deterministic))
+    chain += [
+        username,
+        PasswordScrubber(mappings=seed, deterministic=deterministic),
+        CloudTokenScrubber(mappings=seed, deterministic=deterministic),
+        serial, sid,
+    ]
+    return [s for s in chain if s is not None]
+
+
+def merge_state(*states):
+    """Pool cursors: a later one wins, an empty one never wipes a loaded one."""
+    out = {}
+    for st in states:
+        out.update(st or {})
+    return out
+
+
+def chain_mappings(scrubbers, base, tld_map=None):
+    """The mapping a run saves: what it started from plus what the chain
+    holds now. A section the chain did not run this time (serial with
+    obfuscate_serial = no, ldap) is kept as loaded."""
+    from supportutils_scrub import det as _det
+    by_name = {s.name: s for s in scrubbers}
+    out = dict(base)
+    for s in scrubbers:
+        out[s.name] = dict(s.mapping)
+    ip_s, v6_s = by_name.get('ip'), by_name.get('ipv6')
+    if ip_s is not None:
+        out['subnet'] = dict(ip_s.subnet_dict)
+    if v6_s is not None:
+        out['ipv6_subnet'] = v6_s.subnet_map
+    out['state'] = merge_state(base.get('state'), getattr(ip_s, 'state', None),
+                               getattr(v6_s, 'state', None))
+    if tld_map is not None:
+        out['tld_map'] = tld_map
+    if _det.current_key():
+        out[_det.KEY_FIELD] = _det.current_key()
+    return out
+
+
+def drop_unscrubbed(failed, root, copied=True, file=None):
+    """Remove the files a run could not scrub so they never ship raw.
+
+    Returns False when one could not be removed, or when the tree is the
+    user's own input (re-scrubbed in place), where nothing is deleted."""
+    if not failed:
+        return True
+    out = file or sys.stderr
+    ok = copied
+    if copied:
+        print(f"[!] {len(failed)} file(s) could not be scrubbed and were "
+              f"removed from the output:", file=out)
+    else:
+        print(f"[!] {len(failed)} file(s) could not be scrubbed; the input was "
+              f"scrubbed in place, so they were left as they are - do not share it:",
+              file=out)
+    for path in failed:
+        if copied and os.path.lexists(path):
+            try:
+                os.remove(path)
+            except OSError as e:
+                print(f"      could not remove it: {e}", file=out)
+                ok = False
+        print(f"      {os.path.relpath(path, root)}", file=out)
+    return ok
+
+
+_PCAP_MAGIC = {b'\xa1\xb2\xc3\xd4', b'\xd4\xc3\xb2\xa1',     # pcap, usec
+               b'\xa1\xb2\x3c\x4d', b'\x4d\x3c\xb2\xa1',     # pcap, nsec
+               b'\x0a\x0d\x0d\x0a'}                          # pcapng
+
+
+def is_pcap(path):
+    try:
+        with open(path, 'rb') as f:
+            return f.read(4) in _PCAP_MAGIC
+    except OSError:
+        return False
 
 
 class PhaseTimer:
@@ -527,12 +686,26 @@ def rename_extraction_paths(clean_folder_path, hostname_dict, rename_top=True,
         prefix = "" if rel == "." else rel + os.sep
         renames.append((prefix + old, prefix + new))
 
+    def free(root, name):
+        # testhost.log and TESTHOST.log both scrub to host-1.log; a plain
+        # rename would overwrite one with the other
+        if not os.path.lexists(os.path.join(root, name)):
+            return name
+        comp = compressed_opener(name)
+        tail = comp[0] if comp else ''
+        stem, ext = os.path.splitext(name[:len(name) - len(tail)])
+        n = 1
+        while os.path.lexists(os.path.join(root, f"{stem}_{n}{ext}{tail}")):
+            n += 1
+        return f"{stem}_{n}{ext}{tail}"
+
     for root, dirs, files in os.walk(clean_folder_path, topdown=True):
         # dirs must be updated in place or the walk descends into the old
         # (renamed-away) path and silently skips everything below it.
         for i, d in enumerate(dirs):
             scrubbed = scrub_one(d)
             if scrubbed != d:
+                scrubbed = free(root, scrubbed)
                 try:
                     os.rename(os.path.join(root, d), os.path.join(root, scrubbed))
                     note(root, d, scrubbed)
@@ -542,6 +715,7 @@ def rename_extraction_paths(clean_folder_path, hostname_dict, rename_top=True,
         for f in files:
             scrubbed = scrub_one(f)
             if scrubbed != f:
+                scrubbed = free(root, scrubbed)
                 try:
                     os.rename(os.path.join(root, f), os.path.join(root, scrubbed))
                     note(root, f, scrubbed)
