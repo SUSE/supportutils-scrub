@@ -14,13 +14,14 @@ from supportutils_scrub.processor import (
     _iter_line_segments, _SEG_BYTES, _TEXT_PROBE,
 )
 from supportutils_scrub.pipeline import (
+    save_mappings_or_exit,
     warn_private_ip, init_scrubbers, scrub_name,
     extract_and_map_domains, extract_hostnames, extract_usernames,
     dataset_paths, extract_serials, extract_sids,
     split_names, chain_seed, build_chain, chain_mappings, is_pcap,
 )
 from supportutils_scrub.audit import (
-    save_mappings, print_enc_note, sha256_file, audit_record, write_audit_log,
+    print_enc_note, sha256_file, audit_record, write_audit_log,
 )
 
 
@@ -199,7 +200,7 @@ def run_file_mode(args, logger):
 
     print(f"[✓] Scrubbed file written to: {output_path}")
 
-    saved_mapping_path = save_mappings(args, dataset_path, dataset_dict)
+    saved_mapping_path = save_mappings_or_exit(args, dataset_path, dataset_dict)
 
     if verbose_flag:
         print("\n--- Obfuscated Mapping Preview ---")

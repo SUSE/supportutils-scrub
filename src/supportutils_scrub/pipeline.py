@@ -16,7 +16,7 @@ from supportutils_scrub.username_scrubber import UsernameScrubber
 from supportutils_scrub.mac_scrubber import MACScrubber
 from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
 from supportutils_scrub.serial_scrubber import SerialScrubber
-from supportutils_scrub.audit import load_mappings_file
+from supportutils_scrub.audit import load_mappings_file, save_mappings
 
 
 def warn_private_ip(config, file=None):
@@ -394,6 +394,17 @@ def init_scrubbers(args, config, logger):
         sys.exit(1)
 
     return mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber
+
+
+def save_mappings_or_exit(args, dataset_path, dataset_dict):
+    """save_mappings raises rather than fall back to plaintext; a run whose
+    mapping was not written has failed."""
+    from supportutils_scrub.main import EXIT_ERROR
+    try:
+        return save_mappings(args, dataset_path, dataset_dict)
+    except Exception as e:
+        print(f"[!] Mapping file could not be written: {e}", file=sys.stderr)
+        sys.exit(EXIT_ERROR)
 
 
 def split_names(value):

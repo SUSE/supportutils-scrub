@@ -10,14 +10,13 @@ from datetime import datetime
 from supportutils_scrub.main import (
     SCRIPT_VERSION, EXIT_ERROR, EXIT_WARNING, EXIT_VERIFY_FAIL,
 )
-from supportutils_scrub.config import DEFAULT_CONFIG_PATH
-from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.processor import FileProcessor, append_scrubbed
 from supportutils_scrub.extractor import (
     copy_folder_to_scrubbed, walk_supportconfig, expand_nested_archives,
 )
 from supportutils_scrub.verify import verify_scrubbed_folder
 from supportutils_scrub.pipeline import (
+    save_mappings_or_exit,
     warn_private_ip, init_scrubbers, is_supportconfig_folder,
     extract_and_map_domains, extract_hostnames,
     extract_hostnames_from_adopted_paths, extract_usernames,
@@ -26,7 +25,7 @@ from supportutils_scrub.pipeline import (
     build_chain, chain_mappings, drop_unscrubbed,
 )
 from supportutils_scrub.audit import (
-    save_mappings, print_enc_note, audit_record, write_audit_log, write_report,
+    print_enc_note, audit_record, write_audit_log, write_report,
 )
 
 
@@ -38,9 +37,7 @@ def run_folder_mode(args, logger):
     quiet = getattr(args, 'quiet', False)
     err = sys.stderr
 
-    config = getattr(args, '_preloaded_config', None)
-    if config is None:
-        config = ConfigReader(DEFAULT_CONFIG_PATH).read_config(args.config)
+    config = args._preloaded_config
     dataset_dir = config.dataset_dir
 
     if quiet:
@@ -217,7 +214,7 @@ def run_folder_mode(args, logger):
     if profile:
         print(file_processor.format_profile(), file=sys.stderr if quiet else sys.stdout)
 
-    saved_mapping_path = save_mappings(args, dataset_path, dataset_dict)
+    saved_mapping_path = save_mappings_or_exit(args, dataset_path, dataset_dict)
 
     if verbose_flag and not quiet:
         print("\n--- Obfuscated Mapping Preview ---")

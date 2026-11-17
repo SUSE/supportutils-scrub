@@ -19,9 +19,10 @@ from supportutils_scrub.extractor import (
     copy_folder_to_scrubbed, strip_archive_ext, is_archive_path,
     expand_nested_archives,
 )
-from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
+from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite, PcapRewriteError
 from supportutils_scrub.verify import verify_scrubbed_folder
 from supportutils_scrub.pipeline import (
+    save_mappings_or_exit,
     warn_private_ip, init_scrubbers, extract_and_map_domains, extract_hostnames,
     extract_hostnames_from_adopted_paths,
     extract_usernames, extract_serials, extract_sids, rename_extraction_paths,
@@ -31,7 +32,7 @@ from supportutils_scrub.pipeline import (
 )
 from supportutils_scrub.modes.file import scrub_loose_file
 from supportutils_scrub.audit import (
-    load_mappings_file, get_secure_tmp_base, save_mappings,
+    load_mappings_file, get_secure_tmp_base,
     print_enc_note, sha256_file, audit_record, write_audit_log, write_report,
 )
 
@@ -386,12 +387,16 @@ def run_archive_mode(paths, args, logger):
         except Exception as e:
             print(f"[!] Failed to read mappings for pcap rewrite from {mapping_src_path}: {e}")
             sys.exit(2)
-        rewrite_pcaps_with_tcprewrite(
-            mappings_for_pcap, args.pcap_in, args.pcap_out_dir,
-            tcprewrite=args.tcprewrite_path,
-            print_cmd=args.print_tcprewrite,
-            logger=logger,
-        )
+        try:
+            rewrite_pcaps_with_tcprewrite(
+                mappings_for_pcap, args.pcap_in, args.pcap_out_dir,
+                tcprewrite=args.tcprewrite_path,
+                print_cmd=args.print_tcprewrite,
+                logger=logger,
+            )
+        except PcapRewriteError as e:
+            print(f"[!] {e}", file=sys.stderr)
+            sys.exit(EXIT_WARNING)
 
     # det_key, keyword pseudonyms and the keyword file come from the same
     # place as in every other mode
@@ -452,7 +457,7 @@ def run_archive_mode(paths, args, logger):
         write_report(report_path, archives_report, SCRIPT_VERSION,
                      verify_findings=all_verify_findings)
 
-    saved_mapping_path = save_mappings(args, dataset_path, current_mappings)
+    saved_mapping_path = save_mappings_or_exit(args, dataset_path, current_mappings)
     if saved_mapping_path:
         print(f"[✓] Mapping file saved to:       {saved_mapping_path}")
 
@@ -570,7 +575,7 @@ def _rewrite_pcaps(pcaps, mappings, args, logger):
                 tcprewrite=getattr(args, 'tcprewrite_path', None) or 'tcprewrite',
                 print_cmd=getattr(args, 'print_tcprewrite', False), logger=logger)
             reason = None if os.path.exists(written) else "tcprewrite wrote nothing"
-        except (Exception, SystemExit) as e:
+        except Exception as e:      # PcapRewriteError: no tcprewrite, or it failed
             reason = str(e) or type(e).__name__
         if reason:
             print(f"[!] {os.path.basename(pcap)}: not rewritten ({reason}); "
