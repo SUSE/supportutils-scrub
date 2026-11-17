@@ -238,19 +238,28 @@ _BINARY_MAGIC = (b'\xd4\xc3\xb2\xa1', b'\xa1\xb2\xc3\xd4', b'\x4d\x3c\xb2\xa1',
 _CONTROL_BYTES = bytes(b for b in range(32) if b not in b'\t\n\v\f\r\b\x1b') + b'\x7f'
 
 
+_NUL_RUN = re.compile(b'\x00+')
+# A crash leaves a zero block or two in a log; a binary format scatters its
+# NULs (padded integers, string terminators, UTF-16) all over the head.
+_MAX_TEXT_NUL_RUNS = 4
+
+
 def is_binary_head(head):
     """True when head (the first _TEXT_PROBE bytes) is not text.
 
     A NUL alone does not decide it: a crash leaves runs of zero blocks in
-    messages or boot.log, and that log must still be scrubbed. Between its
-    NULs a binary has other control bytes or invalid UTF-8; past one in
-    twenty of the non-NUL bytes, it is binary."""
+    messages or boot.log, and that log must still be scrubbed. A head is
+    binary by its magic, when it holds nothing but NULs, when its NULs come
+    in more than a few runs, or when one in twenty of the bytes between
+    them is another control byte or invalid UTF-8."""
     if (head.startswith(_BINARY_MAGIC) or head[257:262] == b'ustar'
             or is_dump_head(head)):
         return True
     if b'\x00' not in head:
         return False
     rest = head.replace(b'\x00', b'')
+    if not rest or len(_NUL_RUN.findall(head)) > _MAX_TEXT_NUL_RUNS:
+        return True
     odd = (len(rest) - len(rest.translate(None, _CONTROL_BYTES))
            + rest.decode('utf-8', 'replace').count('\ufffd'))
     return odd * 20 > len(rest)
@@ -895,6 +904,11 @@ class FileProcessor:
         # sar*.xz keeps its name and compression.
         try:
             comp = single_file_compression(base_name)
+            if comp and comp[1] is _ZstdPipe and not shutil.which('zstd'):
+                if not dry_run:
+                    logger.error(f"{base_name}: no zstd decompressor here - left as it "
+                                 f"is, its content is NOT scrubbed")
+                return False
             if comp:
                 return self._process_compressed(file_path, base_name, comp[0], comp[1],
                                                 logger, dry_run)

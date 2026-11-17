@@ -63,6 +63,10 @@ def test_binary_heads_are_still_binary():
     assert is_binary_head(b"\xd4\xc3\xb2\xa1\x02\x00\x04\x00" + b"x" * 100)
     assert is_binary_head(b"\x00\x01\x02\x03peer 198.51.100.77\n" + b"\x00" * 1000)
     assert is_binary_head(b"\xff\xfeh\x00i\x00")
+    assert is_binary_head("utf-16 without a BOM\n".encode("utf-16-le"))
+    assert is_binary_head(b"\x00" * 65536)
+    # a .mo catalog: mostly text, NULs scattered between its strings
+    assert is_binary_head(b"\xde\x12\x04\x95" + b"\x00msgid text".join([b""] * 50))
     assert not is_binary_head(b"plain text\n" + b"\x00" * 1000 + b"more\n")
 
 
@@ -242,3 +246,37 @@ def test_create_txz_leaves_nothing_on_failure_and_records_no_owner(tmp_path):
 def test_safe_path_allows_names_that_only_start_with_dots(tmp_path):
     assert extractor._is_safe_path(str(tmp_path), "..foo")
     assert not extractor._is_safe_path(str(tmp_path), "../foo")
+
+
+def test_streamed_payload_failure_and_gzip_name(tmp_path, monkeypatch):
+    from supportutils_scrub import processor
+    monkeypatch.setattr(processor, "_SEG_BYTES", 64)
+    body = b"".join(b"line %d nothing here\n" % i for i in range(40))
+    buf = io.BytesIO()
+    with gzip.GzipFile(filename="db01.example.com.log", mode="wb", fileobj=buf) as g:
+        g.write(body)
+    path = tmp_path / "big.log.gz"
+    path.write_bytes(buf.getvalue())
+
+    assert _scrub(path)[0]
+    assert path.read_bytes()[3] & 0x18 == 0
+    assert gzip.decompress(path.read_bytes()).endswith(body)
+
+    data = gzip.compress(IP + b"\n" + body)
+    path.write_bytes(data)
+    cfg = ScrubConfig(obfuscate_private_ip=True, obfuscate_public_ip=True)
+    fp = FileProcessor(cfg, [IPScrubber(cfg, mappings={}), _Boom(ValueError("bug"))])
+    assert fp.process_file(str(path), _Logger(), False) is False
+    assert path.read_bytes() == data
+    assert os.listdir(tmp_path) == ["big.log.gz"]
+
+
+def test_extract_without_data_filter_still_drops_read_only_modes(tmp_path, monkeypatch):
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    with tarfile.open(tmp_path / "bundle.tar", "w") as t:
+        _add(t, "conf", type=tarfile.DIRTYPE, mode=0o555)
+        _add(t, "conf/hosts", IP + b"\n", mode=0o444)
+
+    assert extractor.expand_nested_archives(str(tmp_path), _Logger()) == 1
+    assert _scrub(tmp_path / "bundle" / "conf" / "hosts")[0]
+    assert IP not in (tmp_path / "bundle" / "conf" / "hosts").read_bytes()
