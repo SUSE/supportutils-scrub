@@ -1,6 +1,6 @@
 import re
 from typing import Dict, Optional
-from supportutils_scrub.scrubber import Scrubber
+from supportutils_scrub.scrubber import Scrubber, is_pseudonym
 
 _LDAP_SAFE_VALUES = {
     'aggregate', 'schema', 'configuration', 'sites', 'subnets', 'servers',
@@ -29,14 +29,9 @@ _AZURE_REGIONS = {
     'azure-west-europe', 'azure-east-us', 'azure-north-europe',
 }
 
-_FAKE_VALUE_RE = re.compile(
-    r'^(?:hostname_\d+|user_\d+|domain_\d+|keyword_\d+'
-    r'|cn_(?:\d+|[0-9a-f]{12})|ou_(?:\d+|[0-9a-f]{12}))'
-    r'(?:\.[a-z]{2,})?$',
-    re.IGNORECASE,
-)
-
-_CN_OU_RE = re.compile(r'(?i)\b(CN|OU)=([^,\s]+)')
+# The whole RDN value: spaces included (CN=John Smith) and escaped commas
+# (CN=Smith\, John), up to the next separator or the end of the line.
+_CN_OU_RE = re.compile(r'(?im)\b(CN|OU)=((?:\\.|[^\\,+\n"])+?)(?=\s*(?:[,+"]|$))')
 
 
 def _is_safe_ad_value(val: str) -> bool:
@@ -86,8 +81,8 @@ class LdapDnScrubber(Scrubber):
             return text
 
         def _repl(m):
-            typ, val = m.group(1), m.group(2)
-            if _is_safe_ad_value(val) or _FAKE_VALUE_RE.match(val):
+            typ, val = m.group(1), m.group(2).strip()
+            if not val or _is_safe_ad_value(val) or is_pseudonym(val):
                 return m.group(0)
             return f"{typ}={self._fake_for(val, typ)}"
 
