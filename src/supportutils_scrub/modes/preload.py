@@ -59,12 +59,18 @@ def _text_of(path):
         return ''
 
 
-def _learn_tree(tree, mappings, seeds, config=None):
+def _learn_tree(tree, mappings, seeds, config=None, extracted=False):
     files = walk_supportconfig(tree)
     is_sc = is_supportconfig_folder(files)
     scan = files if is_sc else []
     extra_hosts = list(seeds['hostname'])
-    extra_hosts.extend(extract_hostnames_from_adopted_paths(tree, config=config))
+    adopted = extract_hostnames_from_adopted_paths(tree, config=config)
+    if extracted:
+        # our own <name>_scrubbed extraction folder, taken for a crm_report
+        # node dir when cib.xml sits at the top: not a host name
+        root = os.path.basename(tree)
+        adopted = [h for h in adopted if h not in (root, root.split('.', 1)[0])]
+    extra_hosts.extend(adopted)
     extra_domains, extra_users = list(seeds['domain']), list(seeds['user'])
     if not is_sc:
         # a cluster report or a plain folder: no identity files, so read the
@@ -128,11 +134,9 @@ def run_preload_mode(args, logger):
             tmp = tempfile.mkdtemp(prefix='scrub-preload-',
                                    dir=get_secure_tmp_base())
             try:
-                # learn from the extracted tree itself, as archive mode
-                # does: its <name>_scrubbed folder is not a host name
                 _, tree = extract_tgz_archive(path, logger, extract_base=tmp,
                                               mode=_tar_mode(path))
-                _learn_tree(tree, mappings, seeds, config=config)
+                _learn_tree(tree, mappings, seeds, config=config, extracted=True)
             except (tarfile.TarError, OSError) as e:
                 logger.warning(f"preload: cannot read {path}: {e}")
             finally:

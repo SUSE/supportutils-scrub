@@ -12,6 +12,14 @@ from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.scrub_config import ScrubConfig
 
 
+@pytest.fixture
+def conf(tmp_path):
+    # never the host's /etc conf: it may turn on encrypt_mappings and prompt
+    c = tmp_path / 'empty.conf'
+    c.write_text('')
+    return ['--config', str(c)]
+
+
 def _main(monkeypatch, argv):
     monkeypatch.setattr(sys, 'argv', ['supportutils-scrub'] + argv)
     monkeypatch.delenv('SUPPORTUTILS_SCRUB_OPTS', raising=False)
@@ -59,9 +67,9 @@ def test_audit_argv_redacts_both_forms():
         ['--hostname=<redacted>', '--domain', '<redacted>', 'x.txz']
 
 
-def test_encrypt_without_cryptography_stops_before_scrubbing(monkeypatch, tmp_path):
+def test_encrypt_without_cryptography_stops_before_scrubbing(monkeypatch, tmp_path, conf):
     monkeypatch.setitem(sys.modules, 'cryptography', None)
-    assert _main(monkeypatch, ['--encrypt-mappings', str(tmp_path)]) == 2
+    assert _main(monkeypatch, conf + ['--encrypt-mappings', str(tmp_path)]) == 2
 
 
 def _save_args(**kw):
@@ -98,7 +106,7 @@ def test_mapping_is_created_private(tmp_path):
     assert existing.stat().st_mode & 0o777 == 0o600
 
 
-def test_pcap_only_run_with_piped_stdin_rewrites_the_pcap(monkeypatch, tmp_path):
+def test_pcap_only_run_with_piped_stdin_rewrites_the_pcap(monkeypatch, tmp_path, conf):
     import io
     m = tmp_path / 'm.json'
     m.write_text('{}')
@@ -106,16 +114,17 @@ def test_pcap_only_run_with_piped_stdin_rewrites_the_pcap(monkeypatch, tmp_path)
     monkeypatch.setattr(cli, 'rewrite_pcaps_with_tcprewrite',
                         lambda *a, **k: calls.append(a))
     monkeypatch.setattr(sys, 'stdin', io.StringIO(''))
-    monkeypatch.setattr(sys, 'argv', ['supportutils-scrub', '--rewrite-pcap', '--quiet',
+    monkeypatch.setattr(sys, 'argv', ['supportutils-scrub', *conf, '--rewrite-pcap', '--quiet',
                                       '--mappings', str(m), '--pcap-in', 'a.pcap'])
     monkeypatch.delenv('SUPPORTUTILS_SCRUB_OPTS', raising=False)
     cli.main()
     assert calls and calls[0][1] == ['a.pcap']
 
 
-def test_pcap_rewrite_with_a_folder_is_refused(monkeypatch, tmp_path):
-    assert _main(monkeypatch, ['--rewrite-pcap', '--pcap-in', 'a.pcap',
-                               str(tmp_path)]) == 2
+def test_pcap_rewrite_with_a_folder_is_refused(monkeypatch, tmp_path, conf, capsys):
+    assert _main(monkeypatch, conf + [str(tmp_path), '--rewrite-pcap',
+                                      '--pcap-in', 'a.pcap']) == 2
+    assert 'not supported' in capsys.readouterr().err
 
 
 def test_missing_tcprewrite_is_a_clear_error_and_leaves_no_output(tmp_path):
@@ -215,11 +224,14 @@ def test_interrupted_stdin_still_saves_the_mapping(monkeypatch, tmp_path, exc, c
     assert 'QAB' in _saved(tmp_path)['sid']
 
 
-def test_preload_of_an_archive_learns_no_extraction_folder_name(tmp_path):
+@pytest.mark.parametrize('crm', [False, True])
+def test_preload_of_an_archive_learns_no_extraction_folder_name(tmp_path, crm):
     import tarfile
     from test_preload import _node, _args, _Logger as _PLogger
     from supportutils_scrub.modes import preload as preload_mode
     a = _node(tmp_path, 'nodea', ['nodea'])
+    if crm:   # a crm_report: cib.xml at the top marks the dir as a node
+        (a / 'cib.xml').write_text('<cib/>')
     arc = tmp_path / 'scc_nodea_260821.txz'
     with tarfile.open(arc, 'w:xz') as t:
         t.add(a, arcname=a.name)
