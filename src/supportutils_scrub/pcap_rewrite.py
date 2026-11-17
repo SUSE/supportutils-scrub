@@ -7,6 +7,11 @@ import os
 
 from supportutils_scrub.processor import scrubbed_output_name
 
+
+class PcapRewriteError(RuntimeError):
+    pass
+
+
 def _only_ipv4_pairs(subnet_dict):
     """Return [(src_cidr, dst_cidr), ...] for valid IPv4 CIDR pairs only."""
     pairs = []
@@ -20,6 +25,22 @@ def _only_ipv4_pairs(subnet_dict):
                 pairs.append((str(s), str(d)))
         except Exception:
             continue
+    return pairs
+
+def _host_pairs(ip_map, subnet_pairs):
+    """/32 pairs for addresses the scrub mapped one by one (outside every
+    learned subnet), which the subnet rules alone would leave real."""
+    nets = [ipaddress.ip_network(s) for s, _ in subnet_pairs]
+    pairs = []
+    for src, dst in (ip_map or {}).items():
+        try:
+            s = ipaddress.ip_address(src)
+            d = ipaddress.ip_address(dst)
+        except ValueError:
+            continue
+        if s.version != 4 or d.version != 4 or s == d or any(s in n for n in nets):
+            continue
+        pairs.append((f"{s}/32", f"{d}/32"))
     return pairs
 
 def _sort_most_specific_first(pairs):
@@ -55,6 +76,7 @@ def rewrite_pcaps_with_tcprewrite(mappings, pcap_inputs, out_dir, *, tcprewrite=
     os.makedirs(out_dir, exist_ok=True)
 
     v4_pairs = _only_ipv4_pairs(mappings.get("subnet") or {})
+    v4_pairs += _host_pairs(mappings.get("ip"), v4_pairs)
     v4_rules = _sort_most_specific_first(v4_pairs)
 
     print("\n[INFO] Using --rewrite-pcap: original pcaps will remain untouched;")
@@ -64,6 +86,14 @@ def rewrite_pcaps_with_tcprewrite(mappings, pcap_inputs, out_dir, *, tcprewrite=
     print(f"- Input files      : {', '.join(os.path.basename(x) for x in pcap_inputs)}")
     print(f"- Output directory : {os.path.abspath(out_dir)}")
     print(f"- IPv4 rules found : {len(v4_rules)}\n")
+
+    # tcprewrite has no MAC or IPv6 map we drive here: say so loudly rather
+    # than hand back a capture that looks scrubbed
+    for kind, label in (("mac", "MAC addresses"), ("ipv6", "IPv6 addresses")):
+        left = len(mappings.get(kind) or {})
+        if left:
+            print(f"[!] WARNING: {left} {label} from the mapping are NOT rewritten "
+                  f"in the pcap; they stay real in the output.")
 
     if not v4_rules:
         print("No IPv4 'subnet' rules present in mappings. Nothing to rewrite.")
@@ -97,13 +127,15 @@ def rewrite_pcaps_with_tcprewrite(mappings, pcap_inputs, out_dir, *, tcprewrite=
 
         try:
             subprocess.run(cmd, check=True)
-        except subprocess.CalledProcessError as e:
-            msg = f"tcprewrite failed on {fin}: {e}"
-            if logger:
-                logger.error(msg)
-            else:
-                print(f"ERROR: {msg}")
-            raise
+        except (subprocess.CalledProcessError, OSError) as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            if isinstance(e, FileNotFoundError):
+                raise PcapRewriteError(f"tcprewrite not found ({tcprewrite}): install "
+                                       f"tcpreplay or use --tcprewrite-path") from e
+            raise PcapRewriteError(f"tcprewrite failed on {fin}: {e}") from e
 
         os.replace(tmp, fout)
         try:

@@ -9,7 +9,7 @@ from supportutils_scrub.config import DEFAULT_CONFIG_PATH
 from supportutils_scrub.config_reader import ConfigReader
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 from supportutils_scrub.audit import get_encryption_passphrase, load_mappings_file
-from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
+from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite, PcapRewriteError
 from supportutils_scrub.extractor import is_archive_path
 
 
@@ -214,12 +214,40 @@ def main():
         run_preload_mode(args, logger)
         return
 
+    # ahead of the stdin test: from cron or a script stdin is not a tty, and
+    # a pcap-only run must not turn into an empty stdin scrub
+    if args.rewrite_pcap and not paths:
+        if not args.mappings or not args.pcap_in:
+            print("[!] For --rewrite-pcap without a supportconfig, provide --mappings and --pcap-in", file=sys.stderr)
+            sys.exit(2)
+        if not getattr(args, 'quiet', False):
+            print_header()
+        mappings = load_mappings_file(args.mappings)
+        try:
+            rewrite_pcaps_with_tcprewrite(
+                mappings, args.pcap_in, args.pcap_out_dir,
+                tcprewrite=args.tcprewrite_path,
+                print_cmd=args.print_tcprewrite,
+                logger=logger,
+            )
+        except PcapRewriteError as e:
+            print(f"[!] {e}", file=sys.stderr)
+            sys.exit(2)
+        print_footer()
+        return
+
     is_stdin = (len(paths) == 0 and not sys.stdin.isatty()) \
                or (len(paths) == 1 and paths[0] == '-')
     is_folder = len(paths) >= 1 and all(os.path.isdir(p) for p in paths)
     is_file = (len(paths) == 1
                and os.path.isfile(paths[0])
                and not is_archive_path(paths[0]))
+
+    if args.rewrite_pcap and (is_stdin or is_file or is_folder):
+        print("[!] --rewrite-pcap is not supported with stdin, a folder or a single "
+              "plain file. Scrub first, then run: --rewrite-pcap --mappings MAP "
+              "--pcap-in PCAP...", file=sys.stderr)
+        sys.exit(2)
 
     if is_stdin:
         from supportutils_scrub.modes.stdin import run_stdin_mode
@@ -246,20 +274,6 @@ def main():
 
     if not getattr(args, 'quiet', False):
         print_header()
-
-    if args.rewrite_pcap and not paths:
-        if not args.mappings or not args.pcap_in:
-            print("[!] For --rewrite-pcap without a supportconfig, provide --mappings and --pcap-in", file=sys.stderr)
-            sys.exit(2)
-        mappings = load_mappings_file(args.mappings)
-        rewrite_pcaps_with_tcprewrite(
-            mappings, args.pcap_in, args.pcap_out_dir,
-            tcprewrite=args.tcprewrite_path,
-            print_cmd=args.print_tcprewrite,
-            logger=logger,
-        )
-        print_footer()
-        return
 
     if not paths:
         print("[!] No input specified. Provide a .txz/.tgz archive, folder, plain file, or '-' for stdin.", file=sys.stderr)

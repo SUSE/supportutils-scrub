@@ -97,6 +97,47 @@ def test_mapping_is_created_private(tmp_path):
     assert existing.stat().st_mode & 0o777 == 0o600
 
 
+def test_pcap_only_run_with_piped_stdin_rewrites_the_pcap(monkeypatch, tmp_path):
+    import io
+    m = tmp_path / 'm.json'
+    m.write_text('{}')
+    calls = []
+    monkeypatch.setattr(cli, 'rewrite_pcaps_with_tcprewrite',
+                        lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(''))
+    monkeypatch.setattr(sys, 'argv', ['supportutils-scrub', '--rewrite-pcap', '--quiet',
+                                      '--mappings', str(m), '--pcap-in', 'a.pcap'])
+    monkeypatch.delenv('SUPPORTUTILS_SCRUB_OPTS', raising=False)
+    cli.main()
+    assert calls and calls[0][1] == ['a.pcap']
+
+
+def test_pcap_rewrite_with_a_folder_is_refused(monkeypatch, tmp_path):
+    assert _main(monkeypatch, ['--rewrite-pcap', '--pcap-in', 'a.pcap',
+                               str(tmp_path)]) == 2
+
+
+def test_missing_tcprewrite_is_a_clear_error_and_leaves_no_output(tmp_path):
+    from supportutils_scrub.pcap_rewrite import (PcapRewriteError,
+                                                 rewrite_pcaps_with_tcprewrite)
+    pcap = tmp_path / 'a.pcap'
+    pcap.write_bytes(b'')
+    out = tmp_path / 'out'
+    with pytest.raises(PcapRewriteError, match='tcprewrite not found'):
+        rewrite_pcaps_with_tcprewrite(
+            {'subnet': {'198.51.100.0/24': '198.18.0.0/24'}}, [str(pcap)],
+            str(out), tcprewrite=str(tmp_path / 'no-tcprewrite'))
+    assert os.listdir(out) == []
+
+
+def test_addresses_mapped_outside_a_subnet_get_host_rules():
+    from supportutils_scrub.pcap_rewrite import _host_pairs
+    pairs = _host_pairs({'203.0.113.5': '198.18.1.5', '198.51.100.7': '198.18.0.7',
+                         '2001:db8::1': '2001:db8::2'},
+                        [('198.51.100.0/24', '198.18.0.0/24')])
+    assert pairs == [('203.0.113.5/32', '198.18.1.5/32')]
+
+
 def test_relative_mapping_path_is_saved(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     Translator.save_datasets('rel.json', {})
