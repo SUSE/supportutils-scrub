@@ -39,6 +39,9 @@ def build_trie_pattern(words):
     """Return a regex string matching exactly the given literal words."""
     root = {}
     for word in words:
+        # an empty word would match at every position
+        if not word:
+            continue
         node = root
         for ch in word:
             node = node.setdefault(ch, {})

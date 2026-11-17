@@ -41,11 +41,15 @@ _FORMS = {'hostname': ('host-{}', 'hostname_{}', re.compile(r'^hostname_\d+$')),
 def _known(mappings):
     """Every real name and every pseudonym the mapping holds, lower case."""
     out = set()
-    for sec in (mappings or {}).values():
+    for name, sec in (mappings or {}).items():
         if isinstance(sec, dict):
             for k, v in sec.items():
                 out.add(str(k).lower())
                 out.add(str(v).lower())
+                # dom1 of dom1.aaa is what a DN shows (DC=dom1): a later
+                # dom1.aab would read as the same domain there
+                if name == 'domain':
+                    out.add(str(v).split('.', 1)[0].lower())
     return out
 
 
@@ -175,7 +179,7 @@ def extract_hostnames(report_files, additional_hostnames, mappings, config=None)
     _preserved = preserved_hostnames(config)
     raw = mappings.get('hostname', {})
     hostname_dict = {k: v for k, v in raw.items()
-                     if k.lower() not in _preserved}
+                     if k.strip() and k.lower() not in _preserved}
     names = _Pseudonyms('hostname', raw, mappings)
     all_hostnames = []
 
@@ -194,14 +198,23 @@ def extract_hostnames(report_files, additional_hostnames, mappings, config=None)
 
     all_hostnames.extend(additional_hostnames)
     names.reserve(all_hostnames)
+    # the scrub matches case-insensitively, so WEB01 is the host web01 is
+    known = {k.lower(): v for k, v in hostname_dict.items()}
     for h in all_hostnames:
         # however a name arrived here -- harvested, seeded with --hostname, or
         # carried in from an older mapping file -- a preserved one is never
         # given a mapping, because a mapping is what renames files later.
-        if h.lower() in _preserved:
+        if not h.strip() or h.lower() in _preserved or h.lower() in known:
             continue
-        if h not in hostname_dict:
-            hostname_dict[h] = names.next()
+        # a dotted name shares its short label's pseudonym, so a directory
+        # named by FQDN and the bare host in the text read as one host
+        short = h.split('.', 1)[0]
+        if short != h and _plausible_hostname(short, _preserved):
+            if short.lower() not in known:
+                hostname_dict[short] = known[short.lower()] = names.next()
+            hostname_dict[h] = known[h.lower()] = known[short.lower()]
+        else:
+            hostname_dict[h] = known[h.lower()] = names.next()
     return hostname_dict
 
 
@@ -262,6 +275,8 @@ def extract_hostnames_from_adopted_paths(root, config=None):
 
 def extract_usernames(report_files, additional_usernames, mappings):
     username_dict = mappings.get('user', {})
+    for k in [k for k in username_dict if not k.strip()]:
+        del username_dict[k]
     names = _Pseudonyms('user', username_dict, mappings)
     all_usernames = []
 
@@ -276,8 +291,10 @@ def extract_usernames(report_files, additional_usernames, mappings):
 
     all_usernames.extend(additional_usernames)
     names.reserve(all_usernames)
+    known = {k.lower() for k in username_dict}
     for u in all_usernames:
-        if u not in username_dict:
+        if u.strip() and u.lower() not in known:
+            known.add(u.lower())
             username_dict[u] = names.next()
     return username_dict
 
