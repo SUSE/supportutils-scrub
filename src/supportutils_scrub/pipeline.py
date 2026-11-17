@@ -7,7 +7,7 @@ import re
 import time
 import logging
 import shutil
-from supportutils_scrub.config import DEFAULT_CONFIG_PATH
+from supportutils_scrub.config import _CANDIDATES as _CONFIG_PATHS
 from supportutils_scrub.ip_scrubber import IPScrubber
 from supportutils_scrub.domain_scrubber import DomainScrubber, is_preserved_domain
 from supportutils_scrub.hostname_scrubber import HostnameScrubber
@@ -25,7 +25,8 @@ def warn_private_ip(config, file=None):
         print("[!] WARNING: Private IP obfuscation is DISABLED.", file=out)
         print("    Only public IP addresses will be obfuscated.", file=out)
         print(f"    To also obfuscate private IPs (10.x, 172.16.x, 192.168.x),", file=out)
-        print(f"    set 'obfuscate_private_ip = yes' in {DEFAULT_CONFIG_PATH}", file=out)
+        # the admin override, never the vendor file under /usr/etc
+        print(f"    set 'obfuscate_private_ip = yes' in {_CONFIG_PATHS[0]}", file=out)
         print(file=out)
 
 
@@ -254,7 +255,9 @@ def extract_hostnames_from_adopted_paths(root, config=None):
 
     for base, dirs, files in os.walk(root):
         fset = set(files) | set(dirs)
-        if any(m in fset for m in _NODE_DIR_MARKERS):
+        # the root is our <name>_scrubbed copy or extraction folder, not a
+        # node dir, even with cib.xml at its top
+        if base != root and any(m in fset for m in _NODE_DIR_MARKERS):
             _add(os.path.basename(base))
         for d in dirs:
             m = _SCC_DIR_RE.match(d)
