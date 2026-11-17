@@ -10,7 +10,9 @@ _SKIP_VALUES = frozenset({
     'chassis serial number', 'system serial number',
     'base board serial number', 'not applicable',
     'not available', 'no asset information', '"not available"',
-    '"no asset information"', '"none"',
+    '"no asset information"', '"none"', 'no dimm', 'no asset tag',
+    'not provided', 'not set', 'not installed', 'not defined', 'undefined',
+    'empty', 'oem', 'o.e.m.', '0123456789', '123456789',
 })
 
 _NULL_UUID_RE = re.compile(r'^0{8}-0{4}-0{4}-0{4}-0{12}$')
@@ -38,7 +40,11 @@ def _is_skip(value: str) -> bool:
         return True
     # Placeholder / non-serial values ("-", ".", "0", "  "): too few alphanumeric
     # characters to be a real identifier, and dangerous to substring-replace.
-    if len(re.sub(r'[^A-Za-z0-9]', '', value)) < _MIN_SERIAL_ALNUM:
+    alnum = re.sub(r'[^A-Za-z0-9]', '', value)
+    if len(alnum) < _MIN_SERIAL_ALNUM:
+        return True
+    # 00000000, FFFFFFFF: a blank field, and a run every UUID and hex dump has
+    if len(set(alnum.lower())) == 1:
         return True
     return False
 
@@ -80,6 +86,9 @@ class SerialScrubber(Scrubber):
         # position) instead of one str.replace full pass per serial. Rebuilt
         # lazily because pre_scan keeps adding entries between scrubs.
         if self._re is None or self._re_size != len(self.serial_dict):
-            self._re = re.compile(build_trie_pattern(self.serial_dict.keys()))
+            trie = build_trie_pattern(self.serial_dict.keys())
+            if not trie:
+                return text
+            self._re = re.compile(r'(?<![A-Za-z0-9])(?:' + trie + r')(?![A-Za-z0-9])')
             self._re_size = len(self.serial_dict)
         return self._re.sub(lambda m: self.serial_dict[m.group(0)], text)
