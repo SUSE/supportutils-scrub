@@ -192,3 +192,20 @@ def test_verify_reads_a_zst_log(tmp_path):
     subprocess.run(['zstd', '-q', '--rm', str(log)], check=True)
     found = verify_scrubbed_folder(str(tmp_path), {'hostname': {'realnode01': 'host-1'}})
     assert any(f['value'] == 'realnode01' for f in found)
+
+
+def test_scrubbed_shapes_are_quiet_and_real_ones_are_not(tmp_path):
+    from supportutils_scrub.verify import verify_scrubbed_folder
+    (tmp_path / 'ok.txt').write_text(
+        "query: 9.0.16.198.in-addr.arpa IN PTR\n"
+        "corosync token: 3000\n"
+        "url /product/?credentials=SCCcredentials\n"
+        "-----BEGIN RSA PRIVATE KEY-----\nSCRUBBED_PRIVKEY_1\n-----END RSA PRIVATE KEY-----\n")
+    (tmp_path / 'bad.txt').write_text(
+        "query: 7.113.0.8.in-addr.arpa IN PTR\n"
+        "api token: Zx9Qw8Er7Ty6\n"
+        "url /x?password=Zx9Qw8Er7Ty6\n"
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAexample\n")
+    found = verify_scrubbed_folder(str(tmp_path), {}, check_allowlist=True, check_patterns=True)
+    assert {f['file'] for f in found} == {'bad.txt'}
+    assert {f['line'] for f in found} == {1, 2, 3, 4}

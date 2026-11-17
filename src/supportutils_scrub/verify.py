@@ -219,7 +219,7 @@ _SECRET_PATTERNS = [
     (re.compile(r'-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'), 'private key'),
     (re.compile(r'AKIA[0-9A-Z]{16}'), 'AWS access key'),
     (re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+'), 'JWT token'),
-    (re.compile(rf'(?i)(?<![\w.-])["\']?{_SECRET_NAME}["\']?\s*(?P<sep>[:=])\s*{_SECRET_VALUE}'),
+    (re.compile(rf'(?i)(?<![\w.-])["\']?(?P<name>{_SECRET_NAME})["\']?\s*(?P<sep>[:=])\s*{_SECRET_VALUE}'),
      'password value'),
     (re.compile(rf'(?i)<{_SECRET_NAME}>(?P<u>[^<\n]+)</'), 'password value'),
     (re.compile(rf'(?i)name\s*=\s*(["\']){_SECRET_NAME}\1[^>]*?value\s*=\s*(["\'])(?P<u>[^"\'<>]*)\2'),
@@ -258,6 +258,13 @@ def _find_secrets(line):
         for m in pat.finditer(line):
             val = _secret_value(m)
             if val is not None and not _is_real_secret(val, m.groupdict().get('sep')):
+                continue
+            name = (m.groupdict().get('name') or '').lower()
+            # corosync "token: 3000" is a timeout; zypper's ?credentials=NAME
+            # names a credentials file
+            if name.endswith('token') and val and val.strip('"\'').isdigit():
+                continue
+            if name == 'credentials' and m.start() and line[m.start() - 1] in '?&':
                 continue
             yield label, m.group(0).strip()[:80]
 
@@ -622,6 +629,7 @@ def _scan_one_file(fpath_fname, scan_ctx):
     check_mac = scan_ctx['check_allowlist'] and scan_ctx['check_mac'] \
         and fname not in MACScrubber.skip_files
     try:
+        pem_header = None
         with _open(fpath, 'rt', encoding='utf-8', errors='ignore') as f:
             for lineno, line in enumerate(f, 1):
 
@@ -632,6 +640,10 @@ def _scan_one_file(fpath_fname, scan_ctx):
                     for m in _IP_RE.finditer(line):
                         ip_str = m.group(1)
                         if _is_safe_ipv4(ip_str, scan_ctx['safe_nets']):
+                            continue
+                        if line[m.end():m.end() + 13].lower() == '.in-addr.arpa' and \
+                                _is_safe_ipv4('.'.join(reversed(ip_str.split('.'))),
+                                              scan_ctx['safe_nets']):
                             continue
                         if _looks_like_version_context(line, m.start()):
                             continue
@@ -663,10 +675,19 @@ def _scan_one_file(fpath_fname, scan_ctx):
                                 continue
                             add('Kerberos principal', m.group(0))
 
+                    # a key header is a leak only if the body under it was not replaced
+                    if pem_header:
+                        if not is_pseudonym(line.strip()):
+                            file_findings.append(pem_header)
+                        pem_header = None
                     low = line.lower()
                     if any(h in low for h in _SECRET_HINTS):
                         for label, snippet in _find_secrets(line):
-                            add(label, snippet)
+                            if label == 'private key':
+                                pem_header = {'file': rel, 'line': lineno,
+                                              'category': label, 'value': snippet}
+                            else:
+                                add(label, snippet)
 
                     if 'asic' in line and 'uthorization' in line:
                         for m in _BASIC_CRED_RE.finditer(line):
@@ -684,6 +705,8 @@ def _scan_one_file(fpath_fname, scan_ctx):
                         if token_low in line_lower:
                             add('system identity', token)
 
+        if pem_header:
+            file_findings.append(pem_header)
     except Exception as e:
         # a file verify cannot read to the end is not a file it has verified
         add('unreadable file', f'{type(e).__name__}: {e}'[:80])
