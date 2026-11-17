@@ -1,5 +1,6 @@
 # config_reader.py
 
+import re
 import sys
 from supportutils_scrub.scrub_config import ScrubConfig
 
@@ -17,12 +18,19 @@ class ConfigReader:
 
         try:
             with open(config_path, "r") as config_file:
-                for line in config_file:
+                for n, line in enumerate(config_file, 1):
                     line = line.strip()
                     if not line or line.startswith('#'):
                         continue
-                    key, value = line.split('=', 1)
-                    raw[key.strip()] = value.strip()
+                    if line.startswith('[') and line.endswith(']'):
+                        continue
+                    key, eq, value = line.partition('=')
+                    if not eq or not key.strip():
+                        print(f"[!] {config_path}:{n}: not 'key = value', ignored: {line}",
+                              file=sys.stderr)
+                        continue
+                    # inline comment: "obfuscate_domain = yes   # keep on"
+                    raw[key.strip()] = re.split(r'\s+#', value, 1)[0].strip()
 
         except FileNotFoundError:
             print(f"[!] Configuration file not found: {config_path}.", file=sys.stderr)

@@ -1,10 +1,19 @@
 # scrub_config.py
 
 import inspect
+import sys
+
+_TRUE = {'yes', 'true', 'on', '1'}
+_FALSE = {'no', 'false', 'off', '0'}
 
 
 def _yes(val):
-    return str(val).strip().lower() == 'yes'
+    v = str(val).strip().lower()
+    if v in _TRUE:
+        return True
+    if v in _FALSE:
+        return False
+    return None
 
 
 class ScrubConfig:
@@ -72,7 +81,12 @@ class ScrubConfig:
         kwargs = {}
         for key, val in d.items():
             if key in bool_fields:
-                kwargs[key] = _yes(val)
+                b = _yes(val)
+                if b is None:
+                    print(f"[!] Config: '{key} = {val}' is not yes/no; keeping the default",
+                          file=sys.stderr)
+                else:
+                    kwargs[key] = b
             elif key == 'default_infer_prefixlen':
                 kwargs[key] = int(val)
             elif key in valid:

@@ -44,13 +44,16 @@ def print_footer(file=None):
 
 
 def parse_args():
+    # allow_abbrev=False: a prefix such as --host would otherwise reach the
+    # audit log verbatim, since its redaction matches full option names
     parser = argparse.ArgumentParser(
-        description="Obfuscate SUSE supportconfig archives by masking sensitive data."
+        description="Obfuscate SUSE supportconfig archives by masking sensitive data.",
+        allow_abbrev=False,
     )
 
     parser.add_argument("supportconfig_path", nargs="*", help="Path(s) to .txz/.tgz archive(s), a folder, a plain file, or '-' for stdin. Multiple archives are processed sequentially with shared mappings.")
-    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH,
-                        help="Path to config file (defaults provided)")
+    parser.add_argument("--config", default=None,
+                        help=f"Path to config file (default: {DEFAULT_CONFIG_PATH})")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
     parser.add_argument("--mappings", help="JSON or encrypted *.json.enc mapping file from a prior run. Prompts for passphrase when the file is encrypted.")
@@ -167,6 +170,9 @@ def main():
     verbose_flag = args.verbose
     logger = SupportutilsScrubLogger(log_level="verbose" if verbose_flag else "normal")
 
+    if args.config and not os.path.isfile(args.config):
+        print(f"[!] Configuration file not found: {args.config}", file=sys.stderr)
+        sys.exit(2)
     _early_config_reader = ConfigReader(DEFAULT_CONFIG_PATH)
     _early_config = _early_config_reader.read_config(args.config)
     args.secure_tmp       = args.secure_tmp       or _early_config.secure_tmp

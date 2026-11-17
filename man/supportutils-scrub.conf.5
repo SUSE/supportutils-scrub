@@ -9,7 +9,11 @@ supportutils-scrub.conf \- Configuration file for supportutils-scrub
 The configuration file is typically located at \fB/etc/supportutils-scrub/supportutils-scrub.conf\fR, but an alternative path can be specified when running the \fBsupportutils-scrub\fR command.
 
 .SH CONFIGURATION OPTIONS
-Each configuration option is specified as a key-value pair in the format \fBkey = value\fR. Lines beginning with \fB#\fR are treated as comments and ignored.
+Each configuration option is specified as a key-value pair in the format \fBkey = value\fR. Lines beginning with \fB#\fR are treated as comments and ignored, as is a \fB#\fR preceded by whitespace and everything after it. Section headers such as \fB[main]\fR are ignored; any other line without \fB=\fR is reported and skipped.
+
+Boolean options accept \fIyes\fR/\fIno\fR, \fItrue\fR/\fIfalse\fR, \fIon\fR/\fIoff\fR or \fI1\fR/\fI0\fR, in any case. An unrecognised value is reported and the option keeps its default.
+
+A configuration file given with \fB\-\-config\fR must exist; when the default file is missing the built-in defaults are used.
 
 .TP
 .B obfuscate_private_ip
@@ -86,7 +90,7 @@ Directory where mapping files, audit logs, and reports are written.
 Enables or disables verbose output during the obfuscation process. When enabled, more detailed logging information is provided.
 .PD 0
 .IP * 2
-\fBValues\fR: \fItrue\fR or \fIfalse\fR (default: true)
+\fBValues\fR: \fIyes\fR or \fIno\fR (default: yes)
 .PD
 .TP
 .B log_level
