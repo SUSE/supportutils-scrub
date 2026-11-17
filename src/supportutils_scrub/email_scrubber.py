@@ -1,12 +1,13 @@
 # email_scrubber.py
 import re
-from supportutils_scrub.scrubber import Scrubber
+from supportutils_scrub.scrubber import Scrubber, is_pseudonym
 from supportutils_scrub.domain_scrubber import is_preserved_domain
 
 EMAIL_RE = re.compile(
     r'(?<![A-Za-z0-9._%+-])'
-    r'([A-Za-z0-9][A-Za-z0-9._%+-]*[A-Za-z0-9]@[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,})'
-    r'(?![A-Za-z0-9._%+-])'
+    r'([A-Za-z0-9](?:[A-Za-z0-9._%+-]*[A-Za-z0-9])?@[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,})'
+    # A '.' ending the sentence is not part of the address.
+    r'(?![A-Za-z0-9_%+-]|\.[A-Za-z0-9])'
 )
 
 _SKIP_SUFFIXES = (
@@ -20,12 +21,11 @@ _SAFE_DOMAINS = {
     'localhost', 'localhost.localdomain', 'localdomain',
 }
 
-# Local parts that are already a pseudonym. URL userinfo is scrubbed earlier in
-# the chain, and "SCRUBBED_LOGIN_1@repo.example.com" then matches EMAIL_RE
-# exactly — without this guard the address would be re-scrubbed as a whole,
-# collapsing a login and the host it authenticates against into one value and
-# taking the host out of the domain scrubber's hands.
-_SCRUBBED_LOCAL_PREFIXES = ('SCRUBBED_', 'scrubbed_', 'email_')
+# A local part that is already a pseudonym is left alone. URL userinfo is
+# scrubbed earlier in the chain, and "SCRUBBED_LOGIN_1@repo.example.com" then
+# matches EMAIL_RE exactly — re-scrubbing it as a whole would collapse a login
+# and the host it authenticates against into one value and take the host out
+# of the domain scrubber's hands.
 
 
 class EmailScrubber(Scrubber):
@@ -63,9 +63,10 @@ class EmailScrubber(Scrubber):
             email = m.group(1)
             if any(email.endswith(s) for s in _SKIP_SUFFIXES):
                 return email
-            if email.startswith(_SCRUBBED_LOCAL_PREFIXES):
+            local, _, domain = email.partition('@')
+            if is_pseudonym(email) or is_pseudonym(local):
                 return email
-            domain = email.split('@')[1].lower()
+            domain = domain.lower()
             # SUSE addresses are public: module authors, packagers, the
             # security team. The domain is not scrubbed either.
             if domain in _SAFE_DOMAINS or is_preserved_domain(domain):
