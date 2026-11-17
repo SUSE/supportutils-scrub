@@ -197,7 +197,22 @@ Each real TLD (`.com`, `.net`, `.de`, ...) is mapped to a unique 3-letter sequen
 
 ### PCAP Obfuscation with tcprewrite
 
-Rewrite packet captures using the same subnet-aware mappings used for the logs:
+Pass a capture next to the supportconfig it belongs to and both are scrubbed
+in one run. Inputs can come in any order; the supportconfigs and other text
+inputs go first, then every capture (`.pcap`, `.pcapng`, `.cap`, recognised by
+its content) is rewritten with the mapping the run built:
+
+```bash
+supportutils-scrub scc_myhost_250815_1259.txz network.cap
+# -> scc_host-1_250815_1259_scrubbed.txz  network_scrubbed.cap
+```
+
+The rewritten capture goes next to the input (or to `--output-dir`, or
+`--pcap-out-dir` when given). When a capture cannot be rewritten (`tcprewrite`
+missing, no IPv4 subnet to map) no scrubbed copy is written and the run exits
+with 2.
+
+To rewrite captures later with a saved mapping:
 
 ```bash
 supportutils-scrub \

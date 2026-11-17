@@ -238,6 +238,9 @@ Equivalent explicit form using the \fB\-\-decrypt\-mappings\fR flag.
 
 .SS PCAP Obfuscation
 .TP
+\fBsupportutils-scrub\fR scc_myhost_250815_1259.txz network.cap
+Scrubs the supportconfig, then rewrites the capture with the mapping this run built, as \fInetwork_scrubbed.cap\fR next to it (or in \fB\-\-output\-dir\fR, or \fB\-\-pcap\-out\-dir\fR when given). Captures (pcap or pcapng, recognised by content) may be given in any order among the inputs. A capture that cannot be rewritten (tcprewrite missing, no IPv4 subnet to map) gets no output and the run exits with 2.
+.TP
 \fBsupportutils-scrub\fR \-\-rewrite\-pcap \-\-mappings /var/tmp/obfuscation_mappings_20260223_120000.json \-\-pcap\-in trace.pcap
 Rewrites a single pcap file using existing mappings from a supportconfig obfuscation.
 .TP
