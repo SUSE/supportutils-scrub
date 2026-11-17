@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import sys
@@ -273,3 +274,20 @@ def test_stdin_stops_output_when_a_scrubber_fails(monkeypatch, tmp_path, capsysb
         stdin_mode.run_stdin_mode(_stdin_args(tmp_path), _Logger())
     assert e.value.code == 1
     assert b'203.0.113.7' not in capsysbinary.readouterr().out
+
+
+@pytest.mark.parametrize('order', ['pcap_first', 'pcap_last', 'pcap_alone'])
+def test_a_positional_pcap_goes_to_archive_mode(monkeypatch, tmp_path, conf, order):
+    from supportutils_scrub.modes import archive
+    pcap = tmp_path / 'network.cap'
+    pcap.write_bytes(b'\xd4\xc3\xb2\xa1' + b'\0' * 20)
+    sc = tmp_path / 'scc_node1_260101_1200'
+    sc.mkdir()
+    paths = {'pcap_first': [str(pcap), str(sc)], 'pcap_last': [str(sc), str(pcap)],
+             'pcap_alone': [str(pcap)]}[order]
+    seen = []
+    monkeypatch.setattr(archive, 'run_archive_mode',
+                        lambda p, *a, **k: (seen.append(p), sys.exit(0)))
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(''))
+    assert _main(monkeypatch, conf + paths) == 0
+    assert seen == [paths]

@@ -389,7 +389,7 @@ def run_archive_mode(paths, args, logger):
             sys.exit(2)
         try:
             rewrite_pcaps_with_tcprewrite(
-                mappings_for_pcap, args.pcap_in, args.pcap_out_dir,
+                mappings_for_pcap, args.pcap_in, args.pcap_out_dir or '.',
                 tcprewrite=args.tcprewrite_path,
                 print_cmd=args.print_tcprewrite,
                 logger=logger,
@@ -539,9 +539,8 @@ def run_archive_mode(paths, args, logger):
 
 
 def _pcap_out_dir(args, pcap):
-    # cli.py defaults --pcap-out-dir to '.', so '.' reads as "not given"
     given = getattr(args, 'pcap_out_dir', None)
-    if given and given != '.':
+    if given:
         return given
     return getattr(args, 'output_dir', None) or os.path.dirname(os.path.abspath(pcap))
 

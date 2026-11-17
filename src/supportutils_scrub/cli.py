@@ -11,6 +11,7 @@ from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 from supportutils_scrub.audit import get_encryption_passphrase, load_mappings_file
 from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite, PcapRewriteError
 from supportutils_scrub.extractor import is_archive_path
+from supportutils_scrub.pipeline import is_pcap
 
 
 def print_header(file=None):
@@ -66,8 +67,9 @@ def parse_args():
                help="Rewrite one or more pcap files using mappings (IPv4/IPv6 subnet-aware).")
     parser.add_argument("--pcap-in", nargs="+", metavar="PCAP",
                help="Input pcap(s) to rewrite (requires --rewrite-pcap).")
-    parser.add_argument("--pcap-out-dir", default=".", metavar="DIR",
-               help="Directory for rewritten pcaps (default: current dir).")
+    parser.add_argument("--pcap-out-dir", default=None, metavar="DIR",
+               help="Directory for rewritten pcaps (default: current dir for --rewrite-pcap, "
+                    "next to the capture when it is a positional input).")
     parser.add_argument("--print-tcprewrite", action="store_true",
                help="Print the exact tcprewrite commands executed.")
     parser.add_argument("--tcprewrite-path", default="tcprewrite",
@@ -227,7 +229,7 @@ def main():
         mappings = load_mappings_file(args.mappings)
         try:
             rewrite_pcaps_with_tcprewrite(
-                mappings, args.pcap_in, args.pcap_out_dir,
+                mappings, args.pcap_in, args.pcap_out_dir or '.',
                 tcprewrite=args.tcprewrite_path,
                 print_cmd=args.print_tcprewrite,
                 logger=logger,
@@ -240,8 +242,11 @@ def main():
 
     is_stdin = (len(paths) == 0 and not sys.stdin.isatty()) \
                or (len(paths) == 1 and paths[0] == '-')
-    is_folder = len(paths) >= 1 and all(os.path.isdir(p) for p in paths)
-    is_file = (len(paths) == 1
+    # a capture among the inputs is rewritten by archive mode with the run's
+    # mapping, whatever else is given and in whatever order
+    has_pcap = any(os.path.isfile(p) and is_pcap(p) for p in paths)
+    is_folder = not has_pcap and len(paths) >= 1 and all(os.path.isdir(p) for p in paths)
+    is_file = (not has_pcap and len(paths) == 1
                and os.path.isfile(paths[0])
                and not is_archive_path(paths[0]))
 
