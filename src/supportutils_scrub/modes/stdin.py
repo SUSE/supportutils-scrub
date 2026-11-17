@@ -5,7 +5,7 @@ import json
 import time
 from datetime import datetime
 
-from supportutils_scrub.main import SCRIPT_VERSION
+from supportutils_scrub.main import SCRIPT_VERSION, EXIT_ERROR
 from supportutils_scrub.domain_scrubber import DomainScrubber
 from supportutils_scrub.hostname_scrubber import HostnameScrubber
 from supportutils_scrub.username_scrubber import UsernameScrubber
@@ -14,6 +14,8 @@ from supportutils_scrub.auth_scrubber import AuthScrubber
 from supportutils_scrub.password_scrubber import PasswordScrubber
 from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
 from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
+from supportutils_scrub.serial_scrubber import SerialScrubber
+from supportutils_scrub.sid_scrubber import SIDScrubber
 from supportutils_scrub.processor import FileProcessor
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers,
@@ -26,7 +28,8 @@ from supportutils_scrub.audit import (
 
 
 def _build_processor(config, ip_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
-                     domain_dict, username_dict, hostname_dict, mappings, logger):
+                     domain_dict, username_dict, hostname_dict, mappings, logger,
+                     serial_scrubber, sid_scrubber):
     email_scrubber = EmailScrubber(mappings=mappings)
     username_scrubber = UsernameScrubber(username_dict)
     scrubbers = [
@@ -42,6 +45,7 @@ def _build_processor(config, ip_scrubber, mac_scrubber, ipv6_scrubber, keyword_s
         LdapDnScrubber(mappings=mappings),
         username_scrubber,
         PasswordScrubber(mappings=mappings), CloudTokenScrubber(mappings=mappings),
+        serial_scrubber, sid_scrubber,
     ]
     scrubbers = [s for s in scrubbers if s is not None]
     try:
@@ -49,6 +53,62 @@ def _build_processor(config, ip_scrubber, mac_scrubber, ipv6_scrubber, keyword_s
     except Exception as e:
         logger.error(f"Error initializing FileProcessor: {e}")
         sys.exit(1)
+
+
+_STREAM_BOOTSTRAP      = 500
+_STREAM_BOOTSTRAP_SECS = 3.0
+
+
+def _split_lines(buf):
+    parts = buf.split(b'\n')
+    return [p + b'\n' for p in parts[:-1]], parts[-1]
+
+
+def _decode(lines):
+    return b''.join(lines).decode('utf-8', 'surrogateescape')
+
+
+def _emit(text):
+    out = sys.stdout.buffer
+    out.write(text.encode('utf-8', 'surrogateescape'))
+    out.flush()
+
+
+def _drop_stdout():
+    # the reader went away (| head): send what is still buffered nowhere,
+    # so interpreter shutdown does not fail flushing into the closed pipe
+    try:
+        fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(fd, sys.stdout.fileno())
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+def _prepare(args, config, text, mappings, ip_scrubber, mac_scrubber,
+             ipv6_scrubber, keyword_scrubber, logger):
+    additional_domains   = list(re.split(r'[,\s;]+', args.domain)   if args.domain   else [])
+    additional_domains   += DomainScrubber.extract_domains_from_text(text)
+    additional_usernames = list(re.split(r'[,\s;]+', args.username) if args.username else [])
+    additional_usernames += UsernameScrubber.extract_usernames_from_text(text)
+    additional_hostnames = list(re.split(r'[,\s;]+', args.hostname) if args.hostname else [])
+    additional_hostnames += HostnameScrubber.extract_hostnames_from_text(text)
+
+    domain_dict, tld_map  = extract_and_map_domains([], additional_domains,   mappings)
+    username_dict         = extract_usernames([],       additional_usernames,  mappings)
+    hostname_dict         = extract_hostnames([],       additional_hostnames,  mappings,
+                                              config=config)
+    # stdin has no file name to pick the serial and SID sources by, so
+    # learn from the buffered text itself
+    serial_scrubber = SerialScrubber(mappings=mappings)
+    serial_scrubber.pre_scan(text)
+    sid_scrubber = SIDScrubber(mappings=mappings)
+    sid_scrubber.pre_scan(text)
+
+    file_processor = _build_processor(
+        config, ip_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
+        domain_dict, username_dict, hostname_dict, mappings, logger,
+        serial_scrubber, sid_scrubber)
+    return file_processor, tld_map
 
 
 def run_stdin_mode(args, logger):
@@ -70,78 +130,75 @@ def run_stdin_mode(args, logger):
     if keyword_scrubber is None and (args.keywords or args.keyword_file):
         print("[!] Keyword obfuscation disabled (no keywords loaded)", file=err)
 
-    _STREAM_BOOTSTRAP      = 500
-    _STREAM_BOOTSTRAP_SECS = 3.0
+    def prepare(text):
+        return _prepare(args, config, text, mappings, ip_scrubber, mac_scrubber,
+                        ipv6_scrubber, keyword_scrubber, logger)
 
-    if getattr(args, 'stream', False):
-        import select
-        print(f"[i] Stream mode: collecting bootstrap (up to {_STREAM_BOOTSTRAP} lines "
-              f"or {_STREAM_BOOTSTRAP_SECS:.0f}s)...", file=err)
-        bootstrap_lines = []
-        deadline = time.time() + _STREAM_BOOTSTRAP_SECS
-        while len(bootstrap_lines) < _STREAM_BOOTSTRAP:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                break
-            ready, _, _ = select.select([sys.stdin], [], [], remaining)
-            if not ready:
-                break
-            line = sys.stdin.readline()
-            if not line:
-                break
-            bootstrap_lines.append(line)
-        bootstrap_text = ''.join(bootstrap_lines)
+    # Fakes already written to stdout can only be reversed with the mapping,
+    # so it is saved however the input ends: EOF, Ctrl-C or a closed pipe.
+    file_processor = None
+    interrupted = False
+    try:
+        if getattr(args, 'stream', False):
+            import select
+            print(f"[i] Stream mode: collecting bootstrap (up to {_STREAM_BOOTSTRAP} lines "
+                  f"or {_STREAM_BOOTSTRAP_SECS:.0f}s)...", file=err)
+            # os.read on the fd, never sys.stdin: a buffered readline would
+            # pull the whole burst into Python's buffer and select() on the
+            # fd would then see nothing left to read
+            fd = sys.stdin.fileno()
+            bootstrap_lines, pending, eof = [], b'', False
+            deadline = time.time() + _STREAM_BOOTSTRAP_SECS
+            while len(bootstrap_lines) < _STREAM_BOOTSTRAP:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                ready, _, _ = select.select([fd], [], [], remaining)
+                if not ready:
+                    break
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    eof = True
+                    break
+                lines, pending = _split_lines(pending + chunk)
+                bootstrap_lines += lines
+            if eof and pending:
+                bootstrap_lines.append(pending)
+                pending = b''
+            bootstrap_text = _decode(bootstrap_lines)
 
-        additional_domains   = list(re.split(r'[,\s;]+', args.domain)    if args.domain    else [])
-        additional_domains   += DomainScrubber.extract_domains_from_text(bootstrap_text)
-        additional_usernames = list(re.split(r'[,\s;]+', args.username)  if args.username  else [])
-        additional_usernames += UsernameScrubber.extract_usernames_from_text(bootstrap_text)
-        additional_hostnames = list(re.split(r'[,\s;]+', args.hostname)  if args.hostname  else [])
-        additional_hostnames += HostnameScrubber.extract_hostnames_from_text(bootstrap_text)
+            file_processor, tld_map = prepare(bootstrap_text)
+            _emit(file_processor.process_text(bootstrap_text, logger, verbose_flag))
 
-        domain_dict, tld_map  = extract_and_map_domains([], additional_domains,   mappings)
-        username_dict         = extract_usernames([],       additional_usernames,  mappings)
-        hostname_dict         = extract_hostnames([],       additional_hostnames,  mappings,
-                                                  config=config)
+            while not eof:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                lines, pending = _split_lines(pending + chunk)
+                if lines:
+                    _emit(file_processor.process_text(_decode(lines), logger, False))
+            if pending:
+                _emit(file_processor.process_text(_decode([pending]), logger, False))
 
-        file_processor = _build_processor(
-            config, ip_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
-            domain_dict, username_dict, hostname_dict, mappings, logger)
+        else:
+            text = sys.stdin.buffer.read().decode('utf-8', 'surrogateescape')
+            file_processor, tld_map = prepare(text)
+            _emit(file_processor.process_text(text, logger, verbose_flag))
+    except KeyboardInterrupt:
+        interrupted = True
+    except BrokenPipeError:
+        _drop_stdout()
+    finally:
+        if file_processor is not None:
+            _finish(args, file_processor, tld_map, keyword_scrubber,
+                    dataset_path, audit_path, verbose_flag)
+    if interrupted:
+        sys.exit(130)
 
-        scrubbed_bootstrap = file_processor.process_text(bootstrap_text, logger, verbose_flag)
-        sys.stdout.write(scrubbed_bootstrap)
-        sys.stdout.flush()
 
-        while True:
-            line = sys.stdin.readline()
-            if not line:
-                break
-            scrubbed_line = file_processor.process_text(line, logger, False)
-            sys.stdout.write(scrubbed_line)
-            sys.stdout.flush()
-
-    else:
-        text = sys.stdin.read()
-
-        additional_domains   = list(re.split(r'[,\s;]+', args.domain)   if args.domain   else [])
-        additional_domains   += DomainScrubber.extract_domains_from_text(text)
-        additional_usernames = list(re.split(r'[,\s;]+', args.username) if args.username else [])
-        additional_usernames += UsernameScrubber.extract_usernames_from_text(text)
-        additional_hostnames = list(re.split(r'[,\s;]+', args.hostname) if args.hostname else [])
-        additional_hostnames += HostnameScrubber.extract_hostnames_from_text(text)
-
-        domain_dict, tld_map  = extract_and_map_domains([], additional_domains,   mappings)
-        username_dict         = extract_usernames([],       additional_usernames,  mappings)
-        hostname_dict         = extract_hostnames([],       additional_hostnames,  mappings,
-                                                  config=config)
-
-        file_processor = _build_processor(
-            config, ip_scrubber, mac_scrubber, ipv6_scrubber, keyword_scrubber,
-            domain_dict, username_dict, hostname_dict, mappings, logger)
-
-        scrubbed_text = file_processor.process_text(text, logger, verbose_flag)
-        sys.stdout.write(scrubbed_text)
-
+def _finish(args, file_processor, tld_map, keyword_scrubber,
+            dataset_path, audit_path, verbose_flag):
+    err = sys.stderr
     ip_s = file_processor['ip']
     ipv6_s = file_processor['ipv6']
 
@@ -154,7 +211,11 @@ def run_stdin_mode(args, logger):
     if _det.current_key():
         dataset_dict[_det.KEY_FIELD] = _det.current_key()
 
-    saved_mapping_path = save_mappings(args, dataset_path, dataset_dict)
+    try:
+        saved_mapping_path = save_mappings(args, dataset_path, dataset_dict)
+    except Exception as e:
+        print(f"[!] Mapping file not saved: {e}", file=err)
+        sys.exit(EXIT_ERROR)
 
     if verbose_flag:
         print("\n--- Obfuscated Mapping Preview ---", file=err)

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from types import SimpleNamespace
@@ -136,6 +137,82 @@ def test_addresses_mapped_outside_a_subnet_get_host_rules():
                          '2001:db8::1': '2001:db8::2'},
                         [('198.51.100.0/24', '198.18.0.0/24')])
     assert pairs == [('203.0.113.5/32', '198.18.1.5/32')]
+
+
+class _Logger:
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+def _stdin_args(tmp_path, mapping=None, **kw):
+    m = None
+    if mapping is not None:
+        m = tmp_path / 'in.json'
+        m.write_text(json.dumps(mapping))
+    ns = SimpleNamespace(
+        verbose=False, mappings=str(m) if m else None, keywords=None,
+        keyword_file=None, domain=None, username=None, hostname=None,
+        no_mappings=False, _enc_passphrase=None, stream=False,
+        _preloaded_config=ScrubConfig(dataset_dir=str(tmp_path / 'ds')))
+    for k, v in kw.items():
+        setattr(ns, k, v)
+    return ns
+
+
+def _feed(monkeypatch, data, close=True):
+    r, w = os.pipe()
+    os.write(w, data)
+    if close:
+        os.close(w)
+    monkeypatch.setattr(sys, 'stdin', os.fdopen(r, 'r'))
+    return w
+
+
+def _saved(tmp_path):
+    import glob
+    [p] = glob.glob(str(tmp_path / 'ds' / '*mappings.json'))
+    return json.load(open(p))
+
+
+def test_stdin_applies_and_keeps_sid_mapping(monkeypatch, tmp_path, capsysbinary):
+    from supportutils_scrub.modes import stdin as stdin_mode
+    _feed(monkeypatch, b'SAPSYSTEMNAME = QAB\nbad byte \xff here\n')
+    stdin_mode.run_stdin_mode(_stdin_args(tmp_path, {'sid': {'QAB': 'HA1'}}), _Logger())
+    out = capsysbinary.readouterr().out
+    assert b'SAPSYSTEMNAME = HA1' in out and b'\xff' in out
+    assert _saved(tmp_path)['sid'] == {'QAB': 'HA1'}
+
+
+def test_stream_bootstrap_gets_the_whole_burst(monkeypatch, tmp_path, capsysbinary):
+    import threading
+    from supportutils_scrub.modes import stdin as stdin_mode
+    monkeypatch.setattr(stdin_mode, '_STREAM_BOOTSTRAP_SECS', 0.2)
+    seen = []
+    orig = stdin_mode._prepare
+    monkeypatch.setattr(stdin_mode, '_prepare',
+                        lambda a, c, text, *r: seen.append(text) or orig(a, c, text, *r))
+    w = _feed(monkeypatch, b'one\ntwo\nthree\n', close=False)
+    threading.Timer(0.6, os.close, [w]).start()
+    stdin_mode.run_stdin_mode(_stdin_args(tmp_path, stream=True), _Logger())
+    assert seen == ['one\ntwo\nthree\n']
+
+
+@pytest.mark.parametrize('exc,code', [(KeyboardInterrupt, 130), (BrokenPipeError, None)])
+def test_interrupted_stdin_still_saves_the_mapping(monkeypatch, tmp_path, exc, code,
+                                                   capsysbinary):
+    from supportutils_scrub.modes import stdin as stdin_mode
+
+    def stop(text):
+        raise exc
+    monkeypatch.setattr(stdin_mode, '_emit', stop)
+    _feed(monkeypatch, b'SAPSYSTEMNAME = QAB\n')
+    if code:
+        with pytest.raises(SystemExit) as e:
+            stdin_mode.run_stdin_mode(_stdin_args(tmp_path), _Logger())
+        assert e.value.code == code
+    else:
+        stdin_mode.run_stdin_mode(_stdin_args(tmp_path), _Logger())
+    assert 'QAB' in _saved(tmp_path)['sid']
 
 
 def test_relative_mapping_path_is_saved(tmp_path, monkeypatch):

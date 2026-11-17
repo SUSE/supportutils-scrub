@@ -104,7 +104,9 @@ def parse_args():
     parser.add_argument("--stream", action="store_true",
         help="Streaming stdin mode: buffer the first 500 lines to build entity maps, "
              "then scrub and flush each subsequent line immediately. "
-             "Use for live pipes such as: journalctl -f | supportutils-scrub --stream")
+             "Use for live pipes such as: journalctl -f | supportutils-scrub --stream. "
+             "Hostnames, domains, users and SIDs first seen after the bootstrap "
+             "window are not learned; declare them with --hostname/--domain/--username.")
     parser.add_argument("--preload", action="store_true",
         help="Learn names (hostnames, domains, users, serials, SIDs) from EVERY "
              "input, write the mapping (in place with --mappings), and scrub "
