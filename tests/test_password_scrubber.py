@@ -18,11 +18,10 @@ class TestPasswordScrub:
         result = s.scrub('passwd = "longpassword"')
         assert "longpassword" not in result
 
-    def test_short_password_not_matched(self):
+    def test_short_password_matched(self):
         s = _make()
         result = s.scrub("password=short")
-        # "short" is < 8 chars, regex requires 8+
-        assert "short" in result
+        assert "short" not in result
 
     def test_already_scrubbed_skipped(self):
         s = _make()
