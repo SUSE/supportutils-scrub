@@ -270,3 +270,11 @@ def test_lone_zst_log_is_scrubbed_not_refused(tmp_path):
     [out] = [p for p in tmp_path.iterdir() if "_scrubbed" in p.name]
     body = subprocess.run(["zstd", "-dc", str(out)], capture_output=True).stdout
     assert b"client" in body and b"8.8.8.8" not in body
+
+
+def test_shipped_keyword_file_path_missing_is_silent(capsys):
+    from types import SimpleNamespace
+    from supportutils_scrub.pipeline import _keyword_file
+    from supportutils_scrub.scrub_config import ScrubConfig
+    assert _keyword_file(SimpleNamespace(keyword_file=None), ScrubConfig()) is None
+    assert capsys.readouterr().err == ''

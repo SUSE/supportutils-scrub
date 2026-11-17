@@ -8,6 +8,7 @@ import time
 import logging
 import shutil
 from supportutils_scrub.config import _CANDIDATES as _CONFIG_PATHS
+from supportutils_scrub.scrub_config import ScrubConfig
 from supportutils_scrub.ip_scrubber import IPScrubber
 from supportutils_scrub.domain_scrubber import DomainScrubber, is_preserved_domain
 from supportutils_scrub.hostname_scrubber import HostnameScrubber
@@ -356,8 +357,10 @@ def _keyword_file(args, config):
         return None
     if os.path.isfile(path):
         return path
-    # the shipped config enables this with a path most hosts do not have,
-    # so the warning stays off stdout (--quiet prints only the output path)
+    # the shipped default path is opt-in: an admin drops a file there to use
+    # it, so its absence is normal and not worth a line on every run
+    if path == ScrubConfig().key_words_file:
+        return None
     print(f"[!] key_words_file not found: {path} (use_key_words_file is set)",
           file=sys.stderr)
     return None
