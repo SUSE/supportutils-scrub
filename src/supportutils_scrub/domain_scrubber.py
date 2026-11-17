@@ -12,7 +12,7 @@ LABEL = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
 # (_ldap._tcp.example.com) starts with one, so its parent is still learned.
 DOMAIN_RE = re.compile(rf"(?<![A-Za-z0-9_-])({LABEL}(?:\.{LABEL})+)(?![A-Za-z0-9-])", re.IGNORECASE)
 
-_DC_RE = re.compile(r'(DC=[A-Za-z0-9-]+(?:,DC=[A-Za-z0-9-]+)+)', re.IGNORECASE)
+_DC_RE = re.compile(r'(DC=[A-Za-z0-9-]+(?:,\s*DC=[A-Za-z0-9-]+)+)', re.IGNORECASE)
 
 _SINGLE_LABEL_BAN = {
     "local", "localhost", "internal", "intranet", "corp", "lan", "home",
@@ -41,6 +41,21 @@ VENDOR_DOMAINS = frozenset({"suse.com", "suse.de", "suse.cz", "suse.net",
 # .it, .ch, .is, .pl, .md) stay learnable, because renaming a README is cosmetic
 # while missing a real domain is a leak. See _is_valid_domain.
 _EXTENSION_TLDS = frozenset({"so", "la", "py"})
+
+# Second-level registries: example.co.uk is the customer's domain, co.uk is
+# everybody's, and learning it would rewrite every unrelated *.co.uk.
+_PUBLIC_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk", "ltd.uk", "plc.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp",
+    "com.br", "net.br", "org.br", "gov.br",
+    "co.nz", "net.nz", "org.nz", "govt.nz",
+    "co.za", "org.za", "gov.za",
+    "co.in", "net.in", "org.in", "gov.in", "ac.in",
+    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn",
+    "com.mx", "com.ar", "com.tr", "co.kr", "or.kr", "com.sg", "com.hk",
+    "com.tw", "co.il", "co.id", "com.my", "com.ph", "co.th",
+})
 
 _VALID_TLDS = frozenset({
     "com", "org", "net", "edu", "gov", "mil", "int", "arpa",
@@ -101,7 +116,7 @@ def _is_valid_domain(d: str, trusted: bool = False) -> bool:
     d = _norm(d)
     if "." not in d:
         return False
-    if d in _SINGLE_LABEL_BAN:
+    if d in _SINGLE_LABEL_BAN or d in _PUBLIC_SUFFIXES:
         return False
     if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", d):
         return False
@@ -170,8 +185,11 @@ class DomainScrubber(Scrubber):
         for real, fake in self.domain_dict.items():
             self._dc_dict[_domain_to_dc(real).lower()] = _domain_to_dc(fake)
         if self._dc_dict:
-            dc_alts = "|".join(re.escape(k) for k in sorted(self._dc_dict, key=len, reverse=True))
-            self._dc_re = re.compile(rf'(?:{dc_alts})', re.IGNORECASE)
+            # "DC=example, DC=com" is the same DN; the lookahead keeps
+            # DC=example,DC=community from matching as DC=example,DC=com
+            dc_alts = "|".join(re.escape(k).replace(",", r",\s*")
+                               for k in sorted(self._dc_dict, key=len, reverse=True))
+            self._dc_re = re.compile(rf'(?:{dc_alts})(?![A-Za-z0-9-])', re.IGNORECASE)
         else:
             self._dc_re = None
 
@@ -219,7 +237,8 @@ class DomainScrubber(Scrubber):
         if 'dc=' in text or 'DC=' in text or 'Dc=' in text or 'dC=' in text:
             if self._dc_re:
                 text = self._dc_re.sub(
-                    lambda m: self._dc_dict.get(m.group(0).lower(), m.group(0)),
+                    lambda m: self._dc_dict.get(re.sub(r',\s*', ',', m.group(0)).lower(),
+                                                m.group(0)),
                     text
                 )
 
@@ -302,6 +321,8 @@ class DomainScrubber(Scrubber):
             return
         labels = d.split(".")
         for i in range(len(labels) - 1):
-            out.add(".".join(labels[i:]))
+            parent = ".".join(labels[i:])
+            if parent not in _PUBLIC_SUFFIXES:
+                out.add(parent)
 
 
