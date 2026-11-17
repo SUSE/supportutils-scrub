@@ -36,19 +36,7 @@ import tempfile
 from concurrent.futures import ProcessPoolExecutor
 
 from supportutils_scrub.ip_scrubber import IPScrubber
-from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
-from supportutils_scrub.mac_scrubber import MACScrubber
-from supportutils_scrub.keyword_scrubber import KeywordScrubber
-from supportutils_scrub.hostname_scrubber import HostnameScrubber
-from supportutils_scrub.domain_scrubber import DomainScrubber
-from supportutils_scrub.username_scrubber import UsernameScrubber
-from supportutils_scrub.email_scrubber import EmailScrubber
-from supportutils_scrub.auth_scrubber import AuthScrubber
-from supportutils_scrub.password_scrubber import PasswordScrubber
-from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
-from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
-from supportutils_scrub.serial_scrubber import SerialScrubber
-from supportutils_scrub.sid_scrubber import SIDScrubber
+from supportutils_scrub.pipeline import build_chain, merge_state
 import gzip
 import subprocess
 from supportutils_scrub.processor import (compressed_opener, compression_magic_ok,
@@ -73,56 +61,8 @@ _STAGE_MIN_FREE = 1 << 30          # stop staging below 1 GB free; fall back
 
 
 def _build_chain(frozen, config, deterministic, include_ldap):
-    """Build the full scrubber chain from a frozen mappings dict.
-
-    Order MUST match the serial chain in modes/archive.py and modes/folder.py.
-    """
-    keyword = None
-    if frozen.get('keyword'):
-        keyword = KeywordScrubber(mappings={'keyword': frozen['keyword']})
-        if not keyword.is_loaded():
-            keyword = None
-
-    serial = SerialScrubber(mappings=frozen)
-    serial.serial_dict = dict(frozen.get('serial', {}))
-
-    sid = SIDScrubber(mappings=frozen)
-    sid.sid_dict = dict(frozen.get('sid', {}))
-
-    # Named so the auth scrubber can delegate to them: a login it decodes out
-    # of a Basic header has to land on the same pseudonym as the same identity
-    # written in clear elsewhere in the capture.
-    email = EmailScrubber(mappings=frozen, deterministic=deterministic)
-    username = UsernameScrubber(dict(frozen.get('user', {})))
-    # Ahead of the email scrubber on purpose: in a URL the userinfo and host
-    # together (user@host) match an email address exactly, so if email ran
-    # first it would swallow both and the login would stop being
-    # distinguishable from the host it authenticates against.
-    auth = AuthScrubber(mappings=frozen, deterministic=deterministic,
-                        email_scrubber=email, username_scrubber=username)
-
-    chain = [
-        IPScrubber(config, mappings=frozen),
-        IPv6Scrubber(config, mappings=frozen, deterministic=deterministic),
-        MACScrubber(config, mappings=frozen, deterministic=deterministic),
-        keyword,
-        auth,
-        # Email must run before hostname/domain: once the domain part is
-        # rewritten the address no longer matches EMAIL_RE and the local
-        # part (often firstname.lastname) would survive.
-        email,
-        HostnameScrubber(dict(frozen.get('hostname', {})), config=config),
-        DomainScrubber(dict(frozen.get('domain', {}))),
-    ]
-    if include_ldap:
-        chain.append(LdapDnScrubber(mappings=frozen, deterministic=deterministic))
-    chain += [
-        username,
-        PasswordScrubber(mappings=frozen, deterministic=deterministic),
-        CloudTokenScrubber(mappings=frozen, deterministic=deterministic),
-        serial, sid,
-    ]
-    return [s for s in chain if s is not None]
+    return build_chain(frozen, config, deterministic=deterministic,
+                       include_ldap=include_ldap)
 
 
 # --- IPv4 discovery pre-pass (workers) -------------------------------------
@@ -228,6 +168,7 @@ def _scrub_batch(payload):
 
     hits = {}
     times = []
+    failed = []
     # Per-file output from process_file is noisy when interleaved; silence it.
     devnull = open(os.devnull, 'w')
     saved_stdout = sys.stdout
@@ -236,7 +177,15 @@ def _scrub_batch(payload):
         for path in batch:
             before = {s.name: len(s.mapping) for s in fp.scrubbers}
             t0 = time.perf_counter()
-            fp.process_file(path, logger, verbose)
+            try:
+                ok = fp.process_file(path, logger, verbose)
+            except MemoryError:
+                raise
+            except Exception as e:
+                logger.error(f"Error processing file {path}: {e}")
+                ok = False
+            if ok is False:
+                failed.append(path)
             times.append((os.path.basename(path), time.perf_counter() - t0))
             grew = [name for name, prev in before.items() if len(fp[name].mapping) > prev]
             if grew:
@@ -246,7 +195,7 @@ def _scrub_batch(payload):
         devnull.close()
 
     diffs, extra = _map_diffs(fp, base_keys)
-    return diffs, hits, extra, times
+    return diffs, hits, extra, times, failed
 
 
 def _scrub_chunk(payload):
@@ -259,15 +208,16 @@ def _scrub_chunk(payload):
     with open(path, 'rb') as f:
         f.seek(start)
         data = f.read(end - start)
-    text = data.decode('utf-8', errors='ignore')
+    # surrogateescape: bytes that are not UTF-8 go back out as they came in
+    text = data.decode('utf-8', errors='surrogateescape')
 
     before = {s.name: len(s.mapping) for s in fp.scrubbers}
     scrubbed = fp._scrub_content(text, os.path.basename(path), logger)
     grew = [name for name, prev in before.items() if len(fp[name].mapping) > prev]
 
     part_path = f"{path}.scrubpart{idx:05d}"
-    with open(part_path, 'w', encoding='utf-8') as pf:
-        pf.write(scrubbed)
+    with open(part_path, 'wb') as pf:
+        pf.write(scrubbed.encode('utf-8', errors='surrogateescape'))
 
     diffs, extra = _map_diffs(fp, base_keys)
     return (path, idx, part_path, scrubbed != text, diffs, extra, grew,
@@ -320,10 +270,11 @@ def _assemble_chunks(path, parts, changed):
     try:
         if changed:
             tmp = path + '.scrubtmp'
-            with open(tmp, 'w', encoding='utf-8') as out:
-                out.write(_SCRUB_INFO_HEADER)
+            # binary: a text-mode read would turn CRLF into LF
+            with open(tmp, 'wb') as out:
+                out.write(_SCRUB_INFO_HEADER.encode('utf-8'))
                 for _, part_path in sorted(parts):
-                    with open(part_path, 'r', encoding='utf-8') as pf:
+                    with open(part_path, 'rb') as pf:
                         shutil.copyfileobj(pf, out)
             os.replace(tmp, path)
     finally:
@@ -496,8 +447,13 @@ def _balanced_batches(files, n):
 
 
 def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
-                      verbose=False, include_ldap=True, decompress=False):
+                      verbose=False, include_ldap=True, decompress=False,
+                      failed=None):
     """Scrub report_files across `jobs` processes.
+
+    failed: an optional list that receives every path left unscrubbed (a
+        file process_file gave up on, a chunk that failed, a staged log that
+        could not be written back); the caller must not ship those.
 
     frozen_seed: a mappings dict pre-populated with the globally-coordinated
         maps (hostname/domain/user/serial/keyword and any --mappings seed for
@@ -571,7 +527,7 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
             frozen[_det.KEY_FIELD] = _det.current_key()
         frozen['ip'] = dict(ip.mapping)
         frozen['subnet'] = dict(ip.subnet_dict)
-        frozen['state'] = dict(ip.state)
+        frozen['state'] = merge_state(frozen_seed.get('state'), ip.state)
         frozen.setdefault('ipv6', dict(frozen_seed.get('ipv6', {})))
         frozen.setdefault('ipv6_subnet', dict(frozen_seed.get('ipv6_subnet', {})))
         frozen.setdefault('mac', dict(frozen_seed.get('mac', {})))
@@ -582,7 +538,9 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
         small_files = [p for p in report_files if p not in big_set]
 
         fd, ctx_path = tempfile.mkstemp(prefix='supportutils-scrub-ctx-', suffix='.pkl')
-        merged = {k: dict(v) for k, v in frozen.items() if isinstance(v, dict)}
+        # det_key and the other plain values travel too
+        merged = {k: dict(v) if isinstance(v, dict) else v for k, v in frozen.items()}
+        unscrubbed = []
         file_hits = {}
         file_times = []
         chunk_times = {}  # path -> summed chunk seconds
@@ -611,10 +569,17 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
             # overhead is a dict diff; the context is cached per worker.
             futures = []
             for batch in _balanced_batches(small_files, jobs * _BATCHES_PER_WORKER):
-                futures.append(ex.submit(_scrub_batch, (ctx_path, batch)))
+                futures.append((batch, ex.submit(_scrub_batch, (ctx_path, batch))))
 
-            for fut in futures:
-                diffs, hits, extra, times = fut.result()
+            for batch, fut in futures:
+                try:
+                    diffs, hits, extra, times, bad = fut.result()
+                except Exception as e:
+                    # how far the worker got is unknown: none of it ships
+                    logger.error(f"scrub task failed for {len(batch)} file(s): {e}")
+                    unscrubbed.extend(batch)
+                    continue
+                unscrubbed.extend(bad)
                 for name, d in diffs.items():
                     merged.setdefault(name, {}).update(d)
                 merged.setdefault('ipv6_subnet', {}).update(extra.get('ipv6_subnet', {}))
@@ -625,8 +590,7 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
                 try:
                     path, idx, part_path, changed, diffs, extra, grew, secs = fut.result()
                 except Exception as e:
-                    # Same failure mode as the serial path: the file is left
-                    # unscrubbed. Log loudly and skip its assembly.
+                    # the file stays unscrubbed: skip its assembly
                     logger.error(f"chunk scrub failed for {fut_path}: {e}")
                     chunk_failed.add(fut_path)
                     continue
@@ -641,13 +605,19 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
                     file_hits[base] = sorted(set(file_hits.get(base, [])) | set(grew))
 
             for path, parts in chunk_parts.items():
-                _assemble_chunks(path, parts,
-                                 chunk_changed.get(path, False) and path not in chunk_failed)
+                try:
+                    _assemble_chunks(path, parts,
+                                     chunk_changed.get(path, False) and path not in chunk_failed)
+                except Exception as e:
+                    logger.error(f"could not reassemble {path}: {e}")
+                    chunk_failed.add(path)
             for st, (orig, ext, opener) in staged_map.items():
-                if st in chunk_failed:
-                    continue             # original left untouched; staging removed below
-                _finish_staged(orig, st, ext, opener,
-                               chunk_changed.get(st, False), decompress, logger)
+                # on failure the original is left untouched, i.e. raw
+                if st in chunk_failed or not _finish_staged(
+                        orig, st, ext, opener, chunk_changed.get(st, False),
+                        decompress, logger):
+                    unscrubbed.append(orig)
+            unscrubbed.extend(p for p in chunk_failed if p not in staged_map)
         finally:
             for st in staged_map:
                 try:
@@ -667,4 +637,6 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
     # the union of the (deterministic, hence consistent) worker allocations.
     merged['subnet'] = frozen['subnet']
     merged['state'] = frozen['state']
+    if failed is not None:
+        failed.extend(unscrubbed)
     return merged, file_hits, file_times

@@ -8,23 +8,11 @@ import signal
 import pwd
 from datetime import datetime
 
-from supportutils_scrub.main import SCRIPT_VERSION, EXIT_OK, EXIT_ERROR, EXIT_VERIFY_FAIL
-from supportutils_scrub.ip_scrubber import IPScrubber
-from supportutils_scrub.domain_scrubber import DomainScrubber
-from supportutils_scrub.hostname_scrubber import HostnameScrubber
-from supportutils_scrub.username_scrubber import UsernameScrubber
-from supportutils_scrub.mac_scrubber import MACScrubber
-from supportutils_scrub.ipv6_scrubber import IPv6Scrubber
-from supportutils_scrub.serial_scrubber import SerialScrubber
-from supportutils_scrub.sid_scrubber import SIDScrubber
-from supportutils_scrub.email_scrubber import EmailScrubber
-from supportutils_scrub.auth_scrubber import AuthScrubber
-from supportutils_scrub.password_scrubber import PasswordScrubber
-from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
-from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
-from supportutils_scrub.keyword_scrubber import KeywordScrubber
+from supportutils_scrub.main import (
+    SCRIPT_VERSION, EXIT_OK, EXIT_ERROR, EXIT_WARNING, EXIT_VERIFY_FAIL,
+)
 from supportutils_scrub.processor import (
-    FileProcessor, scrubbed_output_name, append_scrubbed, strip_compression_ext,
+    FileProcessor, scrubbed_output_name, append_scrubbed,
 )
 from supportutils_scrub.extractor import (
     extract_supportconfig, create_txz, walk_supportconfig,
@@ -34,12 +22,14 @@ from supportutils_scrub.extractor import (
 from supportutils_scrub.pcap_rewrite import rewrite_pcaps_with_tcprewrite
 from supportutils_scrub.verify import verify_scrubbed_folder
 from supportutils_scrub.pipeline import (
-    warn_private_ip, extract_and_map_domains, extract_hostnames,
+    warn_private_ip, init_scrubbers, extract_and_map_domains, extract_hostnames,
     extract_hostnames_from_adopted_paths,
     extract_usernames, extract_serials, extract_sids, rename_extraction_paths,
     scrub_name, dataset_paths, PhaseTimer, slowest_files_report,
-    report_format_mismatches,
+    report_format_mismatches, split_names, chain_seed, build_chain,
+    chain_mappings, drop_unscrubbed, is_pcap,
 )
+from supportutils_scrub.modes.file import scrub_loose_file
 from supportutils_scrub.audit import (
     load_mappings_file, get_secure_tmp_base, save_mappings,
     print_enc_note, sha256_file, audit_record, write_audit_log, write_report,
@@ -47,7 +37,7 @@ from supportutils_scrub.audit import (
 
 
 def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrubber,
-                logger, verbose_flag, include_ldap=True, timer=None):
+                logger, verbose_flag, include_ldap=True, timer=None, copied=True):
     """Pre-scan, build scrubbers, and scrub a directory tree in place.
 
     Shared by archive, folder, and file handlers so a mixed run keeps one
@@ -59,11 +49,11 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
         timer.mark('unpack-nested')
     report_files = walk_supportconfig(clean_folder_path)
 
-    additional_domains = re.split(r'[,\s;]+', args.domain) if args.domain else []
-    domain_dict, tld_map = extract_and_map_domains(report_files, additional_domains, current_mappings)
-    additional_usernames = re.split(r'[,\s;]+', args.username) if args.username else []
-    username_dict = extract_usernames(report_files, additional_usernames, current_mappings)
-    additional_hostnames = re.split(r'[,\s;]+', args.hostname) if args.hostname else []
+    domain_dict, tld_map = extract_and_map_domains(report_files, split_names(args.domain),
+                                                   current_mappings)
+    username_dict = extract_usernames(report_files, split_names(args.username),
+                                      current_mappings)
+    additional_hostnames = split_names(args.hostname)
     # collector-adoption bypass fix: node names carried by tree structure
     additional_hostnames.extend(
         extract_hostnames_from_adopted_paths(clean_folder_path, config=config))
@@ -83,65 +73,29 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
                 print(f"        {old} -> {new}")
     report_files = walk_supportconfig(clean_folder_path)
 
-    serial_dict = extract_serials(report_files, current_mappings)
-    serial_scrubber = SerialScrubber(mappings=current_mappings)
-    serial_scrubber.serial_dict = serial_dict
+    serial_dict = extract_serials(report_files, current_mappings, config=config)
     sid_dict = extract_sids(report_files, current_mappings)
-    sid_scrubber = SIDScrubber(mappings=current_mappings)
-    sid_scrubber.sid_dict = sid_dict
     if timer:
         timer.mark('pre-scan')
 
-    email_scrubber = EmailScrubber(mappings=current_mappings)
-    username_scrubber = UsernameScrubber(username_dict)
-    scrubbers = [
-        IPScrubber(config, mappings=current_mappings),
-        IPv6Scrubber(config, mappings=current_mappings),
-        MACScrubber(config, mappings=current_mappings),
-        keyword_scrubber,
-        # Ahead of the email scrubber on purpose: in a URL the userinfo and
-        # host together (user@host) match an email address exactly, so if
-        # email ran first it would swallow both and the login would stop
-        # being distinguishable from the host it authenticates against.
-        AuthScrubber(mappings=current_mappings, email_scrubber=email_scrubber,
-                     username_scrubber=username_scrubber),
-        email_scrubber,
-        HostnameScrubber(hostname_dict, config=config), DomainScrubber(domain_dict),
-    ]
-    if include_ldap:
-        scrubbers.append(LdapDnScrubber(mappings=current_mappings))
-    scrubbers += [
-        username_scrubber,
-        PasswordScrubber(mappings=current_mappings), CloudTokenScrubber(mappings=current_mappings),
-        serial_scrubber, sid_scrubber,
-    ]
-    scrubbers = [s for s in scrubbers if s is not None]
-
+    seed = chain_seed(current_mappings, hostname_dict, domain_dict, username_dict,
+                      serial_dict, sid_dict, keyword_scrubber)
     report_file_hits = {}
+    failed = []
     jobs = getattr(args, 'jobs', 1) or 1
     profile = getattr(args, 'profile', False)
 
     if jobs > 1 and len(report_files) > 1 and not profile:
         from supportutils_scrub.parallel import scrub_in_parallel
         logger.info(f"Scrubbing with {jobs} worker processes...")
-        frozen_seed = dict(current_mappings)
-        frozen_seed['hostname'] = hostname_dict
-        frozen_seed['domain'] = domain_dict
-        frozen_seed['user'] = username_dict
-        frozen_seed['serial'] = serial_dict
-        frozen_seed['sid'] = sid_dict
-        frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
         updated_mappings, report_file_hits, file_times = scrub_in_parallel(
-            report_files, frozen_seed, config, jobs, logger,
+            report_files, seed, config, jobs, logger,
             verbose=verbose_flag, include_ldap=include_ldap,
-            decompress=getattr(args, 'unpacked', False))
+            decompress=getattr(args, 'unpacked', False), failed=failed)
         updated_mappings['tld_map'] = tld_map
-        from supportutils_scrub import det as _det
-        if _det.current_key():
-            updated_mappings[_det.KEY_FIELD] = _det.current_key()
-        combined_mappings_for_verify = updated_mappings
     else:
-        file_processor = FileProcessor(config, scrubbers, profile=profile,
+        file_processor = FileProcessor(config, build_chain(seed, config, include_ldap=include_ldap),
+                                       profile=profile,
                                        decompress=getattr(args, 'unpacked', False))
         logger.info("Scrubbing:")
         file_times = []
@@ -151,37 +105,30 @@ def _scrub_tree(clean_folder_path, current_mappings, args, config, keyword_scrub
                 print(f"        {basename}")
             before = {s.name: len(s.mapping) for s in file_processor.scrubbers}
             t0 = time.perf_counter()
-            file_processor.process_file(report_file, logger, verbose_flag)
+            if file_processor.process_file(report_file, logger, verbose_flag) is False:
+                failed.append(report_file)
             file_times.append((basename, time.perf_counter() - t0))
             hits = [name for name, prev in before.items()
                     if len(file_processor[name].mapping) > prev]
             if hits:
                 report_file_hits[os.path.basename(report_file)] = hits
 
-        ip_s = file_processor['ip']
-        ipv6_s = file_processor['ipv6']
-        updated_mappings = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
-        updated_mappings['subnet'] = ip_s.subnet_dict if ip_s else {}
-        updated_mappings['state'] = ip_s.state if ip_s else {}
-        updated_mappings['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
-        updated_mappings['tld_map'] = tld_map
-        from supportutils_scrub import det as _det
-        if _det.current_key():
-            updated_mappings[_det.KEY_FIELD] = _det.current_key()
-        combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
+        updated_mappings = chain_mappings(file_processor.scrubbers, current_mappings, tld_map)
         if profile:
             print(file_processor.format_profile())
 
     if timer:
         timer.mark('scrub')
-    report_format_mismatches(clean_folder_path)
+    dropped_ok = drop_unscrubbed(failed, clean_folder_path, copied=copied)
+    mismatches = report_format_mismatches(clean_folder_path)
     if verbose_flag and file_times:
         report = slowest_files_report(file_times)
         if report:
             print(report, file=sys.stderr)
+    problems = {'failed': failed, 'dropped_ok': dropped_ok, 'mismatches': mismatches}
     return (clean_folder_path, report_files, updated_mappings, report_file_hits,
-            combined_mappings_for_verify, hostname_dict, domain_dict, tld_map,
-            renames)
+            updated_mappings, hostname_dict, domain_dict, tld_map,
+            renames, problems)
 
 
 def process_one_archive(archive_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
@@ -219,7 +166,13 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
     timer = PhaseTimer(echo=verbose_flag)
     unpacked = getattr(args, 'unpacked', False)
     keep_folder = False
+    problems = {}
     try:
+        # Known before extraction starts (extract_tgz_archive names it the
+        # same way): an interrupt mid-extraction must not leave a raw tree.
+        clean_folder_path = os.path.join(
+            extract_base or os.path.dirname(archive_path),
+            append_scrubbed(strip_archive_ext(os.path.basename(archive_path))))
         try:
             report_files, clean_folder_path = extract_supportconfig(archive_path, logger, extract_base=extract_base)
         except Exception as e:
@@ -237,7 +190,7 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
 
         (clean_folder_path, report_files, updated_mappings, report_file_hits,
          combined_mappings_for_verify, hostname_dict, domain_dict, tld_map,
-         renames) = _scrub_tree(
+         renames, problems) = _scrub_tree(
             clean_folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag,
             timer=timer)
 
@@ -326,6 +279,7 @@ def process_one_archive(archive_path, current_mappings, args, config, keyword_sc
             'renames': [{'from': old, 'to': new} for old, new in renames],
         },
         'verify_findings': verify_findings,
+        'problems': problems,
     }
 
     return updated_mappings, stats
@@ -338,9 +292,9 @@ def process_one_folder(folder_path, current_mappings, args, config, keyword_scru
     timer.mark('copy')
     (clean_folder_path, report_files, updated_mappings, report_file_hits,
      combined_mappings_for_verify, hostname_dict, domain_dict, tld_map,
-     renames) = _scrub_tree(
+     renames, problems) = _scrub_tree(
         clean_folder_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag,
-        timer=timer)
+        timer=timer, copied=clean_folder_path != folder_path.rstrip('/'))
     print(f"[✓] Scrubbed folder written to: {clean_folder_path}")
 
     verify_findings = []
@@ -375,75 +329,17 @@ def process_one_folder(folder_path, current_mappings, args, config, keyword_scru
         'report_data': {'input': folder_path, 'output': clean_folder_path,
                         'files_total': len(report_files), 'file_hits': report_file_hits},
         'verify_findings': verify_findings,
+        'problems': problems,
     }
     return updated_mappings, stats
 
 
 def process_one_file(file_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag):
-    """Scrub a single plain file to <name>_scrubbed<ext>, reusing existing maps.
-
-    No supportconfig structure to pre-scan, so it relies on the shared mapping
-    built from other inputs plus the self-discovering scrubbers (ip/ipv6/mac/
-    email/password/cloud_token/ldap)."""
-    base = scrub_name(os.path.basename(file_path),
-                      current_mappings.get('hostname', {}),
-                      domain_dict=current_mappings.get('domain', {}))
-    out_dir = getattr(args, 'output_dir', None) or os.path.dirname(os.path.abspath(file_path))
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, scrubbed_output_name(base))
-    if os.path.abspath(out_path) != os.path.abspath(file_path):
-        # Equal when the input already carries _scrubbed: re-scrub in place
-        # instead of letting copyfile fail on the same file.
-        shutil.copyfile(file_path, out_path)
-
-    serial_scrubber = SerialScrubber(mappings=current_mappings)
-    serial_scrubber.serial_dict = dict(current_mappings.get('serial', {}))
-    sid_scrubber = SIDScrubber(mappings=current_mappings)
-    sid_scrubber.sid_dict = dict(current_mappings.get('sid', {}))
-    email_scrubber = EmailScrubber(mappings=current_mappings)
-    username_scrubber = UsernameScrubber(dict(current_mappings.get('user', {})))
-    scrubbers = [
-        IPScrubber(config, mappings=current_mappings),
-        IPv6Scrubber(config, mappings=current_mappings),
-        MACScrubber(config, mappings=current_mappings),
-        keyword_scrubber,
-        # Ahead of the email scrubber on purpose: in a URL the userinfo and
-        # host together (user@host) match an email address exactly, so if
-        # email ran first it would swallow both and the login would stop
-        # being distinguishable from the host it authenticates against.
-        AuthScrubber(mappings=current_mappings, email_scrubber=email_scrubber,
-                     username_scrubber=username_scrubber),
-        email_scrubber,
-        HostnameScrubber(dict(current_mappings.get('hostname', {})), config=config),
-        DomainScrubber(dict(current_mappings.get('domain', {}))),
-        LdapDnScrubber(mappings=current_mappings),
-        username_scrubber,
-        PasswordScrubber(mappings=current_mappings),
-        CloudTokenScrubber(mappings=current_mappings),
-        serial_scrubber, sid_scrubber,
-    ]
-    scrubbers = [s for s in scrubbers if s is not None]
-    unpacked = getattr(args, 'unpacked', False)
-    fp = FileProcessor(config, scrubbers, decompress=unpacked)
-    logger.info(f"Scrubbing file: {base}")
-    fp.process_file(out_path, logger, verbose_flag)
-    if unpacked and not os.path.exists(out_path):
-        # process_file wrote the plain file and removed the compressed copy
-        # (unless a plain sibling existed, in which case it stays compressed)
-        out_path = strip_compression_ext(out_path)
+    """Scrub a loose file to <name>_scrubbed<ext> exactly as file mode does,
+    on the run's shared mapping."""
+    out_path, updated_mappings, _fp = scrub_loose_file(
+        file_path, current_mappings, args, config, keyword_scrubber, logger, verbose_flag)
     print(f"[✓] Scrubbed file written to: {out_path}")
-
-    ip_s = fp['ip']
-    ipv6_s = fp['ipv6']
-    updated_mappings = {s.name: dict(s.mapping) for s in fp.scrubbers}
-    updated_mappings['subnet'] = ip_s.subnet_dict if ip_s else {}
-    updated_mappings['state'] = ip_s.state if ip_s else {}
-    updated_mappings['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
-    updated_mappings['tld_map'] = current_mappings.get('tld_map', {})
-    from supportutils_scrub import det as _det
-    if _det.current_key():
-        updated_mappings[_det.KEY_FIELD] = _det.current_key()
 
     stats = {
         'archive_path': file_path, 'output_path': out_path, 'files': 1,
@@ -497,32 +393,23 @@ def run_archive_mode(paths, args, logger):
             logger=logger,
         )
 
-    initial_mappings = {}
-    mapping_keywords = []
+    # det_key, keyword pseudonyms and the keyword file come from the same
+    # place as in every other mode
+    current_mappings, keyword_scrubber, _ip, _mac, _ipv6 = init_scrubbers(args, config, logger)
     if args.mappings:
-        initial_mappings = load_mappings_file(args.mappings)
         print(f"[✓] Dataset mapping loaded from: {args.mappings} ")
-        mapping_keywords = list(initial_mappings.get('keyword', {}).keys())
+    if keyword_scrubber is None and (args.keywords or args.keyword_file):
+        print("[!] Keyword obfuscation disabled (no keywords loaded)")
 
-    cmd_keywords = []
-    if args.keywords:
-        cmd_keywords = [kw.strip() for kw in re.split(r'[,\s;]+', args.keywords.strip()) if kw.strip()]
-    combined_keywords = set(cmd_keywords).union(mapping_keywords)
-    try:
-        keyword_scrubber = KeywordScrubber(keyword_file=args.keyword_file, cmd_keywords=list(combined_keywords))
-        if not keyword_scrubber.is_loaded():
-            if args.keywords or args.keyword_file:
-                print("[!] Keyword obfuscation disabled (no keywords loaded)")
-            keyword_scrubber = None
-    except Exception as e:
-        logger.error(f"Failed to initialize KeywordScrubber: {e}")
-        keyword_scrubber = None
-
-    current_mappings = initial_mappings
     all_stats = []
 
+    # Captures go last: they are rewritten with the mapping every text
+    # input of this run has built.
+    pcaps = [p for p in paths if os.path.isfile(p) and is_pcap(p)]
     failed_archives = []
     for i, archive_path in enumerate(paths):
+        if archive_path in pcaps:
+            continue
         if len(paths) > 1:
             print(f"\n[{i+1}/{len(paths)}] Processing: {os.path.basename(archive_path)}")
         try:
@@ -535,6 +422,13 @@ def run_archive_mode(paths, args, logger):
             failed_archives.append(archive_path)
             if len(paths) == 1:
                 sys.exit(EXIT_ERROR)
+
+    pcap_outputs, failed_pcaps = _rewrite_pcaps(pcaps, current_mappings, args, logger)
+
+    problems = [s.get('problems') or {} for s in all_stats]
+    unscrubbed = [f for p in problems for f in p.get('failed', [])]
+    removal_failed = any(not p.get('dropped_ok', True) for p in problems)
+    mismatches = sum(p.get('mismatches', 0) for p in problems)
 
     all_verify_findings = []
     for s in all_stats:
@@ -602,6 +496,8 @@ def run_archive_mode(paths, args, logger):
         print(f"| Owner                     : {stats['owner']}")
     for stats in all_stats:
         print(f"| Output archive            : {stats['output_path']}")
+    for out in pcap_outputs:
+        print(f"| Output pcap               : {out}")
     if saved_mapping_path:
         print(f"| Mapping file              : {saved_mapping_path}")
         if getattr(args, '_enc_passphrase', None):
@@ -613,15 +509,75 @@ def run_archive_mode(paths, args, logger):
         print(f"| FAILED archives           : {len(failed_archives)}")
         for fa in failed_archives:
             print(f"|   - {fa}")
+    if unscrubbed:
+        print(f"| Files NOT scrubbed        : {len(unscrubbed)}"
+              + (" (removed from the output)" if not removal_failed else ""))
+    if failed_pcaps:
+        print(f"| FAILED pcaps (not written): {len(failed_pcaps)}")
+        for fp in failed_pcaps:
+            print(f"|   - {fp}")
     print("------------------------------------------------------------\n")
 
     record = audit_record('archive',
         inputs  = [{'path': os.path.abspath(p), 'sha256': sha256_file(p)} for p in paths],
-        outputs = [{'path': s['output_path'], 'sha256': sha256_file(s['output_path'])} for s in all_stats],
+        outputs = [{'path': s['output_path'], 'sha256': sha256_file(s['output_path'])} for s in all_stats]
+                + [{'path': p, 'sha256': sha256_file(p)} for p in pcap_outputs],
         mapping_path = saved_mapping_path, args = args, version = SCRIPT_VERSION)
     write_audit_log(audit_path, record)
 
-    if failed_archives:
+    if failed_archives or removal_failed:
         sys.exit(EXIT_ERROR)
     if verify_exit == EXIT_VERIFY_FAIL:
         sys.exit(EXIT_VERIFY_FAIL)
+    if unscrubbed or mismatches or failed_pcaps:
+        sys.exit(EXIT_WARNING)
+
+
+def _pcap_out_dir(args, pcap):
+    # cli.py defaults --pcap-out-dir to '.', so '.' reads as "not given"
+    given = getattr(args, 'pcap_out_dir', None)
+    if given and given != '.':
+        return given
+    return getattr(args, 'output_dir', None) or os.path.dirname(os.path.abspath(pcap))
+
+
+def _rewrite_pcaps(pcaps, mappings, args, logger):
+    """Rewrite each capture with the mapping this run built. A capture that
+    could not be rewritten (no tcprewrite, no IPv4 subnet to map, a tcprewrite
+    error) gets no output at all. Returns (written paths, failed inputs)."""
+    outputs, failed = [], []
+    for pcap in pcaps:
+        out_dir = _pcap_out_dir(args, pcap)
+        base = os.path.basename(pcap)
+        if not os.path.splitext(base)[1]:
+            base += '.pcap'          # the name pcap_rewrite gives it
+        written = os.path.join(out_dir, scrubbed_output_name(base))
+        final = os.path.join(out_dir, scrubbed_output_name(
+            scrub_name(base, mappings.get('hostname', {}),
+                       domain_dict=mappings.get('domain', {}))))
+        if os.path.abspath(pcap) in (os.path.abspath(written), os.path.abspath(final)):
+            print(f"[!] {os.path.basename(pcap)}: already named _scrubbed; rename "
+                  f"it, its rewrite would land on the input", file=sys.stderr)
+            failed.append(pcap)
+            continue
+        # a stale output from an earlier run must not pass for this one
+        for p in {written, final}:
+            if os.path.lexists(p):
+                os.remove(p)
+        try:
+            rewrite_pcaps_with_tcprewrite(
+                mappings, [pcap], out_dir,
+                tcprewrite=getattr(args, 'tcprewrite_path', None) or 'tcprewrite',
+                print_cmd=getattr(args, 'print_tcprewrite', False), logger=logger)
+            reason = None if os.path.exists(written) else "tcprewrite wrote nothing"
+        except (Exception, SystemExit) as e:
+            reason = str(e) or type(e).__name__
+        if reason:
+            print(f"[!] {os.path.basename(pcap)}: not rewritten ({reason}); "
+                  f"no scrubbed capture was written", file=sys.stderr)
+            failed.append(pcap)
+            continue
+        if final != written:
+            os.replace(written, final)
+        outputs.append(final)
+    return outputs, failed

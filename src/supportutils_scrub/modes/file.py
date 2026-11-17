@@ -1,6 +1,5 @@
 import os
 import sys
-import re
 import json
 import shutil
 from datetime import datetime
@@ -9,13 +8,6 @@ from supportutils_scrub.main import SCRIPT_VERSION
 from supportutils_scrub.domain_scrubber import DomainScrubber
 from supportutils_scrub.hostname_scrubber import HostnameScrubber
 from supportutils_scrub.username_scrubber import UsernameScrubber
-from supportutils_scrub.email_scrubber import EmailScrubber
-from supportutils_scrub.auth_scrubber import AuthScrubber
-from supportutils_scrub.password_scrubber import PasswordScrubber
-from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
-from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
-from supportutils_scrub.serial_scrubber import SerialScrubber
-from supportutils_scrub.sid_scrubber import SIDScrubber
 from supportutils_scrub.processor import (
     FileProcessor, compressed_opener, scrubbed_output_name,
     strip_compression_ext, compression_magic_ok, looks_binary,
@@ -24,32 +16,29 @@ from supportutils_scrub.processor import (
 from supportutils_scrub.pipeline import (
     warn_private_ip, init_scrubbers, scrub_name,
     extract_and_map_domains, extract_hostnames, extract_usernames,
-    dataset_paths,
-    extract_serials, extract_sids,
+    dataset_paths, extract_serials, extract_sids,
+    split_names, chain_seed, build_chain, chain_mappings, is_pcap,
 )
 from supportutils_scrub.audit import (
     save_mappings, print_enc_note, sha256_file, audit_record, write_audit_log,
 )
 
 
-def run_file_mode(args, logger):
-    verbose_flag = args.verbose
-    input_path = args.supportconfig_path[0]
-    comp = compressed_opener(os.path.basename(input_path))
+class ScrubRefused(Exception):
+    """The file was not scrubbed and no output was left behind."""
+
+
+def scrub_loose_file(input_path, mappings, args, config, keyword_scrubber,
+                     logger, verbose_flag):
+    """Scrub one loose file to <name>_scrubbed<ext>, next to it or in
+    --output-dir. File mode and a loose file in a multi-input run both come
+    here, so both learn names from the text and take --hostname/--domain/
+    --username alike.
+
+    Returns (output_path, mappings, file_processor); raises ScrubRefused."""
+    name = os.path.basename(input_path)
+    comp = compressed_opener(name)
     drop_ext = False
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    config = args._preloaded_config
-    dataset_path, audit_path, _ = dataset_paths(config.dataset_dir, timestamp)
-    warn_private_ip(config)
-
-    mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber = \
-        init_scrubbers(args, config, logger)
-
-    if args.mappings:
-        print(f"[✓] Dataset mapping loaded from: {args.mappings} ")
-    if keyword_scrubber is None and (args.keywords or args.keyword_file):
-        print("[!] Keyword obfuscation disabled (no keywords loaded)")
 
     # Cheap streaming checks before anything is read whole or copied: a
     # payload that is not text is refused up front; a name that lies about
@@ -59,10 +48,9 @@ def run_file_mode(args, logger):
         ext, opener = comp
         if not compression_magic_ok(input_path, ext):
             if looks_binary(input_path):
-                print(f"[!] {os.path.basename(input_path)}: neither a {ext[1:]} "
-                      f"stream nor text — nothing to scrub")
-                sys.exit(1)
-            print(f"[!] {os.path.basename(input_path)}: not a {ext[1:]} stream despite "
+                raise ScrubRefused(f"{name}: neither a {ext[1:]} stream nor text "
+                                   f"— nothing to scrub")
+            print(f"[!] {name}: not a {ext[1:]} stream despite "
                   f"the extension — scrubbed as plain text")
             drop_ext, comp = True, None
         else:
@@ -74,13 +62,20 @@ def run_file_mode(args, logger):
             except Exception:
                 head = b''  # damaged head; the salvage path decides later
             if b'\x00' in head:
-                print(f"[!] {os.path.basename(input_path)}: {ext[1:]} payload is not "
-                      f"text — nothing to scrub")
-                sys.exit(1)
+                raise ScrubRefused(f"{name}: {ext[1:]} payload is not text "
+                                   f"— nothing to scrub")
+    elif is_pcap(input_path):
+        raise ScrubRefused(f"{name}: packet capture — pass it next to the "
+                           f"supportconfig it belongs to, or use --rewrite-pcap "
+                           f"--mappings FILE --pcap-in {name}")
+    elif looks_binary(input_path):
+        # process_file would leave it as is, and the copy would ship byte
+        # for byte under a _scrubbed name
+        raise ScrubRefused(f"{name}: binary content, not text — nothing to scrub")
 
-    additional_domains = list(re.split(r'[,\s;]+', args.domain) if args.domain else [])
-    additional_usernames = list(re.split(r'[,\s;]+', args.username) if args.username else [])
-    additional_hostnames = list(re.split(r'[,\s;]+', args.hostname) if args.hostname else [])
+    additional_domains = split_names(args.domain)
+    additional_usernames = split_names(args.username)
+    additional_hostnames = split_names(args.hostname)
 
     if comp:
         # Pre-scan the payload segment by segment: a small .xz can hide a
@@ -114,8 +109,7 @@ def run_file_mode(args, logger):
             with open(input_path, 'rt', encoding='utf-8', errors='ignore') as f:
                 text = f.read()
         except Exception as e:
-            print(f"[!] Cannot read {input_path}: {e}")
-            sys.exit(1)
+            raise ScrubRefused(f"Cannot read {input_path}: {e}")
         additional_domains += DomainScrubber.extract_domains_from_text(text)
         additional_usernames += UsernameScrubber.extract_usernames_from_text(text)
         additional_hostnames += HostnameScrubber.extract_hostnames_from_text(text)
@@ -127,97 +121,83 @@ def run_file_mode(args, logger):
                                       config=config)
 
     unpacked = getattr(args, 'unpacked', False)
-    out_base = scrub_name(os.path.basename(input_path), hostname_dict,
-                          domain_dict=domain_dict, config=config)
+    out_base = scrub_name(name, hostname_dict, domain_dict=domain_dict, config=config)
     if drop_ext:
         out_base = strip_compression_ext(out_base)
+    out_dir = getattr(args, 'output_dir', None) or os.path.dirname(os.path.abspath(input_path))
+    os.makedirs(out_dir, exist_ok=True)
     # A compressed output keeps its extension here even with --unpacked;
     # FileProcessor(decompress=True) converts it and drops the extension.
-    output_path = os.path.join(os.path.dirname(input_path), scrubbed_output_name(out_base))
+    output_path = os.path.join(out_dir, scrubbed_output_name(out_base))
 
     # Serial numbers and SAP SIDs, exactly as the folder and archive chains
-    # do: this entry point had silently dropped both, and a lone SAP log
-    # scrubbed here kept its SID while the same file inside a bundle lost it.
-    serial_dict = extract_serials([input_path], mappings)
-    serial_scrubber = SerialScrubber(mappings=mappings)
-    serial_scrubber.serial_dict = serial_dict
+    # do: a lone SAP log must lose its SID like it would inside a bundle.
+    serial_dict = extract_serials([input_path], mappings, config=config)
     sid_dict = extract_sids([input_path], mappings)
-    sid_scrubber = SIDScrubber(mappings=mappings)
-    sid_scrubber.sid_dict = sid_dict
+    seed = chain_seed(mappings, hostname_dict, domain_dict, username_dict,
+                      serial_dict, sid_dict, keyword_scrubber)
+    file_processor = FileProcessor(config, build_chain(seed, config), decompress=unpacked)
 
-    email_scrubber = EmailScrubber(mappings=mappings)
-    username_scrubber = UsernameScrubber(username_dict)
-    scrubbers = [
-        ip_scrubber, ipv6_scrubber, mac_scrubber, keyword_scrubber,
-        # Ahead of the email scrubber on purpose: in a URL the userinfo and
-        # host together (user@host) match an email address exactly, so if
-        # email ran first it would swallow both and the login would stop
-        # being distinguishable from the host it authenticates against.
-        AuthScrubber(mappings=mappings, email_scrubber=email_scrubber,
-                     username_scrubber=username_scrubber),
-        email_scrubber,
-        HostnameScrubber(hostname_dict, config=config), DomainScrubber(domain_dict),
-        LdapDnScrubber(mappings=mappings),
-        username_scrubber,
-        PasswordScrubber(mappings=mappings), CloudTokenScrubber(mappings=mappings),
-        serial_scrubber, sid_scrubber,
-    ]
-    scrubbers = [s for s in scrubbers if s is not None]
-
-    try:
-        file_processor = FileProcessor(config, scrubbers, decompress=unpacked)
-    except Exception as e:
-        logger.error(f"Error initializing FileProcessor: {e}")
-        sys.exit(1)
-
-    # The scrub runs in place on a copy carrying the output name — the same
-    # path archive mode's process_one_file takes — so compressed payloads go
-    # through the streaming segment machinery instead of being read whole.
+    # The scrub runs in place on a copy carrying the output name, so
+    # compressed payloads go through the streaming segment machinery instead
+    # of being read whole.
     in_place = os.path.abspath(output_path) == os.path.abspath(input_path)
 
     if in_place and comp and unpacked:
         # decompress=True would convert — and delete — the input file itself.
-        print(f"[!] {os.path.basename(input_path)} already carries _scrubbed and "
-              f"--unpacked would replace the input with its unpacked form — "
-              f"rename the input or drop --unpacked")
-        sys.exit(1)
+        raise ScrubRefused(f"{name} already carries _scrubbed and --unpacked would "
+                           f"replace the input with its unpacked form — rename "
+                           f"the input or drop --unpacked")
 
     final_plain = strip_compression_ext(output_path)
     if comp and unpacked and final_plain != output_path and os.path.exists(final_plain):
-        # File mode overwrites its output target; without this, process_file's
+        # The output target is overwritten; without this, process_file's
         # plain-sibling protection would keep the copy compressed instead.
         os.remove(final_plain)
 
     if not in_place:
         shutil.copyfile(input_path, output_path)
-    ok = file_processor.process_file(output_path, logger, verbose_flag)
-    if not ok:
+    logger.info(f"Scrubbing file: {os.path.basename(output_path)}")
+    if not file_processor.process_file(output_path, logger, verbose_flag):
         # Never leave input bytes under a _scrubbed name.
         if not in_place:
             try:
                 os.remove(output_path)
             except OSError:
                 pass
-        print(f"[!] Scrubbing failed for {input_path} — no output written "
-              f"(see messages above)")
-        sys.exit(1)
+        raise ScrubRefused(f"Scrubbing failed for {input_path} — no output "
+                           f"written (see messages above)")
     if not os.path.exists(output_path):
         # --unpacked converted the copy to plain, dropping the extension
         output_path = strip_compression_ext(output_path)
 
+    return output_path, chain_mappings(file_processor.scrubbers, mappings, tld_map), file_processor
+
+
+def run_file_mode(args, logger):
+    verbose_flag = args.verbose
+    input_path = args.supportconfig_path[0]
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    config = args._preloaded_config
+    dataset_path, audit_path, _ = dataset_paths(config.dataset_dir, timestamp)
+    warn_private_ip(config)
+
+    mappings, keyword_scrubber, _ip, _mac, _ipv6 = init_scrubbers(args, config, logger)
+
+    if args.mappings:
+        print(f"[✓] Dataset mapping loaded from: {args.mappings} ")
+    if keyword_scrubber is None and (args.keywords or args.keyword_file):
+        print("[!] Keyword obfuscation disabled (no keywords loaded)")
+
+    try:
+        output_path, dataset_dict, file_processor = scrub_loose_file(
+            input_path, mappings, args, config, keyword_scrubber, logger, verbose_flag)
+    except ScrubRefused as e:
+        print(f"[!] {e}")
+        sys.exit(1)
+
     print(f"[✓] Scrubbed file written to: {output_path}")
-
-    ip_s = file_processor['ip']
-    ipv6_s = file_processor['ipv6']
-
-    dataset_dict = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
-    dataset_dict['subnet'] = ip_s.subnet_dict if ip_s else {}
-    dataset_dict['state'] = ip_s.state if ip_s else {}
-    dataset_dict['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
-    dataset_dict['tld_map'] = tld_map
-    from supportutils_scrub import det as _det
-    if _det.current_key():
-        dataset_dict[_det.KEY_FIELD] = _det.current_key()
 
     saved_mapping_path = save_mappings(args, dataset_path, dataset_dict)
 

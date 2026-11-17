@@ -7,20 +7,12 @@ import shutil
 import signal
 from datetime import datetime
 
-from supportutils_scrub.main import SCRIPT_VERSION, EXIT_VERIFY_FAIL
+from supportutils_scrub.main import (
+    SCRIPT_VERSION, EXIT_ERROR, EXIT_WARNING, EXIT_VERIFY_FAIL,
+)
 from supportutils_scrub.config import DEFAULT_CONFIG_PATH
 from supportutils_scrub.config_reader import ConfigReader
-from supportutils_scrub.domain_scrubber import DomainScrubber
-from supportutils_scrub.hostname_scrubber import HostnameScrubber
-from supportutils_scrub.username_scrubber import UsernameScrubber
-from supportutils_scrub.serial_scrubber import SerialScrubber
-from supportutils_scrub.sid_scrubber import SIDScrubber
-from supportutils_scrub.email_scrubber import EmailScrubber
-from supportutils_scrub.auth_scrubber import AuthScrubber
-from supportutils_scrub.password_scrubber import PasswordScrubber
-from supportutils_scrub.cloud_token_scrubber import CloudTokenScrubber
-from supportutils_scrub.ldap_dn_scrubber import LdapDnScrubber
-from supportutils_scrub.processor import FileProcessor
+from supportutils_scrub.processor import FileProcessor, append_scrubbed
 from supportutils_scrub.extractor import (
     copy_folder_to_scrubbed, walk_supportconfig, expand_nested_archives,
 )
@@ -30,7 +22,8 @@ from supportutils_scrub.pipeline import (
     extract_and_map_domains, extract_hostnames,
     extract_hostnames_from_adopted_paths, extract_usernames,
     extract_serials, extract_sids, rename_extraction_paths, dataset_paths, PhaseTimer,
-    slowest_files_report, report_format_mismatches,
+    slowest_files_report, report_format_mismatches, split_names, chain_seed,
+    build_chain, chain_mappings, drop_unscrubbed,
 )
 from supportutils_scrub.audit import (
     save_mappings, print_enc_note, audit_record, write_audit_log, write_report,
@@ -57,8 +50,7 @@ def run_folder_mode(args, logger):
     else:
         warn_private_ip(config)
 
-    mappings, keyword_scrubber, ip_scrubber, mac_scrubber, ipv6_scrubber = \
-        init_scrubbers(args, config, logger)
+    mappings, keyword_scrubber, _ip, _mac, _ipv6 = init_scrubbers(args, config, logger)
     if not quiet and args.mappings:
         print(f"[✓] Dataset mapping loaded from: {args.mappings} ")
     if not quiet and keyword_scrubber is None and (args.keywords or args.keyword_file):
@@ -69,18 +61,11 @@ def run_folder_mode(args, logger):
     # discover/replay pre-pass coordinates every fake across all of them,
     # which separate concurrent runs could not (each would allocate from
     # the same pools blind and the last mapping written would win).
-    scrubbed_paths = []
-    try:
-        for src_path in args.supportconfig_path:
-            _files, sp = copy_folder_to_scrubbed(src_path)
-            scrubbed_paths.append(sp)
-            if not quiet:
-                print(f"[✓] Folder copied to: {sp}")
-    except Exception as e:
-        print(f"[!] Error copying folder: {e}")
-        raise
-    scrubbed_path = scrubbed_paths[0]
-    timer.mark('copy')
+    # An input already named *_scrubbed is scrubbed in place: it is the
+    # user's own tree, so an interrupt or a failed file must never delete it.
+    sources = [p.rstrip('/') for p in args.supportconfig_path]
+    scrubbed_paths = [append_scrubbed(p) for p in sources]
+    copied = [sp != src for sp, src in zip(scrubbed_paths, sources)]
 
     def _cleanup_on_signal(signum, frame):
         try:
@@ -92,9 +77,10 @@ def run_folder_mode(args, logger):
                     child.terminate()
                 except Exception:
                     pass
-            sys.stderr.write(f"\n[!] Interrupted — removing partial output {scrubbed_paths}\n")
+            ours = [sp for sp, c in zip(scrubbed_paths, copied) if c]
+            sys.stderr.write(f"\n[!] Interrupted — removing partial output {ours}\n")
             sys.stderr.flush()
-            for sp in scrubbed_paths:
+            for sp in ours:
                 if os.path.exists(sp):
                     shutil.rmtree(sp, ignore_errors=True)
         except Exception:
@@ -102,6 +88,16 @@ def run_folder_mode(args, logger):
         os._exit(1)
     signal.signal(signal.SIGINT,  _cleanup_on_signal)
     signal.signal(signal.SIGTERM, _cleanup_on_signal)
+
+    try:
+        for src_path in args.supportconfig_path:
+            _files, sp = copy_folder_to_scrubbed(src_path)
+            if not quiet:
+                print(f"[✓] Folder copied to: {sp}")
+    except Exception as e:
+        print(f"[!] Error copying folder: {e}")
+        raise
+    timer.mark('copy')
 
     for sp in scrubbed_paths:
         expand_nested_archives(sp, logger)
@@ -111,26 +107,19 @@ def run_folder_mode(args, logger):
     is_sc = is_supportconfig_folder(report_files)
     scan_files = report_files if is_sc else []
 
-    additional_domains = []
-    if args.domain:
-        additional_domains = re.split(r'[,\s;]+', args.domain)
-    domain_dict, tld_map = extract_and_map_domains(scan_files, additional_domains, mappings)
+    domain_dict, tld_map = extract_and_map_domains(scan_files, split_names(args.domain), mappings)
+    username_dict = extract_usernames(scan_files, split_names(args.username), mappings)
 
-    additional_usernames = []
-    if args.username:
-        additional_usernames = re.split(r'[,\s;]+', args.username)
-    username_dict = extract_usernames(scan_files, additional_usernames, mappings)
-
-    additional_hostnames = []
-    if args.hostname:
-        additional_hostnames = re.split(r'[,\s;]+', args.hostname)
+    additional_hostnames = split_names(args.hostname)
     # adopted-node names live in the tree structure, not the primary
     # network.txt; harvested regardless of is_sc so plain crm_report/hb_report
     # bundles get their node dirs mapped too (collector-adoption bypass fix)
     for sp in scrubbed_paths:
         additional_hostnames.extend(
             extract_hostnames_from_adopted_paths(sp, config=config))
-    hostname_dict = extract_hostnames(scan_files, additional_hostnames, mappings,
+    # every file, not only a supportconfig's: a crm_report names its
+    # members in members.txt and cib.xml
+    hostname_dict = extract_hostnames(report_files, additional_hostnames, mappings,
                                       config=config)
 
     want_report = bool(getattr(args, 'report', False)) or bool(getattr(args, 'report_file', None))
@@ -148,50 +137,27 @@ def run_folder_mode(args, logger):
                                               domain_dict=domain_dict,
                                               config=config, renames=renames)
                       for sp in scrubbed_paths]
-    scrubbed_path = scrubbed_paths[0]
     report_files = [f for sp in scrubbed_paths for f in walk_supportconfig(sp)]
 
-    serial_scrubber = None
-    if is_sc:
-        serial_dict = extract_serials(report_files, mappings)
-        serial_scrubber = SerialScrubber(mappings=mappings)
-        serial_scrubber.serial_dict = serial_dict
+    # The serial pre-scan reads supportconfig files; the --mappings serials
+    # apply to any tree.
+    serial_dict = (extract_serials(report_files, mappings, config=config) if is_sc
+                   else dict(mappings.get('serial', {})))
     # SID discovery is NOT gated on is_sc: crm_report/hb_report bundles carry
     # rsc_SAP_<SID> and /usr/sap/<SID> too, and discovery is SAP-context-specific.
     sid_dict = extract_sids(report_files, mappings)
-    sid_scrubber = SIDScrubber(mappings=mappings)
-    sid_scrubber.sid_dict = sid_dict
     timer.mark('pre-scan')
 
-    email_scrubber = EmailScrubber(mappings=mappings)
-    username_scrubber = UsernameScrubber(username_dict)
-    scrubbers = [
-        ip_scrubber, ipv6_scrubber, mac_scrubber, keyword_scrubber,
-        # Ahead of the email scrubber on purpose: in a URL the userinfo and
-        # host together (user@host) match an email address exactly, so if
-        # email ran first it would swallow both and the login would stop
-        # being distinguishable from the host it authenticates against.
-        AuthScrubber(mappings=mappings, email_scrubber=email_scrubber,
-                     username_scrubber=username_scrubber),
-        email_scrubber,
-        HostnameScrubber(hostname_dict, config=config), DomainScrubber(domain_dict),
-        LdapDnScrubber(mappings=mappings),
-        username_scrubber,
-        PasswordScrubber(mappings=mappings), CloudTokenScrubber(mappings=mappings),
-        serial_scrubber, sid_scrubber,
-    ]
-    scrubbers = [s for s in scrubbers if s is not None]
-
-    try:
-        file_processor = FileProcessor(config, scrubbers, profile=getattr(args, 'profile', False),
-                                       decompress=getattr(args, 'unpacked', False))
-    except Exception as e:
-        logger.error(f"Error initializing FileProcessor: {e}")
-        sys.exit(1)
+    seed = chain_seed(mappings, hostname_dict, domain_dict, username_dict,
+                      serial_dict, sid_dict, keyword_scrubber)
+    file_processor = FileProcessor(config, build_chain(seed, config),
+                                   profile=getattr(args, 'profile', False),
+                                   decompress=getattr(args, 'unpacked', False))
 
     total_files = len(report_files)
     jobs = getattr(args, 'jobs', 1) or 1
     profile = getattr(args, 'profile', False)
+    failed = []
 
     if jobs > 1 and total_files > 1 and not profile:
         from supportutils_scrub.parallel import scrub_in_parallel
@@ -200,22 +166,11 @@ def run_folder_mode(args, logger):
         else:
             err.write(f"  Scrubbing {total_files} files with {jobs} workers...\n")
             err.flush()
-        frozen_seed = dict(mappings)
-        frozen_seed['hostname'] = hostname_dict
-        frozen_seed['domain'] = domain_dict
-        frozen_seed['user'] = username_dict
-        frozen_seed['serial'] = serial_scrubber.serial_dict if serial_scrubber else {}
-        frozen_seed['sid'] = sid_scrubber.sid_dict if sid_scrubber else {}
-        frozen_seed['keyword'] = keyword_scrubber.keyword_dict if keyword_scrubber else {}
         dataset_dict, _hits, file_times = scrub_in_parallel(
-            report_files, frozen_seed, config, jobs, logger,
+            report_files, seed, config, jobs, logger,
             verbose=verbose_flag, include_ldap=True,
-            decompress=getattr(args, 'unpacked', False))
+            decompress=getattr(args, 'unpacked', False), failed=failed)
         dataset_dict['tld_map'] = tld_map
-        from supportutils_scrub import det as _det
-        if _det.current_key():
-            dataset_dict[_det.KEY_FIELD] = _det.current_key()
-        combined_mappings_for_verify = dataset_dict
     else:
         if not quiet:
             logger.info("Scrubbing:")
@@ -233,7 +188,8 @@ def run_folder_mode(args, logger):
                     print(f"        {basename}")
                 t0 = time.perf_counter()
                 try:
-                    file_processor.process_file(report_file, logger, verbose_flag)
+                    if file_processor.process_file(report_file, logger, verbose_flag) is False:
+                        failed.append(report_file)
                 finally:
                     file_times.append((basename, time.perf_counter() - t0))
                     if quiet:
@@ -245,21 +201,14 @@ def run_folder_mode(args, logger):
             if _devnull is not None:
                 _devnull.close()
 
-        ip_s = file_processor['ip']
-        ipv6_s = file_processor['ipv6']
-
-        dataset_dict = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
-        dataset_dict['subnet'] = ip_s.subnet_dict if ip_s else {}
-        dataset_dict['state'] = ip_s.state if ip_s else {}
-        dataset_dict['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
-        dataset_dict['tld_map'] = tld_map
-        from supportutils_scrub import det as _det
-        if _det.current_key():
-            dataset_dict[_det.KEY_FIELD] = _det.current_key()
-        combined_mappings_for_verify = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
+        dataset_dict = chain_mappings(file_processor.scrubbers, mappings, tld_map)
+    combined_mappings_for_verify = dataset_dict
     timer.mark('scrub')
-    for sp in scrubbed_paths:
-        report_format_mismatches(sp)
+    removal_failed = False
+    for sp, was_copied in zip(scrubbed_paths, copied):
+        mine = [f for f in failed if f.startswith(sp + os.sep)]
+        removal_failed |= not drop_unscrubbed(mine, sp, copied=was_copied)
+    mismatches = sum(report_format_mismatches(sp) for sp in scrubbed_paths)
     if verbose_flag and file_times:
         report = slowest_files_report(file_times)
         if report:
@@ -313,6 +262,8 @@ def run_folder_mode(args, logger):
     if args.keyword_file and keyword_scrubber:
         print(f"| Keyword file              : {args.keyword_file}", file=out)
     print(f"| Audit log                 : {audit_path}", file=out)
+    if failed:
+        print(f"| Files NOT scrubbed        : {len(failed)}", file=out)
     print("------------------------------------------------------------\n", file=out)
 
     verify_findings = []
@@ -358,5 +309,9 @@ def run_folder_mode(args, logger):
         mapping_path = saved_mapping_path, args = args, version = SCRIPT_VERSION)
     write_audit_log(audit_path, record)
 
+    if removal_failed:
+        sys.exit(EXIT_ERROR)
     if verify_findings:
         sys.exit(EXIT_VERIFY_FAIL)
+    if failed or mismatches:
+        sys.exit(EXIT_WARNING)
