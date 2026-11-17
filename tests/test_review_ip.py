@@ -74,12 +74,19 @@ def test_bad_entries_from_an_old_mapping_are_dropped():
     assert s.subnet_dict == {}
     assert IPv4Address(s._scrub_token('10.200.1.1', None)) in IPv4Network('100.80.0.0/12')
 
+    # a kept host fake keeps its /24 even though its subnet entry went
+    s = _ip(mappings={'subnet': {'10.0.0.0/8': '100.80.0.0/12'},
+                      'ip': {'10.0.0.5': '100.80.0.5'},
+                      'state': {'pool_cursor_priv10': 0}})
+    assert s.scrub("10.3.7.5") != "100.80.0.5"
+
 
 def test_failed_big_allocation_does_not_exhaust_small_ones():
     s = _ip(public_pool='198.18.0.0/22')       # four /24 slots
     s.scrub("192.0.2.0/24 198.51.100.0/24 203.0.113.0/24")
-    s.scrub("198.51.0.0/23")                   # no aligned /23 left
+    s._learn_cidrs(["198.51.0.0/23"])          # no aligned /23 left
     s.scrub("192.0.3.7")
+    assert s.subnet_dict['192.0.3.0/24'] == '198.18.3.0/24'
     assert s.mapping['192.0.3.7'] == '198.18.3.7'
 
 

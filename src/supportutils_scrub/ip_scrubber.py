@@ -94,6 +94,11 @@ class IPScrubber(Scrubber):
             slot_start = (int(fake_net.network_address) - int(pool.network_address)) // 256
             slot_count = max(1, fake_net.num_addresses // 256)
             self._used_slots[cat].update(range(slot_start, slot_start + slot_count))
+        # A kept fake whose subnet entry was dropped still owns its /24.
+        for k, v in self.ip_dict.items():
+            cat = self._classify_ip(k)
+            pool_start = int(self.category_pools[cat].network_address)
+            self._used_slots[cat].add((int(IPv4Address(v)) - pool_start) // 256)
 
     def _sanitize_ip_map(self):
         for k, v in list(self.ip_dict.items()):
