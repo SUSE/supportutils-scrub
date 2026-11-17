@@ -73,20 +73,27 @@ class SIDScrubber(Scrubber):
         # Valid 3-char SIDs matching the project's placeholder style: HA1, HA2, ...
         return f'HA{idx + 1}' if idx < 9 else f'H{idx + 1:02d}'
 
-    def _add(self, sid: str) -> None:
-        sid = sid.upper()
-        if not _valid(sid) or sid in self.sid_dict or sid in self.agent_sids:
-            return
-        self.sid_dict[sid] = self._fake(self._counter)
-        self._counter += 1
-
     def pre_scan(self, text: str) -> None:
         for sid in _agents(text):
             self.agent_sids.add(sid)
             self.sid_dict.pop(sid, None)
-        for rx in _DISCOVERY:
-            for m in rx.finditer(text):
-                self._add(m.group(1))
+        found = [m.group(1).upper() for rx in _DISCOVERY for m in rx.finditer(text)]
+        found = [s for s in dict.fromkeys(found)
+                 if _valid(s) and s not in self.agent_sids]
+        # a fake is never a real SID nor one already handed out, or two
+        # systems would read as one
+        taken = (set(self.sid_dict) | set(self.sid_dict.values())
+                 | self.agent_sids | set(found))
+        for sid in found:
+            if sid in self.sid_dict:
+                continue
+            fake = self._fake(self._counter)
+            while fake in taken:
+                self._counter += 1
+                fake = self._fake(self._counter)
+            self._counter += 1
+            self.sid_dict[sid] = fake
+            taken.add(fake)
 
     def learn(self, text: str) -> None:   # parity with the parallel learn pre-pass
         self.pre_scan(text)
@@ -94,16 +101,23 @@ class SIDScrubber(Scrubber):
     def scrub(self, text: str) -> str:
         if not self.sid_dict:
             return text
-        # Few SIDs per capture (1-3); sequential per-SID substitution is cheap and
-        # keeps each replacement explicit. Underscore counts as a boundary, so the
-        # standalone rule catches SEP, SEP_D00, /usr/sap/SEP and rsc_SAP_SEP_D00.
+        # One pass, so a fake that is also a real SID (PRD -> HA1 next to a
+        # real HA1) is never rewritten a second time. Underscore counts as a
+        # boundary, so the standalone branch catches SEP, SEP_D00,
+        # /usr/sap/SEP and rsc_SAP_SEP_D00.
         agents = _agents(text)
-        for sid, fake in self.sid_dict.items():
-            if sid in agents:
-                continue
-            low, flow = sid.lower(), fake.lower()
-            text = re.sub(r'SAP' + sid + r'(?![A-Za-z0-9])', 'SAP' + fake, text)
-            text = re.sub(r'(?<![A-Za-z0-9])' + low + r'adm(?![A-Za-z0-9])',
-                          flow + 'adm', text)
-            text = re.sub(r'(?<![A-Za-z0-9])' + sid + r'(?![A-Za-z0-9])', fake, text)
-        return text
+        sids = [s for s in self.sid_dict if s not in agents]
+        if not sids:
+            return text
+        alt = '|'.join(re.escape(s) for s in sorted(sids, key=len, reverse=True))
+        rx = re.compile(r'SAP(?P<sap>' + alt + r')(?![A-Za-z0-9])'
+                        r'|(?<![A-Za-z0-9])(?:(?P<adm>' + alt.lower() + r')adm'
+                        r'|(?P<sid>' + alt + r'))(?![A-Za-z0-9])')
+
+        def _sub(m):
+            if m.group('sap'):
+                return 'SAP' + self.sid_dict[m.group('sap')]
+            if m.group('adm'):
+                return self.sid_dict[m.group('adm').upper()].lower() + 'adm'
+            return self.sid_dict[m.group('sid')]
+        return rx.sub(_sub, text)
