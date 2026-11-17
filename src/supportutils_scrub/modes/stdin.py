@@ -204,7 +204,8 @@ def _finish(args, file_processor, tld_map, keyword_scrubber,
 
     dataset_dict = {s.name: dict(s.mapping) for s in file_processor.scrubbers}
     dataset_dict['subnet'] = ip_s.subnet_dict if ip_s else {}
-    dataset_dict['state'] = ip_s.state if ip_s else {}
+    dataset_dict['state'] = {**(ip_s.state if ip_s else {}),
+                             **(getattr(ipv6_s, 'state', None) or {})}
     dataset_dict['ipv6_subnet'] = ipv6_s.subnet_map if ipv6_s else {}
     dataset_dict['tld_map'] = tld_map
     from supportutils_scrub import det as _det
