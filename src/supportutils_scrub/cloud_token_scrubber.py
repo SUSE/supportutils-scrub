@@ -1,7 +1,7 @@
 # cloud_token_scrubber.py
 
 import re
-from supportutils_scrub.scrubber import Scrubber
+from supportutils_scrub.scrubber import Scrubber, is_pseudonym
 
 
 _JWT_RE = re.compile(
@@ -12,18 +12,25 @@ _AWS_ACCESS_KEY_RE = re.compile(r'(AKIA[0-9A-Z]{16})')
 _AWS_TEMP_KEY_RE = re.compile(r'(ASIA[0-9A-Z]{16})')
 _AWS_SECRET_RE = re.compile(
     r'(?i)((?:aws_secret_access_key|SecretAccessKey|aws_session_token|SessionToken)'
-    r'\s*[:=]\s*["\']?)([A-Za-z0-9+/=_-]{20,})'
+    r'["\']?\s*[:=]\s*["\']?)([A-Za-z0-9+/=_-]{20,})'
 )
 
 _AZURE_CONNSTR_RE = re.compile(
-    r'(AccountKey\s*=\s*)([A-Za-z0-9+/=]{20,})'
+    r'(?i)((?:AccountKey|SharedAccessKey)\s*=\s*)([A-Za-z0-9+/=]{20,})'
 )
 _AZURE_SAS_RE = re.compile(
     r'([?&](?:sig|sv|se|sp|spr|srt|ss)=)([A-Za-z0-9%+/=]{20,})'
 )
 
 _GCP_PRIVKEY_RE = re.compile(
-    r'("private_key"\s*:\s*")(-----BEGIN[^"]+-----)"'
+    r'("private_key"\s*:\s*")(-----BEGIN[^"]+)"'
+)
+
+# The body of a PEM private key; the BEGIN/END lines stay so the key type is
+# still visible. Certificates are public and left alone. A block split across
+# two --jobs chunks of a very large file is not matched.
+_PEM_PRIVKEY_RE = re.compile(
+    r'(-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----)(\s*)([\s\S]*?)(\s*)(-----END \2-----)'
 )
 
 _BEARER_RE = re.compile(
@@ -72,6 +79,13 @@ class CloudTokenScrubber(Scrubber):
         self.token_dict[real_value] = fake
         return fake
 
+    def _replace_pem(self, m):
+        body = m.group(4)
+        if not body or is_pseudonym(body):
+            return m.group(0)
+        return (m.group(1) + m.group(3) + self._get_fake(body, 'PRIVKEY')
+                + m.group(5) + m.group(6))
+
     def scrub(self, text):
         """Replace cloud tokens in text. Returns scrubbed text.
 
@@ -86,7 +100,7 @@ class CloudTokenScrubber(Scrubber):
                                                'secretaccesskey',
                                                'aws_session_token',
                                                'sessiontoken'))
-        has_account_key = 'accountkey' in tl
+        has_account_key = 'accountkey' in tl or 'sharedaccesskey' in tl
         has_sas = 'sig=' in tl or 'sv=' in tl or 'srt=' in tl
         has_bearer = ('bearer' in tl or 'authorization' in tl
                       or 'x-auth-token' in tl or 'token' in tl)
@@ -121,6 +135,9 @@ class CloudTokenScrubber(Scrubber):
         if '"private_key"' in text:
             text = _GCP_PRIVKEY_RE.sub(
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'GCP_PRIVKEY') + '"', text)
+
+        if 'PRIVATE KEY-----' in text:
+            text = _PEM_PRIVKEY_RE.sub(self._replace_pem, text)
 
         if has_bearer:
             text = _BEARER_RE.sub(
