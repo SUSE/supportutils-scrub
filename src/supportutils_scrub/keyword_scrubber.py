@@ -49,8 +49,13 @@ class KeywordScrubber(Scrubber):
         self._re = re.compile('(?:' + trie + ')', re.IGNORECASE) if trie else None
 
     def _next_fake(self):
-        self._counter += 1
-        return f"keyword_{self._counter}"
+        # a loaded mapping may have gaps in its numbering
+        used = set(self.keyword_dict.values())
+        while True:
+            self._counter += 1
+            fake = f"keyword_{self._counter}"
+            if fake not in used:
+                return fake
 
     @property
     def mapping(self):

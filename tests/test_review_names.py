@@ -121,3 +121,13 @@ def test_keyword_pseudonyms_stable_across_runs():
                         mappings={"keyword": {"Acme": "keyword_1"}})
     assert s.keyword_dict == {"acme": "keyword_1", "newword": "keyword_2"}
     assert s.scrub("ACME newword") == "keyword_1 keyword_2"
+
+
+def test_keyword_fake_skips_numbers_a_mapping_already_uses():
+    from supportutils_scrub.keyword_scrubber import KeywordScrubber
+    k = KeywordScrubber(cmd_keywords=['newcorp'],
+                        mappings={'keyword': {'acme': 'keyword_2', 'globex': 'keyword_1'}})
+    k2 = KeywordScrubber(cmd_keywords=['newcorp'],
+                         mappings={'keyword': {'acme': 'keyword_3'}})
+    assert k2.mapping['newcorp'] != 'keyword_3'
+    assert len(set(k.mapping.values())) == 3
