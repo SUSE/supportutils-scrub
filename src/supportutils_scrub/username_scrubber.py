@@ -33,14 +33,19 @@ class UsernameScrubber(Scrubber):
 
     def __init__(self, username_dict):
         self.username_dict = username_dict
-        replaced = {k: v for k, v in username_dict.items()
-                    if k.lower() not in self.COMMON_WORDS}
+        # Lowercased and matched case-insensitively with only letters and
+        # digits as neighbours: EXAMPLE\JDOE, Jdoe, backup_jdoe.tar and
+        # /home/jdoe_old all carry the account.
+        self._lookup = {k.lower(): v for k, v in username_dict.items()
+                        if k.lower() not in self.COMMON_WORDS}
         # Trie-regex: factoring shared prefixes lets the C engine dispatch by
         # character (O(text)), instead of a flat alternation backtracking through
         # 1000+ usernames at every position. The callback fires only on matches.
         self._re = None
-        if replaced:
-            self._re = re.compile(r'\b(?:' + build_trie_pattern(replaced.keys()) + r')\b')
+        trie = build_trie_pattern(self._lookup.keys())
+        if trie:
+            self._re = re.compile(r'(?<![A-Za-z0-9])(?:' + trie + r')(?![A-Za-z0-9])',
+                                  re.IGNORECASE)
 
     @property
     def mapping(self):
@@ -49,11 +54,11 @@ class UsernameScrubber(Scrubber):
     def scrub(self, text):
         if not self._re:
             return text
-        return self._re.sub(lambda m: self.username_dict[m.group(0)], text)
+        return self._re.sub(lambda m: self._lookup[m.group(0).lower()], text)
 
     @staticmethod
     def _is_excluded(username):
-        if len(username) < 3:
+        if len(username) < 3 or username.isdigit():
             return True
         if username in UsernameScrubber.EXCLUDED_USERS:
             return True
@@ -97,8 +102,12 @@ class UsernameScrubber(Scrubber):
         return list(usernames)
 
     _LOG_PATTERNS = [
-        re.compile(r"session opened for user (\w+)"),
-        re.compile(r"\b(?:user|logname)\s*=\s*([A-Za-z0-9._-]+)", re.IGNORECASE),
+        re.compile(r"session opened for user ([\w.@-]+?)(?=[(\s]|$)"),
+        # lower case only: sudo's USER= is the target account (root, postgres),
+        # not the person
+        re.compile(r"(?<![A-Za-z])(?:user|logname)\s*=\s*([A-Za-z0-9._-]+)"),
+        re.compile(r"\bsudo(?:\[\d+\])?:\s+([A-Za-z0-9._@-]+)\s+:"),
+        re.compile(r"\bAccepted \S+ for ([A-Za-z0-9._@-]+) from "),
         re.compile(r'acct="([^"]+)"'),
         re.compile(r'NCE/USER/[^/]+/([A-Za-z0-9._-]+)', re.IGNORECASE),
         re.compile(r'pam_unix\([^)]+\):.*?\[([A-Za-z0-9._-]+)\]'),
@@ -106,18 +115,17 @@ class UsernameScrubber(Scrubber):
     ]
 
     # Every line any _LOG_PATTERNS entry can match contains one of these
-    # substrings, so locating them with str.find and running the 6 patterns
+    # substrings, so locating them with str.find and running the patterns
     # only on the enclosing lines is an exact-semantics fast path.
-    _LOG_TRIGGERS = ('user', 'logname', 'acct="', 'pam_unix')
+    _LOG_TRIGGERS = ('user', 'logname', 'acct="', 'pam_unix', 'sudo', 'accepted ')
 
     @staticmethod
     def _extract_from_log_lines(lines):
         usernames = set()
         for line in lines:
             for pat in UsernameScrubber._LOG_PATTERNS:
-                match = pat.search(line)
-                if match:
-                    username = match.group(1)
+                for match in pat.finditer(line):
+                    username = match.group(1).rstrip('.')
                     if not UsernameScrubber._is_excluded(username):
                         usernames.add(username)
         return usernames
