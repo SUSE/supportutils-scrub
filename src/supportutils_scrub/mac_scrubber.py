@@ -30,6 +30,9 @@ class MACScrubber(Scrubber):
         self.config = config
         self.deterministic = deterministic
         self._fakes = {v.upper() for v in self.mac_dict.values()}
+        # --jobs workers avoid only the fakes they all start with; anything
+        # learned in one worker would make the fake depend on file order.
+        self._base_fakes = frozenset(self._fakes)
 
     @property
     def mapping(self):
@@ -38,6 +41,7 @@ class MACScrubber(Scrubber):
     def _generate_fake_mac(self, original=None):
         # The fake OUI leaves 24 bits, so a hash collides after a few thousand
         # MACs: step to the next candidate until no other real MAC holds it.
+        taken = self._base_fakes if self.deterministic else self._fakes
         i = 0
         while True:
             if self.deterministic and original is not None:
@@ -47,7 +51,7 @@ class MACScrubber(Scrubber):
             else:
                 count = (len(self.mac_dict) + i) & 0xFFFFFF
                 fake = f"00:1A:2B:{count >> 16:02X}:{(count >> 8) & 0xFF:02X}:{count & 0xFF:02X}"
-            if fake not in self._fakes:
+            if fake not in taken:
                 return fake
             i += 1
 
