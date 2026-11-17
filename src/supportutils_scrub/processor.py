@@ -717,8 +717,8 @@ def _gzip_header_names(path, ext):
 
 
 def strip_compression_ext(name):
-    """Drop a single-file compression extension (.gz/.xz/.bz2) if present."""
-    comp = compressed_opener(os.path.basename(name))
+    """Drop a single-file compression extension (.gz/.xz/.bz2/.zst) if present."""
+    comp = single_file_compression(os.path.basename(name))
     return name[:-len(comp[0])] if comp else name
 
 
@@ -744,7 +744,7 @@ def scrubbed_output_name(path):
 
     Directories and tar archives are named via append_scrubbed(); this
     covers every single-file output path."""
-    comp = compressed_opener(os.path.basename(path))
+    comp = single_file_compression(os.path.basename(path))
     comp_ext = path[-len(comp[0]):] if comp else ''
     stem = path[:-len(comp_ext)] if comp_ext else path
     root, ext = os.path.splitext(stem)

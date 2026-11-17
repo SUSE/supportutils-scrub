@@ -280,3 +280,9 @@ def test_extract_without_data_filter_still_drops_read_only_modes(tmp_path, monke
     assert extractor.expand_nested_archives(str(tmp_path), _Logger()) == 1
     assert _scrub(tmp_path / "bundle" / "conf" / "hosts")[0]
     assert IP not in (tmp_path / "bundle" / "conf" / "hosts").read_bytes()
+
+
+def test_zst_output_names_follow_the_convention():
+    from supportutils_scrub.processor import scrubbed_output_name, strip_compression_ext
+    assert scrubbed_output_name('x.log.zst') == 'x_scrubbed.log.zst'
+    assert strip_compression_ext('x_scrubbed.log.zst') == 'x_scrubbed.log'
