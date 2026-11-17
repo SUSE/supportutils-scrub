@@ -169,3 +169,13 @@ def test_trie_terms_match_like_single_terms():
     assert set(_mapping_hits(line, term_res, labels)) == {
         ("hostname", "node0042x"), ("IPv4 address", "203.0.113.17"),
         ("IPv4 address", "203.0.113.170")}
+
+
+def test_public_ips_kept_on_purpose_are_not_findings():
+    from supportutils_scrub.verify import _build_safe_ipv4_nets, _is_safe_ipv4
+    nets = _build_safe_ipv4_nets(obfuscate_private_ip=True, obfuscate_public_ip=False)
+    assert _is_safe_ipv4("8.8.8.8", nets)
+    assert not _is_safe_ipv4("10.1.2.3", nets)
+    assert not _is_safe_ipv4("192.168.1.1", nets)
+    nets = _build_safe_ipv4_nets()
+    assert not _is_safe_ipv4("8.8.8.8", nets)

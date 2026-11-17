@@ -85,11 +85,18 @@ _SAFE_IPV4_PRIVATE = [
 ]
 
 
-def _build_safe_ipv4_nets(obfuscate_private_ip=False):
+def _build_safe_ipv4_nets(obfuscate_private_ip=False, obfuscate_public_ip=True):
     """Build the safe IPv4 list, including private ranges if they are not being scrubbed."""
     nets = list(_SAFE_IPV4_ALWAYS)
     if not obfuscate_private_ip:
         nets.extend(_SAFE_IPV4_PRIVATE)
+    if not obfuscate_public_ip:
+        # everything outside the private ranges is left as it is on purpose
+        public = [ipaddress.IPv4Network('0.0.0.0/0')]
+        for priv in _SAFE_IPV4_PRIVATE:
+            public = [p for net in public
+                      for p in (net.address_exclude(priv) if priv.subnet_of(net) else [net])]
+        nets.extend(public)
     return nets
 
 
@@ -707,10 +714,12 @@ def verify_scrubbed_folder(folder_path, mappings, original_folder=None,
     findings = []
 
     # Build IP allowlist based on config
-    obfuscate_private = False
+    obfuscate_private, obfuscate_public = False, True
     if config:
         obfuscate_private = config.obfuscate_private_ip
-    safe_nets = _build_safe_ipv4_nets(obfuscate_private_ip=obfuscate_private)
+        obfuscate_public = getattr(config, 'obfuscate_public_ip', True)
+    safe_nets = _build_safe_ipv4_nets(obfuscate_private_ip=obfuscate_private,
+                                      obfuscate_public_ip=obfuscate_public)
 
     # --- Layer 1: mapping-based (one trie regex per match mode) ---
     term_res, labels = _build_terms(mappings)
