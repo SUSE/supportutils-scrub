@@ -1,5 +1,6 @@
 # pipeline.py — shared extraction, mapping, and scrubber-init helpers
 
+from supportutils_scrub import fastsub
 from supportutils_scrub.processor import _iter_line_segments, compressed_opener
 import os
 import sys
@@ -314,6 +315,7 @@ def _pre_scan_file(scrubber, fpath):
         with open(fpath, 'rb') as f:
             for seg in _iter_line_segments(f.read, _PRESCAN_SEG_BYTES):
                 scrubber.pre_scan(seg.decode('utf-8', 'ignore'))
+                fastsub.forget()        # the segment and its lowercase copy
     except MemoryError:
         raise
     except Exception:

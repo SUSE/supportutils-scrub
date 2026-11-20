@@ -2,6 +2,7 @@
 
 import re
 from ipaddress import IPv4Address, IPv4Network, ip_network
+from supportutils_scrub.fastsub import hint_spans, iter_spans, sub_spans
 from supportutils_scrub.scrubber import Scrubber
 
 OCTET = r'(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)'
@@ -31,6 +32,10 @@ REV_RE = re.compile(
     rf'(?<![A-Za-z0-9.\-])(?P<rev>(?:{OCTET}\.){{2,3}}{OCTET})'
     r'(?=\.in-addr\.arpa(?![A-Za-z0-9\-]))',
     re.IGNORECASE)
+
+# Every address, range, subnet and reversed PTR name holds two octets between
+# dots. The hint starts with a literal, so `re` jumps from dot to dot.
+_QUAD_HINTS = (re.compile(r'\.\d{1,3}\.\d{1,3}\.'),)
 
 SPECIALS = {
     "0.0.0.0", "127.0.0.1", "127.0.0.0", "127.255.255.255", "255.255.255.255",
@@ -76,6 +81,11 @@ class IPScrubber(Scrubber):
         # /24 slots taken, per pool: slot numbers are pool-relative.
         self._used_slots = {cat: set() for cat in self.category_pools}
         self._taken = None   # fake IPs in use, built on the first fallback
+        # Addresses that are never replaced (loopback, multicast, netmasks,
+        # a range the config leaves alone). Most addresses in a log are
+        # private ones repeated on every line, and without this each
+        # repeat is parsed and classified again.
+        self._untouched = set()
         for k, v in list(self.subnet_dict.items()):
             try:
                 real_net = IPv4Network(k)
@@ -170,18 +180,25 @@ class IPScrubber(Scrubber):
         end   = int(pool.broadcast_address) + 1
 
         cursor = self._pool_cursor.get(cat_key, 0)
-        for _ in range((end - start) // step):
+        slot_count = max(1, step // 256)
+        travelled = 0
+        while travelled < end - start:
             base = start + ((cursor // step) * step)
             if base >= end:
                 cursor = 0
                 base = start
             slot_start = (base - start) // 256
-            slot_count = max(1, step // 256)
             if not any(s in used for s in range(slot_start, slot_start + slot_count)):
                 used.update(range(slot_start, slot_start + slot_count))
                 self._pool_cursor[cat_key] = (base - start) + step
                 return IPv4Network((base, prefixlen))
-            cursor += step
+            # Overlap is tracked per /24, so a taken /24 is taken for every
+            # smaller net inside it: the next candidate that can be free is
+            # the first one of the next /24 (the same one stepping net by
+            # net reaches, after up to 256 checks of the same slot).
+            skip = max(step, 256 - (base - start) % 256)
+            cursor = (base - start) + skip
+            travelled += skip
 
         self._exhausted_pools.add((cat_key, prefixlen))
         raise RuntimeError(f"Pool {pool} exhausted for /{prefixlen}")
@@ -201,9 +218,9 @@ class IPScrubber(Scrubber):
         self.subnet_dict[str(real_net)] = str(fake_net)
         self._index_dirty = True
 
-    def _discover_cidrs(self, text):
+    def _discover_cidrs(self, text, spans=None):
         seen = set()
-        for m in CIDR_SUBNET_RE.finditer(text):
+        for m in iter_spans(CIDR_SUBNET_RE, text, spans):
             ip, pfx = m.group('ip'), int(m.group('pfx'))
             key = f"{ip}/{pfx}"
             if key in seen or pfx in (0, 32) or pfx > 32:
@@ -261,12 +278,17 @@ class IPScrubber(Scrubber):
         cached = self.ip_dict.get(ip_str)
         if cached is not None:
             return cached + suffix
+        if ip_str in self._untouched:
+            return ip_str + suffix
         try:
             ip_obj = IPv4Address(ip_str)
         except ValueError:
             return ip_str + suffix
         if (ip_obj.is_loopback or ip_obj.is_multicast or ip_str in SPECIALS
-                or pfx_str == '0' or not self._wants(ip_str)):
+                or not self._wants(ip_str)):
+            self._untouched.add(ip_str)
+            return ip_str + suffix
+        if pfx_str == '0':
             return ip_str + suffix
 
         fake = self._map_in_subnets(ip_str)
@@ -304,10 +326,10 @@ class IPScrubber(Scrubber):
                 return fake
         return None
 
-    def _iter_matches(self, text):
+    def _iter_matches(self, text, spans=None):
         """CIDR_RE matches that are addresses, not versions. Shared by scrub
         and discover so both make identical decisions."""
-        for m in CIDR_RE.finditer(text):
+        for m in iter_spans(CIDR_RE, text, spans):
             start = m.start()
             if not _VERSION_CTX_RE.search(text[max(0, start - 20):start].rstrip()):
                 yield m
@@ -330,12 +352,20 @@ class IPScrubber(Scrubber):
 
     def scrub_text(self, text):
         """Two-pass scrub: learn subnets, then replace IPs subnet-aware."""
-        self._learn_cidrs(self._discover_cidrs(text))
+        spans = hint_spans(text, _QUAD_HINTS)
+        if spans is not None and not spans:
+            return text, self.ip_dict, self.subnet_dict, self.state
+        self._learn_cidrs(self._discover_cidrs(text, spans))
         if 'in-addr' in text or 'IN-ADDR' in text:
-            text = REV_RE.sub(self._replace_rev, text)
+            if spans is None:
+                text = REV_RE.sub(self._replace_rev, text)
+            else:
+                new = sub_spans(REV_RE, self._replace_rev, text, spans)
+                if new is not text:
+                    text, spans = new, hint_spans(new, _QUAD_HINTS)
         out = []
         pos = 0
-        for m in self._iter_matches(text):
+        for m in self._iter_matches(text, spans):
             out.append(text[pos:m.start()])
             out.append(self._replace_match(m))
             pos = m.end()
@@ -349,7 +379,10 @@ class IPScrubber(Scrubber):
         first-seen order and deduplicated. Filtering is shared with
         scrub_text; nothing touches allocation state, so this can run in
         parallel workers and be replayed in the parent."""
-        cidrs = list(self._discover_cidrs(text))
+        spans = hint_spans(text, _QUAD_HINTS)
+        if spans is not None and not spans:
+            return [], []
+        cidrs = list(self._discover_cidrs(text, spans))
         tokens = []
         seen = set()
 
@@ -359,9 +392,9 @@ class IPScrubber(Scrubber):
                 tokens.append(tok)
 
         if 'in-addr' in text or 'IN-ADDR' in text:
-            for m in REV_RE.finditer(text):
+            for m in iter_spans(REV_RE, text, spans):
                 add((self._rev_forward(m), None))
-        for m in self._iter_matches(text):
+        for m in self._iter_matches(text, spans):
             if m.group('ip2'):
                 add((m.group('ip'), None))
                 add((m.group('ip2'), m.group('pfx')))

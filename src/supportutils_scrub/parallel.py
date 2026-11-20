@@ -33,16 +33,15 @@ import time
 import pickle
 import shutil
 import tempfile
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 from supportutils_scrub.ip_scrubber import IPScrubber
 from supportutils_scrub.pipeline import build_chain, merge_state
-import gzip
 import subprocess
 from supportutils_scrub.processor import (
     FileProcessor, BINARY_SA_PATTERN, BINARY_OBJ_PATTERN, _SCRUB_INFO_HEADER,
     compressed_opener, compression_magic_ok, is_memory_dump, is_archive_name,
-    looks_binary, is_binary_head, _TEXT_PROBE,
+    looks_binary, is_binary_head, _TEXT_PROBE, COMPRESS_LEVEL, open_compressed_out,
 )
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 
@@ -358,17 +357,11 @@ def _recompress(staged, path, ext, opener, logger):
         size = os.path.getsize(staged)
         if ext == '.xz' and shutil.which('xz'):
             with open(staged, 'rb') as src, open(tmp, 'wb') as out:
-                subprocess.run(['xz', '-T0', '-c'], stdin=src, stdout=out,
-                               check=True)
+                subprocess.run(['xz', f'-{COMPRESS_LEVEL}', '-T0', '-c'],
+                               stdin=src, stdout=out, check=True)
         else:
             with open(staged, 'rb') as src:
-                if ext == '.gz':
-                    fh = open(tmp, 'wb')
-                    # no FNAME: the original name may carry a real hostname
-                    out = gzip.GzipFile(filename='', mode='wb', fileobj=fh)
-                else:
-                    fh = None
-                    out = opener(tmp, 'wb')
+                out, fh = open_compressed_out(tmp, ext, opener)
                 try:
                     shutil.copyfileobj(src, out, _STAGE_BLOCK)
                 finally:
@@ -420,6 +413,34 @@ def _finish_staged(path, staged, ext, opener, changed, decompress, logger):
             pass
 
 
+def _ready():
+    return True
+
+
+def _stage_one(path, logger):
+    """(path to work on, staged-from info or None) for one input file."""
+    comp = _stageable_compressed(path)
+    staged = _stage_compressed(path, comp, logger) if comp else None
+    if staged:
+        return staged, (path, comp[0], comp[1])
+    return path, None
+
+
+def _finish_big(path, parts, changed, staged, decompress, logger):
+    """Put one chunked file back together and, for a staged compressed log,
+    put the result where the file belongs. False: the file is left as it
+    was, unscrubbed."""
+    try:
+        _assemble_chunks(path, parts, changed)
+    except Exception as e:
+        logger.error(f"could not reassemble {path}: {e}")
+        return False
+    if staged is None:
+        return True
+    orig, ext, opener = staged
+    return _finish_staged(orig, path, ext, opener, changed, decompress, logger)
+
+
 def _balanced_batches(files, n):
     """Split files into n buckets balanced by size (largest-first round-robin)."""
     def _size(p):
@@ -454,8 +475,19 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
     [(basename, wall seconds)] per scrubbed file (chunked files summed).
     """
     jobs = max(1, jobs)
-
-    with ProcessPoolExecutor(max_workers=jobs) as ex:
+    # Side threads for work that is I/O or runs outside the interpreter lock
+    # (decompressing, copying parts together, xz): done on the parent's one
+    # thread it held the whole run back while the pool sat idle.
+    with ProcessPoolExecutor(max_workers=jobs) as ex, \
+            ThreadPoolExecutor(max_workers=min(8, jobs)) as side:
+        # A fork copies only the calling thread, and a lock another thread
+        # held at that moment (stdout, logging) would stay locked in the
+        # child for good. So the workers are started here, before the first
+        # side thread exists, and below no task is handed to the pool while
+        # a side thread is at work (some Python versions start workers on
+        # later submits): staging ends before discovery is submitted, and
+        # every scrub task is submitted before the first file is finished.
+        ex.submit(_ready).result()
         # --- Pre-pass: build the IPv4 maps (no writes) ----------------------
         # IPv4 fake pools are small so subnet allocation needs global
         # coordination: workers discover in parallel, the parent replays the
@@ -466,14 +498,11 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
         # Big compressed logs are staged plain and chunked like any big file.
         staged_map = {}          # staged path -> (original, ext, opener)
         work_files = []
-        for p in report_files:
-            comp = _stageable_compressed(p)
-            st = _stage_compressed(p, comp, logger) if comp else None
-            if st:
-                staged_map[st] = (p, comp[0], comp[1])
-                work_files.append(st)
-            else:
-                work_files.append(p)
+        for work, staged_from in side.map(lambda p: _stage_one(p, logger),
+                                          report_files):
+            if staged_from:
+                staged_map[work] = staged_from
+            work_files.append(work)
         report_files = work_files
 
         def _big(p):
@@ -561,6 +590,35 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
             for batch in _balanced_batches(small_files, jobs * _BATCHES_PER_WORKER):
                 futures.append((batch, ex.submit(_scrub_batch, (ctx_path, batch))))
 
+            # The big files went in first, so their chunks come back while
+            # the small files are still in work: each one is put back
+            # together (and a staged log recompressed) on a side thread as
+            # soon as its last chunk is in.
+            chunk_results = []
+            for fut_path, fut in chunk_futures:
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    # the file stays unscrubbed: skip its assembly
+                    logger.error(f"chunk scrub failed for {fut_path}: {e}")
+                    chunk_failed.add(fut_path)
+                    continue
+                chunk_results.append(res)
+                path, idx, part_path, changed = res[:4]
+                chunk_parts.setdefault(path, []).append((idx, part_path))
+                chunk_changed[path] = chunk_changed.get(path, False) or changed
+            finishing = []
+            for path in big_files:
+                parts = chunk_parts.get(path, [])
+                if path in chunk_failed:
+                    # drop the parts that did come back; the file stays raw
+                    finishing.append((path, side.submit(
+                        _finish_big, path, parts, False, None, decompress, logger)))
+                else:
+                    finishing.append((path, side.submit(
+                        _finish_big, path, parts, chunk_changed.get(path, False),
+                        staged_map.get(path), decompress, logger)))
+
             for batch, fut in futures:
                 try:
                     diffs, hits, extra, times, bad = fut.result()
@@ -576,16 +634,7 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
                 file_hits.update(hits)
                 file_times.extend(times)
 
-            for fut_path, fut in chunk_futures:
-                try:
-                    path, idx, part_path, changed, diffs, extra, grew, secs = fut.result()
-                except Exception as e:
-                    # the file stays unscrubbed: skip its assembly
-                    logger.error(f"chunk scrub failed for {fut_path}: {e}")
-                    chunk_failed.add(fut_path)
-                    continue
-                chunk_parts.setdefault(path, []).append((idx, part_path))
-                chunk_changed[path] = chunk_changed.get(path, False) or changed
+            for path, idx, part_path, changed, diffs, extra, grew, secs in chunk_results:
                 chunk_times[path] = chunk_times.get(path, 0.0) + secs
                 for name, d in diffs.items():
                     merged.setdefault(name, {}).update(d)
@@ -594,20 +643,15 @@ def scrub_in_parallel(report_files, frozen_seed, config, jobs, logger,
                     base = os.path.basename(path)
                     file_hits[base] = sorted(set(file_hits.get(base, [])) | set(grew))
 
-            for path, parts in chunk_parts.items():
+            for path, fut in finishing:
                 try:
-                    _assemble_chunks(path, parts,
-                                     chunk_changed.get(path, False) and path not in chunk_failed)
+                    ok = fut.result() and path not in chunk_failed
                 except Exception as e:
-                    logger.error(f"could not reassemble {path}: {e}")
-                    chunk_failed.add(path)
-            for st, (orig, ext, opener) in staged_map.items():
-                # on failure the original is left untouched, i.e. raw
-                if st in chunk_failed or not _finish_staged(
-                        orig, st, ext, opener, chunk_changed.get(st, False),
-                        decompress, logger):
-                    unscrubbed.append(orig)
-            unscrubbed.extend(p for p in chunk_failed if p not in staged_map)
+                    logger.error(f"could not finish {path}: {e}")
+                    ok = False
+                if not ok:
+                    # on failure the original is left untouched, i.e. raw
+                    unscrubbed.append(staged_map[path][0] if path in staged_map else path)
         finally:
             for st in staged_map:
                 try:

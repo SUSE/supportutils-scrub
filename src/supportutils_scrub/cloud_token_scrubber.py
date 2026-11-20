@@ -1,6 +1,7 @@
 # cloud_token_scrubber.py
 
 import re
+from supportutils_scrub.fastsub import gsub
 from supportutils_scrub.scrubber import Scrubber, is_pseudonym
 
 
@@ -107,44 +108,44 @@ class CloudTokenScrubber(Scrubber):
         del tl
 
         if has_jwt:
-            text = _JWT_RE.sub(
+            text = gsub(_JWT_RE, 
                 lambda m: self._get_fake(m.group(1), 'JWT'), text)
-            text = _IDENTITY_TAG_RE.sub(
+            text = gsub(_IDENTITY_TAG_RE, 
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'JWT'), text)
 
         if 'AKIA' in text:
-            text = _AWS_ACCESS_KEY_RE.sub(
+            text = gsub(_AWS_ACCESS_KEY_RE, 
                 lambda m: self._get_fake(m.group(1), 'AWS_KEY'), text)
 
         if 'ASIA' in text:
-            text = _AWS_TEMP_KEY_RE.sub(
+            text = gsub(_AWS_TEMP_KEY_RE, 
                 lambda m: self._get_fake(m.group(1), 'AWS_TEMP'), text)
 
         if has_aws_secret:
-            text = _AWS_SECRET_RE.sub(
+            text = gsub(_AWS_SECRET_RE, 
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'AWS_SECRET'), text)
 
         if has_account_key:
-            text = _AZURE_CONNSTR_RE.sub(
+            text = gsub(_AZURE_CONNSTR_RE, 
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'AZURE_KEY'), text)
 
         if has_sas:
-            text = _AZURE_SAS_RE.sub(
+            text = gsub(_AZURE_SAS_RE, 
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'AZURE_SAS'), text)
 
         if '"private_key"' in text:
-            text = _GCP_PRIVKEY_RE.sub(
+            text = gsub(_GCP_PRIVKEY_RE, 
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'GCP_PRIVKEY') + '"', text)
 
         if 'PRIVATE KEY-----' in text:
-            text = _PEM_PRIVKEY_RE.sub(self._replace_pem, text)
+            text = gsub(_PEM_PRIVKEY_RE, self._replace_pem, text)
 
         if has_bearer:
-            text = _BEARER_RE.sub(
+            text = gsub(_BEARER_RE, 
                 lambda m: m.group(1) + self._get_fake(m.group(2), 'BEARER'), text)
 
         if 'ssh-rsa' in text or 'ssh-ed25519' in text or 'ecdsa-sha2-' in text or 'ssh-dss' in text:
-            text = _SSH_PUBKEY_RE.sub(
+            text = gsub(_SSH_PUBKEY_RE, 
                 lambda m: m.group(1) + ' ' + self._get_fake(m.group(2), 'SSH_COMMENT'), text)
 
         return text

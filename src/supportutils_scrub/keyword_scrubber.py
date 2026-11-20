@@ -2,6 +2,7 @@ import logging
 import re
 import os
 import sys
+from supportutils_scrub.fastsub import gsub, literals
 from supportutils_scrub.scrubber import Scrubber
 from supportutils_scrub.trie_re import build_trie_pattern
 
@@ -47,6 +48,7 @@ class KeywordScrubber(Scrubber):
         # instead of one re.sub (full scan + string rebuild) per keyword.
         trie = build_trie_pattern(self.keyword_dict.keys())
         self._re = re.compile('(?:' + trie + ')', re.IGNORECASE) if trie else None
+        self._first = literals(self.keyword_dict) if trie else None
 
     def _next_fake(self):
         # a loaded mapping may have gaps in its numbering
@@ -64,8 +66,10 @@ class KeywordScrubber(Scrubber):
     def scrub(self, text):
         if self._re is None:
             return text
-        return self._re.sub(
-            lambda m: self.keyword_dict.get(m.group(0).lower(), m.group(0)), text)
+        return gsub(
+            self._re,
+            lambda m: self.keyword_dict.get(m.group(0).lower(), m.group(0)), text,
+            first=self._first)
 
     def is_loaded(self):
         return bool(self.keyword_dict)

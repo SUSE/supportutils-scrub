@@ -2,6 +2,7 @@
 
 import re
 from typing import Set, Dict, List, Optional, Tuple, Iterable, Match
+from supportutils_scrub.fastsub import gsub, literals
 from supportutils_scrub.scrubber import Scrubber
 from supportutils_scrub.trie_re import build_trie_pattern
 
@@ -152,6 +153,10 @@ def _dc_to_domain(dc_str: str) -> str:
 def _domain_to_dc(domain: str) -> str:
     return ','.join(f'DC={label}' for label in domain.split('.'))
 
+# every DC= pattern below starts with this literal
+_DC_FIRST = ('dc=',)
+
+
 class DomainScrubber(Scrubber):
     name = 'domain'
 
@@ -178,6 +183,7 @@ class DomainScrubber(Scrubber):
             # known suffix inside an undiscovered subdomain still works.
             trie = build_trie_pattern(self._scrub_lookup.keys())
             self._re = re.compile(rf"(?<![A-Za-z0-9-])(?:{trie})(?![A-Za-z0-9-])", re.IGNORECASE)
+            self._first = literals(self._scrub_lookup)
         else:
             self._re = None
 
@@ -229,29 +235,32 @@ class DomainScrubber(Scrubber):
             def _replacer(match: Match) -> str:
                 found_domain = _norm(match.group(0))
                 return self._scrub_lookup.get(found_domain, match.group(0))
-            text = self._re.sub(_replacer, text)
+            text = gsub(self._re, _replacer, text, first=self._first)
 
         # The DC= passes only matter for LDAP/AD distinguished names. Skip all
         # three (each a full-text scan) when no DC= component is present. The
         # four case variants avoid text.lower(), which copies the whole file.
         if 'dc=' in text or 'DC=' in text or 'Dc=' in text or 'dC=' in text:
             if self._dc_re:
-                text = self._dc_re.sub(
+                text = gsub(
+                    self._dc_re,
                     lambda m: self._dc_dict.get(re.sub(r',\s*', ',', m.group(0)).lower(),
                                                 m.group(0)),
-                    text
+                    text, first=_DC_FIRST
                 )
 
             if self._dc_label_re:
-                text = self._dc_label_re.sub(
+                text = gsub(
+                    self._dc_label_re,
                     lambda m: 'DC=' + self._dc_label_dict[m.group(1).lower()],
-                    text
+                    text, first=_DC_FIRST
                 )
 
             if self._dc_prefix_re:
-                text = self._dc_prefix_re.sub(
+                text = gsub(
+                    self._dc_prefix_re,
                     lambda m: 'DC=' + self._dc_prefix_dict[m.group(1).lower()],
-                    text
+                    text, first=_DC_FIRST
                 )
 
         return text

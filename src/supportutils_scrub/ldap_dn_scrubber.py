@@ -1,5 +1,6 @@
 import re
 from typing import Dict, Optional
+from supportutils_scrub.fastsub import gsub
 from supportutils_scrub.scrubber import Scrubber, is_pseudonym
 
 _LDAP_SAFE_VALUES = {
@@ -86,4 +87,4 @@ class LdapDnScrubber(Scrubber):
                 return m.group(0)
             return f"{typ}={self._fake_for(val, typ)}"
 
-        return _CN_OU_RE.sub(_repl, text)
+        return gsub(_CN_OU_RE, _repl, text)

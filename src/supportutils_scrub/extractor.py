@@ -2,11 +2,12 @@
 
 import os
 import shutil
+import stat
 import logging
 import tarfile
 import subprocess
 
-from supportutils_scrub.processor import (append_scrubbed, dump_member_verdict,
+from supportutils_scrub.processor import (COMPRESS_LEVEL, append_scrubbed, dump_member_verdict,
                                           DUMP, NOT_A_DUMP, _zstd_open,
                                           _TAR_SUFFIXES, _ARCHIVE_NAME_SUFFIXES,
                                           _ZST_TAR_SUFFIXES)
@@ -230,19 +231,23 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                 zst_error = _unzstd(archive, unzst) if unzst else None
                 with tarfile.open(unzst or archive, 'r:*') as tar:
                     try:
-                        members = tar.getmembers()
+                        os.makedirs(dest)
+                        created = True
+                        # Members are written as the archive is read. Listing
+                        # them all first decompressed a .txz twice: once to
+                        # find the headers, once more from the start to
+                        # extract.
+                        _extract_verified(tar, tar, dest)
                         if zst_error:
                             raise zst_error
                     except Exception:
-                        # the members read before the damage decide whether
-                        # the archive is kept
-                        dump = _first_dump_member(tar, tar.members)
-                        raise
-                    try:
-                        os.makedirs(dest)
-                        created = True
-                        _extract_verified(tar, members, dest)
-                    except Exception:
+                        # Whether the archive is kept is decided by ALL its
+                        # members, also the ones the failure came before:
+                        # list the rest now, as far as the archive reads.
+                        try:
+                            members = tar.getmembers()
+                        except Exception:
+                            members = tar.members
                         dump = _first_dump_member(tar, members)
                         raise
                 if logger:
@@ -267,6 +272,12 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                                      f"left in place and never scrubbed{tail}")
                     kept.add(archive)
                     continue
+                if created:
+                    # dest did not exist before this archive. What a failed
+                    # extraction wrote goes with it, as the message says: the
+                    # members are written while the archive is read, so a
+                    # truncated archive would otherwise leave its first half.
+                    shutil.rmtree(dest, ignore_errors=True)
                 if logger:
                     logger.error(f"Could not unpack nested archive {rel}: {e} — removed (cannot scrub its contents)")
             finally:
@@ -452,7 +463,7 @@ def create_txz(source_dir, output_filename):
             # are used. Python's lzma module is single-threaded; on a large
             # supportconfig this compression step dominates the runtime.
             with open(tmp, 'wb') as out_f:
-                proc = subprocess.Popen([xz_bin, '-T0', '-c'],
+                proc = subprocess.Popen([xz_bin, f'-{COMPRESS_LEVEL}', '-T0', '-c'],
                                         stdin=subprocess.PIPE, stdout=out_f)
                 try:
                     with tarfile.open(fileobj=proc.stdin, mode='w|') as tar:
@@ -464,7 +475,7 @@ def create_txz(source_dir, output_filename):
                     raise RuntimeError(f"xz exited with status {ret} while writing {output_filename}")
         else:
             # Fallback: no xz binary available, use single-threaded lzma.
-            with tarfile.open(tmp, 'w:xz') as tar:
+            with tarfile.open(tmp, 'w:xz', preset=COMPRESS_LEVEL) as tar:
                 tar.add(source_dir, arcname=arcname, filter=_anonymous_owner)
         os.replace(tmp, output_filename)
     except BaseException:
@@ -473,6 +484,28 @@ def create_txz(source_dir, output_filename):
         except OSError:
             pass
         raise
+
+_FICLONE = 0x40049409        # linux/fs.h: share the source's blocks, copy on write
+
+
+def _clone_or_copy(src, dst):
+    """shutil.copy2, through a block clone where the filesystem has one (XFS
+    with reflink, btrfs): the copy is its own file, written to without
+    touching the source, and a multi-GB lastlog or journal that the scrub
+    never rewrites costs no I/O at all. Anything else is a plain copy."""
+    try:
+        import fcntl
+        # Regular files only: opening a FIFO here would wait for a writer
+        # for ever, where copy2 names it and refuses.
+        if not stat.S_ISREG(os.stat(src).st_mode):
+            return shutil.copy2(src, dst)
+        with open(src, 'rb') as fsrc, open(dst, 'wb') as fdst:
+            fcntl.ioctl(fdst.fileno(), _FICLONE, fsrc.fileno())
+    except (ImportError, OSError):
+        return shutil.copy2(src, dst)
+    shutil.copystat(src, dst)
+    return dst
+
 
 def copy_folder_to_scrubbed(folder_path):
     """copy folder_path to {folder_path}_scrubbed/ and return (file_list, scrubbed_path)
@@ -502,7 +535,7 @@ def copy_folder_to_scrubbed(folder_path):
     errors = []
     workers = min(16, max(4, os.cpu_count() or 4))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(shutil.copy2, s, d) for s, d in tasks]
+        futures = [pool.submit(_clone_or_copy, s, d) for s, d in tasks]
         for (s, _), fut in zip(tasks, futures):
             try:
                 fut.result()

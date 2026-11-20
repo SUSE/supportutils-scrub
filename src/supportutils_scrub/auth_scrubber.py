@@ -27,6 +27,7 @@ import base64
 import binascii
 import re
 
+from supportutils_scrub.fastsub import gsub
 from supportutils_scrub.scrubber import Scrubber
 
 
@@ -176,16 +177,16 @@ class AuthScrubber(Scrubber):
         neither an Authorization header nor a URL.
         """
         if 'authorization' in text.lower():
-            text = _AUTH_VALUE_RE.sub(self._replace_header, text)
-            text = _DIGEST_USER_RE.sub(
+            text = gsub(_AUTH_VALUE_RE, self._replace_header, text)
+            text = gsub(_DIGEST_USER_RE, 
                 lambda m: m.group(1) + self._scrub_login(m.group(2)) + m.group(3), text)
         if '://' in text:
-            text = _URL_CRED_RE.sub(self._replace_url, text)
+            text = gsub(_URL_CRED_RE, self._replace_url, text)
         if '/etc/zypp/credentials.d/' in text:
-            text = _ZYPP_CREDS_RE.sub(
+            text = gsub(_ZYPP_CREDS_RE, 
                 lambda s: _CREDS_USER_RE.sub(
                     lambda m: m.group(1) + self._scrub_login(m.group(2)), s.group(0)),
                 text)
         if 'SCC_' in text:
-            text = _SCC_LOGIN_RE.sub(lambda m: self._scrub_login(m.group(0)), text)
+            text = gsub(_SCC_LOGIN_RE, lambda m: self._scrub_login(m.group(0)), text)
         return text

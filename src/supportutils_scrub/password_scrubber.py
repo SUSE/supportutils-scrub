@@ -1,5 +1,6 @@
 # password_scrubber.py
 import re
+from supportutils_scrub.fastsub import gsub
 from supportutils_scrub.scrubber import Scrubber, is_pseudonym
 
 #: Names whose VALUE is a credential wherever it appears. Kept to secrets:
@@ -151,10 +152,10 @@ class PasswordScrubber(Scrubber):
             quote = m.group('q') or ''
             return m.group('prefix') + quote + self._get_fake_password(value) + quote
 
-        text = _ATTR_PAIR_RE.sub(_replace_attr, text)
-        text = _XML_SECRET_RE.sub(_replace_xml, text)
-        text = _PASSWORD_RE.sub(_replace, text)
-        text = _BLANK_SECRET_RE.sub(_replace_cli, text)
+        text = gsub(_ATTR_PAIR_RE, _replace_attr, text)
+        text = gsub(_XML_SECRET_RE, _replace_xml, text)
+        text = gsub(_PASSWORD_RE, _replace, text)
+        text = gsub(_BLANK_SECRET_RE, _replace_cli, text)
         if 'ldap' in text:
-            text = _LDAP_W_RE.sub(_replace_cli, text)
-        return _CLI_SECRET_RE.sub(_replace_cli, text)
+            text = gsub(_LDAP_W_RE, _replace_cli, text)
+        return gsub(_CLI_SECRET_RE, _replace_cli, text)

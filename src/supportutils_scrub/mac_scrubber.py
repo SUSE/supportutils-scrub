@@ -2,6 +2,7 @@
 
 import re
 from typing import Match
+from supportutils_scrub.fastsub import hint_spans, sub_spans
 from supportutils_scrub.scrubber import Scrubber
 
 class MACScrubber(Scrubber):
@@ -22,6 +23,11 @@ class MACScrubber(Scrubber):
         r'((?:[0-9A-Fa-f]{2}:){6,13}[0-9A-Fa-f]{2})'
         r'(?![0-9A-Fa-f:])'
     )
+
+    # Every match of either pattern holds four octets between separators.
+    # Each hint starts with a literal, so `re` jumps from one to the next.
+    _HINTS = (re.compile(r':(?:[0-9A-Fa-f]{2}[:-]){4}'),
+              re.compile(r'-(?:[0-9A-Fa-f]{2}[:-]){4}'))
 
     EXCLUDED_MACS = {"ff:ff:ff:ff:ff:ff", "00:00:00:00:00:00"}
 
@@ -94,5 +100,16 @@ class MACScrubber(Scrubber):
         def replacer(match: Match) -> str:
             return self._fake_for(match.group(1)) or match.group(0)
 
-        text = self.MAC_PATTERN.sub(replacer, text)
-        return self.LONG_RUN.sub(self._replace_run, text)
+        spans = hint_spans(text, self._HINTS)
+        if spans is None:
+            text = self.MAC_PATTERN.sub(replacer, text)
+            return self.LONG_RUN.sub(self._replace_run, text)
+        if not spans:
+            return text
+        new = sub_spans(self.MAC_PATTERN, replacer, text, spans)
+        if new is not text:
+            # the fakes hold separators of their own: look again
+            spans = hint_spans(new, self._HINTS)
+            if spans is None:
+                return self.LONG_RUN.sub(self._replace_run, new)
+        return sub_spans(self.LONG_RUN, self._replace_run, new, spans)

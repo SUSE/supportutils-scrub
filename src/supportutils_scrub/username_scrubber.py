@@ -1,6 +1,7 @@
 # username_scrubber.py
 
 import re
+from supportutils_scrub.fastsub import ALNUM, fold, sub_folded
 from supportutils_scrub.scrubber import Scrubber
 from supportutils_scrub.trie_re import build_trie_pattern
 
@@ -46,6 +47,12 @@ class UsernameScrubber(Scrubber):
         if trie:
             self._re = re.compile(r'(?<![A-Za-z0-9])(?:' + trie + r')(?![A-Za-z0-9])',
                                   re.IGNORECASE)
+        # The same list for the lowercase copy of a text, where `re` can
+        # skip by first character (see fastsub.sub_folded). Only for plain
+        # ASCII names: the copy is not a faithful stand-in for others.
+        self._re_low = None
+        if trie and all(ord(ch) < 128 for k in self._lookup for ch in k):
+            self._re_low = re.compile(r'(?:' + trie + r')(?![a-z0-9])')
 
     @property
     def mapping(self):
@@ -54,7 +61,10 @@ class UsernameScrubber(Scrubber):
     def scrub(self, text):
         if not self._re:
             return text
-        return self._re.sub(lambda m: self._lookup[m.group(0).lower()], text)
+        low = fold(text) if self._re_low else None
+        if low is None:
+            return self._re.sub(lambda m: self._lookup[m.group(0).lower()], text)
+        return sub_folded(self._re_low, ALNUM, self._lookup, text, low)
 
     @staticmethod
     def _is_excluded(username):

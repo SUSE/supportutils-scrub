@@ -1,5 +1,6 @@
 # serial_scrubber.py
 import re
+from supportutils_scrub.fastsub import fold, gsub, iter_at, literals
 from supportutils_scrub.scrubber import Scrubber
 from supportutils_scrub.trie_re import build_trie_pattern
 
@@ -30,6 +31,33 @@ _LABELED_RE = re.compile(
     r'^(?P<prefix>\s*(?:Serial\s+Number|Asset\s+Tag|Part\s+Number|UUID)\s*:\s*)(?P<value>\S[^\n]*)$',
     re.IGNORECASE | re.MULTILINE,
 )
+
+# what a label of _LABELED_RE begins with, lowercase
+_LABEL_STARTS = ('serial', 'asset', 'part', 'uuid')
+
+
+def _labeled(text):
+    """The labelled values of text: the matches of _LABELED_RE, each started
+    at the line its label is on.
+
+    _LABELED_RE has nothing literal at its start (a line start, then any
+    blank space), so `re` tries it at every character of a hardware listing.
+    A match can only begin on a line whose first word starts a label, which
+    a substring search finds; the pattern is then matched at those lines
+    alone. (Run over the whole text, a match may start some blank lines
+    earlier; its label, value and end are the same.)"""
+    low = fold(text)
+    if low is None:
+        return _LABELED_RE.finditer(text)
+    starts = set()
+    for word in _LABEL_STARTS:
+        i = low.find(word)
+        while i != -1:
+            line = text.rfind('\n', 0, i) + 1
+            if line == i or text[line:i].isspace():
+                starts.add(line)
+            i = low.find(word, i + 1)
+    return iter_at(_LABELED_RE, text, sorted(starts))
 
 
 def _is_skip(value: str) -> bool:
@@ -66,7 +94,7 @@ class SerialScrubber(Scrubber):
         return self.serial_dict
 
     def pre_scan(self, text: str) -> None:
-        for m in _LABELED_RE.finditer(text):
+        for m in _labeled(text):
             value = m.group('value').strip()
             if _is_skip(value):
                 continue
@@ -91,4 +119,6 @@ class SerialScrubber(Scrubber):
                 return text
             self._re = re.compile(r'(?<![A-Za-z0-9])(?:' + trie + r')(?![A-Za-z0-9])')
             self._re_size = len(self.serial_dict)
-        return self._re.sub(lambda m: self.serial_dict[m.group(0)], text)
+            self._first = literals(self.serial_dict)
+        return gsub(self._re, lambda m: self.serial_dict[m.group(0)], text,
+                    first=self._first)

@@ -4,9 +4,16 @@
 import re
 import ipaddress
 from typing import Dict, Tuple, List, Iterable, Match, Optional
+from supportutils_scrub.fastsub import gsub, hint_spans, sub_spans
 from supportutils_scrub.scrubber import Scrubber
 
 CANDIDATE_V6 = re.compile(r"(?<![A-Za-z0-9:_-])([0-9A-Fa-f:.]*(?:[0-9A-Fa-f]|::))(?:/(\d{1,3}))?(?![A-Za-z0-9_-])(?!:[0-9A-Fa-f])")
+# CANDIDATE_V6 matches every number and timestamp, and the replacement
+# callback hands all of those back unchanged: it only acts on a token that
+# holds '::' or at least six colons. Either one shows up as one of these
+# (the second: four colons with nothing but hex digits and dots between).
+_V6_HINTS = (re.compile(r'::'),
+             re.compile(r':[0-9A-Fa-f.]*:[0-9A-Fa-f.]*:[0-9A-Fa-f.]*:'))
 _AF_INET6_RE = re.compile(r'(\[AF_INET6\])([0-9A-Fa-f:]+):(\d{1,5})\b')
 
 UNSPECIFIED = ipaddress.IPv6Network("::/128")
@@ -218,8 +225,12 @@ class IPv6Scrubber(Scrubber):
                 return m.group(0)
             return f"{prefix}{self._fake_for(ip)}:{port}"
 
-        new_text = _AF_INET6_RE.sub(repl_af_inet6, text)
-        new_text = CANDIDATE_V6.sub(repl, new_text)
+        new_text = gsub(_AF_INET6_RE, repl_af_inet6, text)
+        spans = hint_spans(new_text, _V6_HINTS)
+        if spans is None:
+            new_text = CANDIDATE_V6.sub(repl, new_text)
+        elif spans:
+            new_text = sub_spans(CANDIDATE_V6, repl, new_text, spans)
         return new_text, dict(self.ipv6_map), self.subnet_map, self.state
 
     @property

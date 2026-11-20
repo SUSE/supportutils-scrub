@@ -1,5 +1,6 @@
 # email_scrubber.py
 import re
+from supportutils_scrub.fastsub import gsub
 from supportutils_scrub.scrubber import Scrubber, is_pseudonym
 from supportutils_scrub.domain_scrubber import is_preserved_domain
 
@@ -73,4 +74,4 @@ class EmailScrubber(Scrubber):
                 return email
             return self._get_fake_email(email)
 
-        return EMAIL_RE.sub(lambda m: _replace(m), text)
+        return gsub(EMAIL_RE, lambda m: _replace(m), text)

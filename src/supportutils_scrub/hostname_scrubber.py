@@ -2,6 +2,7 @@
 
 import re
 from supportutils_scrub.scrubber import Scrubber
+from supportutils_scrub.fastsub import gsub, literals
 from supportutils_scrub.trie_re import build_trie_pattern
 from supportutils_scrub.domain_scrubber import is_preserved_domain
 
@@ -97,6 +98,7 @@ class HostnameScrubber(Scrubber):
                          if k.lower() not in preserved}
         self.hostname_dict = hostname_dict
         self._re = None
+        self._first = None
         self._lookup = {}
         trie = build_trie_pattern(k.lower() for k in hostname_dict)
         if trie:
@@ -118,6 +120,8 @@ class HostnameScrubber(Scrubber):
             self._re = re.compile(r'(?P<h>(?<![A-Za-z])(?:' + trie
                                   + r')(?![A-Za-z0-9]))|(?<![A-Za-z0-9])(?:'
                                   + preserve + r')(?![A-Za-z0-9])', re.IGNORECASE)
+            # every match starts with a hostname or with a product name
+            self._first = literals(set(self._lookup) | PRODUCT_DEFAULT_HOSTNAMES)
 
     @property
     def mapping(self):
@@ -130,7 +134,7 @@ class HostnameScrubber(Scrubber):
         def _sub(m):
             h = m.group('h')
             return m.group(0) if h is None else self._lookup[h.lower()]
-        return self._re.sub(_sub, text)
+        return gsub(self._re, _sub, text, first=self._first)
 
 
     @staticmethod

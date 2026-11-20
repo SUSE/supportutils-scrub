@@ -10,6 +10,7 @@
 # catastrophic. We therefore DISCOVER SIDs only from strong, SAP-specific contexts and
 # skip SAP's reserved words; then we substitute the discovered SID everywhere it appears.
 import re
+from supportutils_scrub.fastsub import gsub, giter, hint_spans, iter_spans, literals
 from supportutils_scrub.scrubber import Scrubber
 
 _SID = r'[A-Z][A-Z0-9]{2}'
@@ -35,6 +36,18 @@ _DISCOVERY = [
     re.compile(r'\b(' + _SID + r')_(?:D|ASCS|ERS|SCS|HDB|J|W|G)\d\d\b'),
 ]
 
+# The last pattern starts with the SID itself, three characters with no
+# literal to search for; each of its matches holds this, which starts with one.
+_INSTANCE_HINT = (re.compile(r'_(?:D|ASCS|ERS|SCS|HDB|J|W|G)\d\d'),)
+
+
+def _discoveries(text):
+    for rx in _DISCOVERY[:-1]:
+        for m in giter(rx, text):
+            yield m
+    for m in iter_spans(_DISCOVERY[-1], text, hint_spans(text, _INSTANCE_HINT)):
+        yield m
+
 
 # The SAP Diagnostics Agent (DAA by default) runs as its own SID with an SMDA<nn>
 # instance. It is monitoring infrastructure, not the customer's system, and the
@@ -48,7 +61,7 @@ _AGENT = [
 
 
 def _agents(text: str) -> set:
-    return {m.group(1) for rx in _AGENT for m in rx.finditer(text)}
+    return {m.group(1) for rx in _AGENT for m in giter(rx, text)}
 
 
 def _valid(sid: str) -> bool:
@@ -64,6 +77,7 @@ class SIDScrubber(Scrubber):
             self.sid_dict = dict(mappings.get('sid', {}))
         self._counter = len(self.sid_dict)
         self.agent_sids: set = set()
+        self._compiled = {}     # tuple of SIDs -> (pattern, start literals)
 
     @property
     def mapping(self):
@@ -77,7 +91,7 @@ class SIDScrubber(Scrubber):
         for sid in _agents(text):
             self.agent_sids.add(sid)
             self.sid_dict.pop(sid, None)
-        found = [m.group(1).upper() for rx in _DISCOVERY for m in rx.finditer(text)]
+        found = [m.group(1).upper() for m in _discoveries(text)]
         found = [s for s in dict.fromkeys(found)
                  if _valid(s) and s not in self.agent_sids]
         # a fake is never a real SID nor one already handed out, or two
@@ -109,10 +123,16 @@ class SIDScrubber(Scrubber):
         sids = [s for s in self.sid_dict if s not in agents]
         if not sids:
             return text
-        alt = '|'.join(re.escape(s) for s in sorted(sids, key=len, reverse=True))
-        rx = re.compile(r'SAP(?P<sap>' + alt + r')(?![A-Za-z0-9])'
-                        r'|(?<![A-Za-z0-9])(?:(?P<adm>' + alt.lower() + r')adm'
-                        r'|(?P<sid>' + alt + r'))(?![A-Za-z0-9])')
+        key = tuple(sids)
+        if key not in self._compiled:
+            alt = '|'.join(re.escape(s) for s in sorted(sids, key=len, reverse=True))
+            rx = re.compile(r'SAP(?P<sap>' + alt + r')(?![A-Za-z0-9])'
+                            r'|(?<![A-Za-z0-9])(?:(?P<adm>' + alt.lower() + r')adm'
+                            r'|(?P<sid>' + alt + r'))(?![A-Za-z0-9])')
+            # a match starts with SAP<SID> or with the SID in either case
+            self._compiled[key] = (rx, literals(
+                [s for s in sids] + ['sap' + s for s in sids]))
+        rx, first = self._compiled[key]
 
         def _sub(m):
             if m.group('sap'):
@@ -120,4 +140,4 @@ class SIDScrubber(Scrubber):
             if m.group('adm'):
                 return self.sid_dict[m.group('adm').upper()].lower() + 'adm'
             return self.sid_dict[m.group('sid')]
-        return rx.sub(_sub, text)
+        return gsub(rx, _sub, text, first=first)

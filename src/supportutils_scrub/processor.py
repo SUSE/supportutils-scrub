@@ -13,6 +13,7 @@ import tarfile
 import threading
 import time
 import zlib
+from supportutils_scrub import fastsub
 from supportutils_scrub.keyword_scrubber import KeywordScrubber
 from supportutils_scrub.supportutils_scrub_logger import SupportutilsScrubLogger
 
@@ -30,6 +31,28 @@ _COMPRESS_MAGIC = {'.gz': b'\x1f\x8b', '.xz': b'\xfd7zXZ\x00', '.bz2': b'BZh',
                    '.zst': b'\x28\xb5\x2f\xfd'}
 # zstd archives nested in a supportconfig; never top-level inputs
 _ZST_TAR_SUFFIXES = ('.tar.zst', '.tzst')
+
+# What a rewritten .xz or .gz log, and the repacked archive, is compressed
+# with. At the defaults (xz 6, gzip 9) a run spent more time compressing
+# scrubbed logs than scrubbing them. Measured on a capture with 144 .xz and
+# 22 .gz logs: level 2 made the .xz logs 49 % and the .gz logs 17 % larger
+# (16 MB in a 5.8 GB tree). bzip2's level is a block size, not a speed, and
+# stays.
+COMPRESS_LEVEL = 2
+
+
+def open_compressed_out(path, ext, opener):
+    """(writable, underlying file or None) for a new compressed file. A .gz
+    carries no name in its header: gzip.open(path) would record the
+    temporary name, and the original name can hold the real hostname."""
+    if ext == '.gz':
+        fh = open(path, 'wb')
+        return gzip.GzipFile(filename='', mode='wb', fileobj=fh,
+                             compresslevel=COMPRESS_LEVEL), fh
+    if ext == '.xz':
+        return lzma.open(path, 'wb', preset=COMPRESS_LEVEL), None
+    return opener(path, 'wb'), None
+
 
 # How much of a payload is inspected (is_binary_head) before deciding
 # it is binary and must not be text-scrubbed.
@@ -671,15 +694,13 @@ def write_compressed_text(path, ext, opener, text, logger, label=None):
     data = text.encode('utf-8', 'surrogateescape')
     tmp = path + '.scrubtmp'
     try:
-        if ext == '.gz':
-            # No name in the header: gzip.open(tmp) would record the temp
-            # name, and the original name can hold the real hostname.
-            with open(tmp, 'wb') as fh:
-                with gzip.GzipFile(filename='', mode='wb', fileobj=fh) as out:
-                    out.write(data)
-        else:
-            with opener(tmp, 'wb') as out:
-                out.write(data)
+        out, fh = open_compressed_out(tmp, ext, opener)
+        try:
+            out.write(data)
+        finally:
+            out.close()
+            if fh:
+                fh.close()
 
         read_back = 0
         with opener(tmp, 'rb') as check:
@@ -1084,10 +1105,11 @@ class FileProcessor:
                         # no name in the header, as in write_compressed_text
                         out_fh = open(tmp, 'wb')
                         gz_inner = gzip.GzipFile(filename='', mode='wb',
-                                                 fileobj=out_fh)
+                                                 fileobj=out_fh,
+                                                 compresslevel=COMPRESS_LEVEL)
                         write = gz_inner.write
                     else:
-                        out_fh = opener(tmp, 'wb')
+                        out_fh, _ = open_compressed_out(tmp, ext, opener)
                         write = out_fh.write
                     if not to_plain:
                         header = _SCRUB_INFO_HEADER.encode('utf-8')
@@ -1232,6 +1254,13 @@ class FileProcessor:
         return True
 
     def _scrub_content(self, text, basename, logger):
+        try:
+            return self._run_chain(text, basename, logger)
+        finally:
+            # the lowercase copy the passes shared: tens of MB for a segment
+            fastsub.forget()
+
+    def _run_chain(self, text, basename, logger):
         if self.learn_only:
             for scrubber in self.scrubbers:
                 gate = _CONFIG_GATES.get(scrubber.name)
