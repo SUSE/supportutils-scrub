@@ -1,4 +1,4 @@
-SCRIPT_VERSION = "1.8"
+SCRIPT_VERSION = "1.9"
 SCRIPT_DATE = "2026-11-20"
 
 EXIT_OK           = 0   # success

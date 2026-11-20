@@ -1,4 +1,31 @@
 -------------------------------------------------------------------
+Fri Nov 20 12:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
+
+- Update to version 1.9
+  + systemd journal files and the login records utmp, wtmp, btmp and
+    lastlog (also rotated and compressed) are removed from the output,
+    like binary sa data: they are binary, the scrub cannot rewrite
+    them, and on a support case they still held the real account names
+    30,000 times and the real addresses 19,000 times
+  + --verify no longer reads a binary file as lines (a 4.3 GB lastlog
+    became one line and the scan did not end). The checks run only on
+    the lines that can hold a finding and big files are scanned across
+    the workers: a case that took 40 s to verify on 48 workers takes
+    about 6 s, with the same findings on every text file
+  + --verify reads what it used to pass over: binary files are searched
+    in bounded pieces and a value is reported once per file with a
+    count ("... in binary file"); an archive still packed in the tree
+    is read member by member, also inside one another, and a damaged
+    one is reported as not read to its end
+  + New --verify-output PATH: scrub nothing and check a folder or an
+    archive that is already scrubbed, by this tool or another one,
+    against --mappings; --verify-mapping-only looks only for the
+    mapping's real values. One row per category, exit 3 on a finding
+  + A host, account or domain written with a dotless i, a dotted
+    capital I, a long s or a Kelvin sign is replaced like any other
+    spelling; such a file failed its scrub before
+
+-------------------------------------------------------------------
 Fri Nov 20 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
 
 - Update to version 1.8

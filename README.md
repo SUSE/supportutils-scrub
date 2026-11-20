@@ -20,6 +20,8 @@
 - **Parallel Scrubbing** (v1.6+): `--jobs N` scrubs and verifies with N worker processes (`--jobs auto` uses all CPUs). On large supportconfigs this cuts total runtime roughly by the worker count; big files are split into chunks so a single huge `messages.txt` no longer pins one core.
 - **Unpacked Output** (v1.6+): `--unpacked` skips the repack — the `_scrubbed/` folder is the output, and compressed files inside the tree are written back plain. Faster, much lower peak memory, and convenient for reviewing the result before sharing.
 - **SAP System ID Obfuscation** (v1.6+): SAP SIDs are detected in paths (`/usr/sap/<SID>`, `/sapmnt/<SID>`), cluster resource names (`rsc_SAP_<SID>`), environment variables (`SAPSYSTEMNAME`), and `<sid>adm` usernames, and replaced consistently.
+- **Journals and Login Records Removed** (v1.9+): systemd journal files and `utmp`, `wtmp`, `btmp` and `lastlog` (also rotated and compressed) are binary: the scrub cannot rewrite them, and they hold the account names, host names and addresses it removes everywhere else. Like binary `sa` data they are removed from the output.
+- **Check Any Output** (v1.9+): `--verify-output PATH --mappings MAP` scrubs nothing and checks an already scrubbed folder or archive, of this tool or another one.
 - **Performance Diagnostics** (v1.6+): `--verbose` prints live phase times, the slowest files, and a final phase table with peak memory; `--profile` gives a per-scrubber timing breakdown.
 
 ## Installation
@@ -81,7 +83,7 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
 ```
 =============================================================================
           Obfuscation Utility - supportutils-scrub
-                      Version : 1.8
+                      Version : 1.9
                  Release Date : 2026-11-20
 
  supportutils-scrub masks sensitive information from SUSE supportconfig
