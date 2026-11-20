@@ -2,7 +2,7 @@
 
 import re
 from typing import Set, Dict, List, Optional, Tuple, Iterable, Match
-from supportutils_scrub.fastsub import gsub, literals
+from supportutils_scrub.fastsub import gsub, key, literals
 from supportutils_scrub.scrubber import Scrubber
 from supportutils_scrub.trie_re import build_trie_pattern
 
@@ -233,7 +233,7 @@ class DomainScrubber(Scrubber):
     def scrub(self, text: str) -> str:
         if self._re:
             def _replacer(match: Match) -> str:
-                found_domain = _norm(match.group(0))
+                found_domain = _norm(key(match.group(0)))
                 return self._scrub_lookup.get(found_domain, match.group(0))
             text = gsub(self._re, _replacer, text, first=self._first)
 
@@ -244,7 +244,7 @@ class DomainScrubber(Scrubber):
             if self._dc_re:
                 text = gsub(
                     self._dc_re,
-                    lambda m: self._dc_dict.get(re.sub(r',\s*', ',', m.group(0)).lower(),
+                    lambda m: self._dc_dict.get(key(re.sub(r',\s*', ',', m.group(0))),
                                                 m.group(0)),
                     text, first=_DC_FIRST
                 )
@@ -252,14 +252,14 @@ class DomainScrubber(Scrubber):
             if self._dc_label_re:
                 text = gsub(
                     self._dc_label_re,
-                    lambda m: 'DC=' + self._dc_label_dict[m.group(1).lower()],
+                    lambda m: 'DC=' + self._dc_label_dict[key(m.group(1))],
                     text, first=_DC_FIRST
                 )
 
             if self._dc_prefix_re:
                 text = gsub(
                     self._dc_prefix_re,
-                    lambda m: 'DC=' + self._dc_prefix_dict[m.group(1).lower()],
+                    lambda m: 'DC=' + self._dc_prefix_dict[key(m.group(1))],
                     text, first=_DC_FIRST
                 )
 

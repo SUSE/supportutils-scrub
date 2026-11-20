@@ -1,7 +1,7 @@
 # username_scrubber.py
 
 import re
-from supportutils_scrub.fastsub import ALNUM, fold, sub_folded
+from supportutils_scrub.fastsub import ALNUM, fold, key, sub_folded
 from supportutils_scrub.scrubber import Scrubber
 from supportutils_scrub.trie_re import build_trie_pattern
 
@@ -63,7 +63,7 @@ class UsernameScrubber(Scrubber):
             return text
         low = fold(text) if self._re_low else None
         if low is None:
-            return self._re.sub(lambda m: self._lookup[m.group(0).lower()], text)
+            return self._re.sub(lambda m: self._lookup[key(m.group(0))], text)
         return sub_folded(self._re_low, ALNUM, self._lookup, text, low)
 
     @staticmethod

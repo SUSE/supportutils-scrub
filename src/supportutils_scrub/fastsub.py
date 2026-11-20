@@ -14,9 +14,9 @@
 # running the pattern
 #   - at the positions where a `first` literal occurs (any pattern), or
 #   - on the lines that hold a `required` literal (one_line patterns),
-# and not at all when no literal occurs. Whenever nothing can be derived, the
-# literals are too frequent to pay off, or the text holds a character whose
-# case folding is irregular, it falls back to pattern.sub. The pattern itself
+# and not at all when no literal occurs. Whenever nothing can be derived or
+# the literals are too frequent to pay off, it falls back to pattern.sub. The
+# pattern itself
 # is never changed, so the result is the same by construction and the choice
 # is only about speed.
 #
@@ -33,10 +33,14 @@ except ImportError:                     # Python 3.6 - 3.10
 
 _MAX_SET = 64          # strings one exact set may hold while being built
 _MAX_NEEDLES = 20      # literals worth a pass each over the text
-# Non-ASCII characters that match an ASCII letter under re.IGNORECASE or that
-# change length in lower(): with one of these in the text a lowercase copy
-# is not a faithful index into it.
-_IRREGULAR = ('\u0130', '\u0131', '\u017f', '\u212a')
+# The non-ASCII characters `re` takes for an ASCII letter when it ignores
+# case, as a literal and inside a class such as [A-Za-z0-9]: dotted capital I
+# and dotless i for i, long s for s, the Kelvin sign for k. There are exactly
+# these four (tests/test_fastsub.py asks the running `re` about every code
+# point). In the lowercase copy each becomes its letter, so the copy says
+# what a case-insensitive pattern would see. The first is also the one
+# character lower() makes longer.
+_IRREGULAR = (('\u0130', 'i'), ('\u0131', 'i'), ('\u017f', 's'), ('\u212a', 'k'))
 
 _ZERO_WIDTH = {_c.AT, _c.ASSERT, _c.ASSERT_NOT}
 _REPEATS = {_c.MAX_REPEAT, _c.MIN_REPEAT}
@@ -57,9 +61,11 @@ else:                                    # Python 3.6
 
 
 def fold(text):
-    """A lowercase copy of text with the same indices, or None when one
-    cannot be relied on. The last result is remembered: a chain of passes
-    that change nothing keeps handing the same object over."""
+    """A lowercase copy of text with the same indices: an ASCII literal
+    occurs in it exactly where a case-insensitive pattern would match that
+    literal in text. (None is kept for a length that does not come out the
+    same; no known character does that.) The last result is remembered: a
+    chain of passes that change nothing keeps handing the same object over."""
     if text is _fold_memo[0]:
         return _fold_memo[1]
     if len(text) < _MEMO_MIN:
@@ -73,9 +79,10 @@ def fold(text):
 def _fold(text):
     if _is_ascii(text):
         low = text.lower()
-    elif any(ch in text for ch in _IRREGULAR):
-        low = None
     else:
+        for ch, letter in _IRREGULAR:
+            if ch in text:
+                text = text.replace(ch, letter)
         # Block by block. lower() on a text with one non-ASCII character
         # goes character by character through a work buffer of 12 bytes per
         # character (a 32 MB segment: 128 MB touched); a block cut out of
@@ -90,6 +97,15 @@ def _fold(text):
 
 # text, its lowercase copy, {literal: occurrences in that copy}
 _fold_memo = [None, None, {}]
+
+
+def key(matched):
+    """The lowercase form of what a case-insensitive pattern matched, as the
+    word list it was built from spells it. lower() is not that for the four
+    characters above: `re` matches a dotless i for the i of a name, and
+    lower() leaves it a dotless i, which no list holds."""
+    low = _fold(matched)
+    return matched.lower() if low is None else low
 _MEMO_MIN = 4096
 _FOLD_BLOCK = 1 << 16
 

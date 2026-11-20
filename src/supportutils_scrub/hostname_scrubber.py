@@ -2,7 +2,7 @@
 
 import re
 from supportutils_scrub.scrubber import Scrubber
-from supportutils_scrub.fastsub import gsub, literals
+from supportutils_scrub.fastsub import gsub, key, literals
 from supportutils_scrub.trie_re import build_trie_pattern
 from supportutils_scrub.domain_scrubber import is_preserved_domain
 
@@ -133,7 +133,7 @@ class HostnameScrubber(Scrubber):
 
         def _sub(m):
             h = m.group('h')
-            return m.group(0) if h is None else self._lookup[h.lower()]
+            return m.group(0) if h is None else self._lookup[key(h)]
         return gsub(self._re, _sub, text, first=self._first)
 
 

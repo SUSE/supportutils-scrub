@@ -189,12 +189,11 @@ def test_literals_read_from_a_pattern(pattern, first, required):
     assert (p.first, p.required) == (first, required)
 
 
-def test_fold_refuses_what_a_lowercase_copy_cannot_stand_in_for():
+def test_the_lowercase_copy_says_what_an_ignore_case_pattern_sees():
     assert fastsub.fold('ABC d') == 'abc d'
     assert fastsub.fold('\u00c4BC \udcff') == '\u00e4bc \udcff'
-    for ch in '\u0130\u0131\u017f\u212a':      # match ASCII i, s, k under IGNORECASE
-        assert fastsub.fold('abc ' + ch) is None
-    # and the pattern is then run plainly, with the right result
+    # the four characters `re` takes for an ASCII letter become that letter
+    assert fastsub.fold('\u0130\u0131\u017f\u212a \u00c9') == 'iisk \u00e9'
     rx = re.compile(r'(?i)sink=\S+')
     text = FILLER * 50 + '\u017fin\u212a=1 sink=2\n'
     assert fastsub.gsub(rx, 'X', text) == rx.sub('X', text) == FILLER * 50 + 'X X\n'
@@ -396,3 +395,46 @@ def test_the_shared_lowercase_copy_is_dropped_after_each_text():
     text = FILLER * 100 + 'password=hunter2 mail a.b@corp.example.com\n'
     assert 'hunter2' not in fp._scrub_content(text, 'x.txt', None)
     assert fastsub._fold_memo[:2] == [None, None]
+
+
+def test_only_four_characters_pass_for_an_ascii_letter_when_case_is_ignored():
+    """fastsub.fold rests on this, for the `re` of the Python running it:
+    as a literal and inside a class, no other non-ASCII character matches
+    an ASCII letter or digit, and no other one changes length in lower()."""
+    letters = 'abcdefghijklmnopqrstuvwxyz0123456789'
+    # each letter followed by '!': kept apart, so `re` matches them as
+    # literals and does not merge them into one class
+    literal = re.compile('(?i)' + '|'.join('(%s)!' % ch for ch in letters))
+    in_class = re.compile('(?i)[A-Za-z0-9]')
+    expected = dict(fastsub._IRREGULAR)
+    for code in range(128, 0x110000):
+        ch = chr(code)
+        m = literal.fullmatch(ch + '!')
+        as_literal = letters[m.lastindex - 1] if m else None
+        assert as_literal == expected.get(ch), hex(code)
+        assert bool(in_class.fullmatch(ch)) == (ch in expected), hex(code)
+        assert len(ch.lower()) == 1 or ch == '\u0130', hex(code)
+        folded = fastsub._fold(ch + 'x')
+        assert len(folded) == 2 and (folded[0] in letters) == (ch in expected), hex(code)
+
+
+def test_a_name_written_with_a_dotless_i_or_a_long_s_is_replaced_not_a_crash():
+    """`re` matches these for the i, s and k of a name when it ignores
+    case; the replacement used to be looked up by lower(), which does not
+    turn them into that letter, and the pass failed on the file."""
+    from supportutils_scrub.hostname_scrubber import HostnameScrubber
+    from supportutils_scrub.username_scrubber import UsernameScrubber
+    from supportutils_scrub.domain_scrubber import DomainScrubber
+    spellings = ('kiosk', 'KIOSK', 'k\u0131osk', 'K\u0130OSK', 'kio\u017fk', '\u212aiosk')
+    user = UsernameScrubber({'kiosk': 'user1'})
+    host = HostnameScrubber({'kiosk': 'host-1'})
+    domain = DomainScrubber({'kiosk.example-bank.com': 'dom1.aaa'})
+    for word in spellings:
+        for pad in ('', FILLER * 60):                 # short text, and one that is remembered
+            fastsub.forget()
+            assert user.scrub(pad + 'login %s ok\n' % word) == pad + 'login user1 ok\n', word
+            fastsub.forget()
+            assert host.scrub(pad + 'on %s now\n' % word) == pad + 'on host-1 now\n', word
+            fastsub.forget()
+            assert domain.scrub(pad + 'at %s.example-bank.com.\n' % word) == pad + 'at dom1.aaa.\n', word
+    assert fastsub.key('K\u0130O\u017f\u212a') == 'kiosk'
