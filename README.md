@@ -259,6 +259,7 @@ IPv4 subnet rewrite rules (most-specific first):
 - `--output-dir DIR`: Write the scrubbed archive to DIR instead of alongside the input file.
 - `--report`: Write a JSON coverage/verify report next to the mapping file. Includes coverage data and, with `--verify`, the full list of verification findings.
 - `--verify`: Multi-layer post-scrub verification: mapping checks, IP/MAC allowlists, pattern scan (emails, secrets, keys), and identity extraction. Runs with `--jobs` workers. Exits with code 3 if leaks found.
+- `--verify-output PATH`: Scrub nothing; check an already scrubbed folder or archive against `--mappings`. With `--verify-mapping-only` only the mapping's real values are looked for (for the output of another tool). Exit 3 if anything is found.
 - `--jobs N`, `-j N`: Scrub and verify with N worker processes (`auto` = all CPUs). Default 1 (serial). Parallel mode uses deterministic hash-based fake values, so fakes differ from serial mode but stay consistent across the archive.
 - `--unpacked`: Leave the scrubbed output fully unpacked — the `_scrubbed/` folder is the output, no `.txz` repack. Compressed files (`.gz`/`.xz`/`.bz2`) inside the tree are written back plain.
 - `--profile`: Measure and print where scrub time is spent (per-scrubber totals, throughput, slowest files). Forces serial mode.
@@ -472,6 +473,24 @@ supportutils-scrub /var/log/scc_node1.txz --verify
 ```
 
 If leaks are found, the tool reports the exact file, line number, category, and value. Use `--report` to save the full findings list.
+
+What the scan reads:
+
+- **Binary files** the scrub left in place (dumps, images, databases), and the journal files or login records in a tree another tool or an older version wrote, still hold whatever they held. Their bytes go through the same checks, with a zero byte ending a line as a line end does. A value is reported once per file as `<category> in binary file`, with the number of times it was seen.
+- **Archives still packed in the tree** (kept whole for a dump they carry, or written by another tool) are read member by member and reported as `<archive>!/<member>`, also inside one another.
+- **Names** of files, directories and archive members.
+
+#### Checking an output without scrubbing
+
+`--verify-output` checks a folder or an archive that is already scrubbed, by this tool or by another one, against a mapping:
+
+```bash
+# the mapping is the one a run of this tool saved for the same original
+supportutils-scrub --verify-output scc_node1_scrubbed --mappings /var/tmp/obfuscation_..._mappings.json --jobs 8
+supportutils-scrub --verify-output other_tool_output.txz --mappings MAP.json --verify-mapping-only
+```
+
+It prints one row per category (findings, occurrences, distinct values, files) and exits 3 when anything was found. `--verify-mapping-only` looks only for the mapping's real values: the address allowlists and pattern checks expect this tool's own pseudonyms and would report another tool's.
 
 ### Coverage & Verification Report (v1.3+)
 

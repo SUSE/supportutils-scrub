@@ -95,6 +95,15 @@ def parse_args():
              "Checks: mapping values, IP/MAC allowlists, emails, secrets/keys, "
              "LDAP DNs, Kerberos principals, and (in folder mode) system identity "
              "from the original. Exit 3 if leaks found.")
+    parser.add_argument("--verify-output", metavar="PATH", default=None,
+        help="Scrub nothing: check an already scrubbed folder or archive, of this "
+             "tool or another one, against --mappings (the mapping a run of this "
+             "tool saved for the same original). An original folder given as input "
+             "adds the system identity check. Exit 3 if leaks found.")
+    parser.add_argument("--verify-mapping-only", action="store_true",
+        help="With --verify-output: only look for the mapping's real values. The "
+             "address allowlists and pattern checks expect this tool's own "
+             "pseudonyms and would report another tool's.")
     parser.add_argument("--jobs", "-j", metavar="N", default="1",
         help="Scrub files across N worker processes (use 'auto' for all CPUs). "
              "Default 1 (serial). Parallel mode uses deterministic hash-based "
@@ -209,6 +218,11 @@ def main():
         args._enc_passphrase = None
 
     paths = args.supportconfig_path
+
+    if args.verify_output:
+        from supportutils_scrub.modes.check import run_check_mode
+        run_check_mode(args, logger)
+        return
 
     if getattr(args, 'preload', False):
         if not paths:

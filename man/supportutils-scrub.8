@@ -117,6 +117,12 @@ Decrypt and print the contents of an encrypted mapping file (\fI*.json.enc\fR) t
 \fB\-\-verify\fR
 After scrubbing, perform a multi-layer verification scan of the output. Checks include: (1) mapping-based — known real values from the obfuscation mapping; (2) IP allowlist — every IPv4 must be in a known-safe range (fake pools, loopback, multicast); (3) MAC allowlist — every MAC must use the fake OUI prefix; (4) pattern scan — detects email addresses, private keys, certificates, API tokens, JWT tokens, passwords, LDAP DNs, and Kerberos principals independent of the mapping; (5) identity check (folder mode) — extracts hostname, IPs, MACs, DNS servers, serials, and UUIDs from the original supportconfig and verifies none survive in the scrubbed output. Prints a list of findings if any are detected. Exits with code 3 if sensitive data remains; exits 0 if clean.
 .TP
+\fB\-\-verify\-output\fR \fIPATH\fR
+Scrub nothing: check an already scrubbed folder or archive, written by this tool or by another one, against \fB\-\-mappings\fR (the mapping a run of this tool saved for the same original). An original folder given as input adds the system identity check. Binary files are searched for the same values, and an archive is read member by member. Prints one row per category and exits 3 when anything was found.
+.TP
+\fB\-\-verify\-mapping\-only\fR
+With \fB\-\-verify\-output\fR: look only for the real values the mapping holds. The address allowlists and the pattern checks expect this tool's own pseudonyms and would report those of another tool.
+.TP
 \fB\-\-report\fR
 Write a JSON report alongside the mapping file. Includes the coverage report (which files contained each data category) and, when \fB\-\-verify\fR is used, the full list of verification findings. Useful for compliance evidence and auditing.
 .TP
