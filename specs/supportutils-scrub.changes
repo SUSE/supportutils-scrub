@@ -1,4 +1,68 @@
 -------------------------------------------------------------------
+Fri Nov 20 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
+
+- Update to version 1.8
+  + Speed: a pattern is run only on the parts of a text that hold one of
+    the literals it needs (found by plain substring search), with the
+    same result as running it over the whole text. IPv4, IPv6 and MAC
+    use a cheap pre-filter pattern, the username list is matched on a
+    lowercase copy. A 5.6 GB case folder on 48 workers: 42 s before,
+    about 6 s now, output and mapping unchanged
+  + --jobs: big files are staged, put back together and recompressed
+    on side threads while the pool scrubs, instead of one after the
+    other in the parent
+  + Rewritten .xz and .gz logs and the repacked archive are compressed
+    at level 2 (faster; .xz logs about 49 % and .gz logs about 17 %
+    larger)
+  + A folder input is copied by block clone where the filesystem has
+    one (XFS with reflink, btrfs); a nested archive is unpacked in one
+    pass, and a nested archive that cannot be unpacked leaves no
+    partial folder behind
+  + IPv4 subnet allocation no longer re-checks a taken /24 for every
+    small subnet inside it
+  + Secrets: JSON, XML, prefixed and blank-separated keys, LDIF ::
+    values, {SSHA} hashes, ldap -w and --bindpw are scrubbed; PAM
+    service pairs, placeholders, mount options, corosync's token
+    timeout and credential file paths are not
+  + Cloud and HTTP credentials: PEM private key bodies, the GCP JSON
+    private_key, quoted AWS JSON keys, Azure SharedAccessKey, SCC
+    logins, the username of a zypp credentials file and a Digest
+    username are scrubbed
+  + Email and LDAP: an address ending a sentence or with a one-letter
+    local part is scrubbed; a CN or OU value with spaces or escaped
+    commas is scrubbed whole
+  + IPv4, IPv6, MAC: addresses ending a sentence, in dash ranges, PTR
+    names and paths are scrubbed; MACs inside iptables MAC=, DHCP
+    client-id and DUID runs are scrubbed; /48 IPv6 fakes come from
+    3fff::/20; every fake stays in its own pool and under --jobs never
+    depends on file order
+  + Names: new mappings name hosts host-N, users userN and domains
+    domN; an account is matched in any case and beside underscores;
+    service aliases, the product's own host names and SUSE's own
+    domains are never learned or scrubbed; a public suffix such as
+    co.uk is never learned as a domain
+  + Serials and SIDs: a DMI placeholder is never a serial, a serial is
+    replaced only as a whole token, a fake SID is never a real one and
+    all SIDs are substituted in one pass
+  + Files: a few NUL bytes no longer make a log binary, rewrites keep
+    their bytes and line ends, sar logs are scrubbed whole, gzip
+    headers carry no file name, single-file and nested .zst are
+    handled, FIFOs and device nodes no longer break a run
+  + Safety: a file that could not be scrubbed never ships and the run
+    exits 2; a failing scrubber leaves the file unwritten; mapping,
+    audit and report files are created 0600 and a failed save is an
+    error instead of a plaintext fallback
+  + Modes: one chain builder for every mode; stdin learns serials and
+    SIDs and keeps non-UTF-8 bytes; --preload rewrites an encrypted
+    mapping encrypted; a capture given next to a supportconfig is
+    rewritten in the same run with the run's mapping
+  + Config and CLI: booleans accept yes/true/on/1 and their negatives,
+    inline comments and section headers no longer drop later keys, a
+    missing --config file is an error, option prefixes are rejected
+  + verify: own IPv4, MAC and secret matchers, every mapping section
+    checked, pseudonyms and deliberate leaves no longer reported
+
+-------------------------------------------------------------------
 Thu Sep 18 00:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
 
 - Update to version 1.7.2

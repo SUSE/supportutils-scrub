@@ -81,8 +81,8 @@ supportutils-scrub /var/log/scc_terminus_250814_1549.txz \
 ```
 =============================================================================
           Obfuscation Utility - supportutils-scrub
-                      Version : 1.7.2
-                 Release Date : 2026-09-16
+                      Version : 1.8
+                 Release Date : 2026-11-20
 
  supportutils-scrub masks sensitive information from SUSE supportconfig
  tarballs, directories, plain files, and network captures. It replaces
@@ -493,6 +493,9 @@ supportutils-scrub /var/log/scc_bignode.txz --jobs 8 --verify --secure-tmp
 On a 26 MB archive this cuts a ~9-minute serial run (scrub + verify) to about 2.5 minutes on 8 workers. Notes:
 
 - `--jobs` accelerates both the scrub and the `--verify` phases; extract and repack stay serial.
+- Since v1.8 each pattern is run only on the parts of a text that hold one of the literals it needs, with the same result as before. A 5.6 GB case folder that took 42 s on 48 workers takes about 6 s.
+- Since v1.8 rewritten `.xz` and `.gz` logs and the repacked archive are compressed at level 2: faster to write, and the logs come out larger (measured: `.xz` 49 %, `.gz` 17 %).
+- A folder input is copied by block clone where the filesystem offers one (XFS with reflink, btrfs), so large files the scrub never rewrites cost no I/O.
 - `--unpacked` skips the xz repack entirely (the `_scrubbed/` folder is the output) and reduces peak memory several-fold — the repack is the most memory-hungry phase.
 - `--secure-tmp` (tmpfs extraction) has no measurable performance cost; the pipeline is CPU-bound.
 - Use `--verbose` to see live phase times, the slowest files, and a final phase table with peak memory; use `--profile` for a per-scrubber breakdown (forces serial mode).
