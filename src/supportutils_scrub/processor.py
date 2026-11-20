@@ -297,6 +297,36 @@ def looks_binary(path):
         return False
 
 
+# A systemd journal file and the login records (utmp, wtmp, btmp, lastlog
+# and their rotated copies) are binary, so the scrub cannot rewrite them,
+# and they are made of what it is there to remove: account names, host
+# names, addresses. On one support case the journals and wtmp left in a
+# scrubbed tree held the real user names 30,000 times and the real addresses
+# 19,000 times, and lastlog the addresses of the last logins. Like binary sa
+# data they are removed from the output. A journal is known by
+# its header, whatever its name; a login record file by its name and by not
+# being text (an empty btmp, or a text file called wtmp.txt, is not one).
+_JOURNAL_MAGIC = b'LPKSHHRH'
+_LOGIN_RECORD_NAME = re.compile(r'^(?:[ubw]tmp|lastlog)(?:$|[-._])')
+
+
+def is_private_binary(head, base_name):
+    """True for content the scrub removes because it cannot rewrite it.
+    head: the first bytes of the file, or of its payload when compressed;
+    base_name: its name without a compression extension."""
+    if head.startswith(_JOURNAL_MAGIC):
+        return True
+    return bool(_LOGIN_RECORD_NAME.match(base_name)) and is_binary_head(head)
+
+
+def _private_binary_file(path, base_name):
+    try:
+        with open(path, 'rb') as f:
+            return is_private_binary(f.read(_TEXT_PROBE), base_name)
+    except OSError:
+        return False
+
+
 # A kernel dump or an application core holds memory, not text: it is never
 # scrubbed, rewritten or deleted. The head says what it is: the flattened
 # makedumpfile format, the compressed kdump format, or an ELF core (a
@@ -905,6 +935,11 @@ class FileProcessor:
                 print(f"[!] Failed to remove binary file {file_path}: {e} ")
             return True
 
+        # A journal or a login record file: removed, like binary sa data.
+        if single_file_compression(base_name) is None \
+                and _private_binary_file(file_path, base_name):
+            return dry_run or self._remove_private_binary(file_path, base_name)
+
         # A binary payload under a plain name. The compressed branch has
         # probed for this since it existed, but a file whose name carries no
         # compression extension reached the text path directly, where it was
@@ -1016,6 +1051,11 @@ class FileProcessor:
             return 'damaged'
 
         if is_binary_head(first_seg[:_TEXT_PROBE]):
+            if is_private_binary(first_seg[:_TEXT_PROBE], strip_compression_ext(base_name)):
+                # a rotated, compressed wtmp or journal
+                if not dry_run and not self._remove_private_binary(file_path, base_name):
+                    return 'failed'
+                return 'done'
             self._leave_binary_payload(first_seg, base_name, ext, logger, dry_run, warn)
             return 'done'
 
@@ -1184,6 +1224,18 @@ class FileProcessor:
             return 'failed'
 
     @staticmethod
+    def _remove_private_binary(file_path, base_name):
+        """Remove a journal or login record file. False when it could not
+        be removed: it then still holds real names and must not ship."""
+        print(f"        {base_name} [binary] (removed)")
+        try:
+            os.remove(file_path)
+        except OSError as e:
+            print(f"[!] Failed to remove binary file {file_path}: {e} ")
+            return False
+        return True
+
+    @staticmethod
     def _leave_binary_payload(head, base_name, ext, logger, dry_run, warn):
         """A compressed payload that is not text is left unchanged: a dump or
         a core is reported at info like its plain counterpart, any other
@@ -1213,6 +1265,8 @@ class FileProcessor:
                  f"decompressed — left as it is, its content is NOT scrubbed")
             return False
         if is_binary_head(data[:_TEXT_PROBE]):
+            if is_private_binary(data[:_TEXT_PROBE], strip_compression_ext(base_name)):
+                return dry_run or self._remove_private_binary(file_path, base_name)
             self._leave_binary_payload(data, base_name, ext, logger, dry_run, warn)
             return True
         text = data.decode('utf-8', 'surrogateescape')
