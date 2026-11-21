@@ -1,12 +1,32 @@
 # hostname_scrubber.py
 
 import re
+from collections import Counter
 from supportutils_scrub.scrubber import Scrubber
 from supportutils_scrub.fastsub import gsub, key, literals
 from supportutils_scrub.trie_re import build_trie_pattern
 from supportutils_scrub.domain_scrubber import is_preserved_domain
 
 # Loopback names that never identify anyone.
+_NFS_SERVER_RE = re.compile(r'nfs: server ([\w][\w.-]*)')
+# An RFC 5424 line: its time stamp at the start of a line, then the host.
+# "At the start of a line" is spelled as the newline before it, because the
+# search for one fixed character is many times faster than trying ^ at
+# every position of a log that has no such line; the first line of the text
+# has no newline before it and is matched on its own.
+_SYSLOG_STAMP = r'\d{4}-\d{2}-\d{2}T[\d:.+-]+\s+([\w][\w-]*)\b'
+_SYSLOG_FIRST_RE = re.compile(_SYSLOG_STAMP)
+_SYSLOG_NEXT_RE = re.compile(r'\n' + _SYSLOG_STAMP)
+
+
+def _syslog_hosts(text):
+    """The host of every RFC 5424 line of text, in order, as ^stamp with
+    re.MULTILINE finds them."""
+    first = _SYSLOG_FIRST_RE.match(text)
+    if not first:
+        return _SYSLOG_NEXT_RE.findall(text)
+    return [first.group(1)] + _SYSLOG_NEXT_RE.findall(text, first.end())
+
 LOOPBACK_HOSTNAMES = {
     "localhost", "ipv6-localhost", "ipv6-loopback",
     "ipv6-localnet", "ipv6-mcastprefix", "ipv6-allnodes",
@@ -274,18 +294,17 @@ class HostnameScrubber(Scrubber):
         excluded = WELL_KNOWN_HOSTNAMES
         hostnames = set()
 
-        for m in re.finditer(r'nfs: server ([\w][\w.-]*)', text):
-            short = m.group(1).split('.')[0]
+        for name in dict.fromkeys(_NFS_SERVER_RE.findall(text)):
+            short = name.split('.')[0]
             if len(short) >= 3 and short not in excluded:
                 hostnames.add(short)
 
         counts = {} if syslog_counts is None else syslog_counts
-        for m in re.finditer(
-            r'^\d{4}-\d{2}-\d{2}T[\d:.+-]+\s+([\w][\w-]*)\b', text, re.MULTILINE
-        ):
-            h = m.group(1)
+        # one host stamps every line of its log: count the names in one
+        # pass, then judge each distinct name once
+        for h, seen in Counter(_syslog_hosts(text)).items():
             if len(h) >= 3 and h not in excluded:
-                counts[h] = counts.get(h, 0) + 1
+                counts[h] = counts.get(h, 0) + seen
         if syslog_counts is None:
             hostnames |= HostnameScrubber.syslog_hosts_from_counts(counts)
 

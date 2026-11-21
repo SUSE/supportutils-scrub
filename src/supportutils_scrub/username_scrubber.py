@@ -123,6 +123,20 @@ class UsernameScrubber(Scrubber):
         re.compile(r'pam_unix\([^)]+\):.*?\[([A-Za-z0-9._-]+)\]'),
         re.compile(r'password check failed for user \(([A-Za-z0-9._-]+)\)'),
     ]
+    # For each pattern above, the texts one of which every match of it
+    # contains (None: no such case-sensitive text). A line is given only to
+    # the patterns that can match it: an sssd log says "user" on most lines
+    # and almost none of them is a login.
+    _LOG_NEEDS = (
+        ("session opened for user ",),
+        ("user", "logname"),
+        ("sudo",),
+        ("Accepted ",),
+        ('acct="',),
+        None,
+        ("pam_unix(",),
+        ("password check failed for user (",),
+    )
 
     # Every line any _LOG_PATTERNS entry can match contains one of these
     # substrings, so locating them with str.find and running the patterns
@@ -133,7 +147,14 @@ class UsernameScrubber(Scrubber):
     def _extract_from_log_lines(lines):
         usernames = set()
         for line in lines:
-            for pat in UsernameScrubber._LOG_PATTERNS:
+            for pat, needs in zip(UsernameScrubber._LOG_PATTERNS,
+                                  UsernameScrubber._LOG_NEEDS):
+                if needs:
+                    for need in needs:
+                        if need in line:
+                            break
+                    else:
+                        continue
                 for match in pat.finditer(line):
                     username = match.group(1).rstrip('.')
                     if not UsernameScrubber._is_excluded(username):
@@ -160,9 +181,12 @@ class UsernameScrubber(Scrubber):
             pos = lower.find(trigger)
             while pos != -1:
                 line_start = lower.rfind('\n', 0, pos) + 1
+                line_end = lower.find('\n', pos)
                 if line_start not in seen_starts:
                     seen_starts.add(line_start)
-                    line_end = lower.find('\n', pos)
                     lines.append(text[line_start:line_end if line_end != -1 else len(text)])
-                pos = lower.find(trigger, pos + 1)
+                if line_end == -1:
+                    break
+                # the rest of this line is the same line: go on after it
+                pos = lower.find(trigger, line_end)
         return list(UsernameScrubber._extract_from_log_lines(lines))

@@ -2,7 +2,7 @@
 
 import re
 from typing import Set, Dict, List, Optional, Tuple, Iterable, Match
-from supportutils_scrub.fastsub import gsub, key, literals
+from supportutils_scrub.fastsub import forget, giter, gsub, key, literals
 from supportutils_scrub.scrubber import Scrubber
 from supportutils_scrub.trie_re import build_trie_pattern
 
@@ -12,6 +12,64 @@ LABEL = r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
 # A domain label is never preceded by an underscore, and the SRV form
 # (_ldap._tcp.example.com) starts with one, so its parent is still learned.
 DOMAIN_RE = re.compile(rf"(?<![A-Za-z0-9_-])({LABEL}(?:\.{LABEL})+)(?![A-Za-z0-9-])", re.IGNORECASE)
+
+# A DOMAIN_RE match is made of these characters only, and its two lookarounds
+# reject on a subset of them, so they never decide anything past the end of a
+# maximal run: matching each distinct run alone finds exactly the matches of
+# the whole text, in the same first-seen order. A log repeats the same few
+# names, numbers and timestamps millions of times, so the pattern runs on a
+# few thousand runs instead of on every byte. The four non-ASCII letters are
+# the ones [A-Za-z] takes under IGNORECASE.
+_RUN_BYTES = (b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+              b"0123456789_.-")
+_RUN_SPLIT = bytes(c if c in _RUN_BYTES else 32 for c in range(256))
+_RUN_RE = re.compile("[A-Za-z0-9_.\\-\u0130\u0131\u017f\u212a]+")
+_RUN_WINDOW = 4 << 20
+# the first letter of a TLD as written: K (U+212A) lower-cases to k
+_DOT_LETTER = re.compile("\\.[A-Za-z\u212a]")
+
+
+def _dotted_runs(text: str, tld_only: bool = False) -> Dict[str, None]:
+    """The distinct runs of domain characters in text that hold a dot, in
+    first-seen order; with tld_only, only those where a letter follows a
+    dot (without one no label can be a TLD, so the run holds no domain an
+    untrusted text may give). The text is taken in windows cut after a
+    newline, which no run holds."""
+    runs: Dict[str, None] = {}
+    pos, size = 0, len(text)
+    while pos < size:
+        end = size
+        if size - pos > _RUN_WINDOW:
+            end = text.find('\n', pos + _RUN_WINDOW) + 1 or size
+        piece = text[pos:end]
+        pos = end
+        try:
+            raw = piece.encode('ascii').translate(_RUN_SPLIT)
+        except UnicodeEncodeError:
+            for word in dict.fromkeys(_RUN_RE.findall(piece)):
+                if '.' in word and not (tld_only and not _DOT_LETTER.search(word)):
+                    runs[word] = None
+            continue
+        if not tld_only:
+            for chunk in dict.fromkeys(raw.split()):
+                if b'.' in chunk:
+                    runs[chunk.decode('ascii')] = None
+            continue
+        # from one dot-and-letter to the next: a log is mostly words,
+        # numbers and time stamps, and those are never looked at
+        done = 0
+        rfind, find = raw.rfind, raw.find
+        # (piece is ASCII here: the same places in it and in raw)
+        for hit in _DOT_LETTER.finditer(piece):
+            at = hit.start()
+            if at < done:
+                continue                 # still inside the run just taken
+            done = find(b' ', at)
+            if done < 0:
+                done = len(raw)
+            runs[raw[rfind(b' ', 0, at) + 1:done].decode('ascii')] = None
+    return runs
+
 
 _DC_RE = re.compile(r'(DC=[A-Za-z0-9-]+(?:,\s*DC=[A-Za-z0-9-]+)+)', re.IGNORECASE)
 
@@ -110,6 +168,9 @@ def is_preserved_domain(d: str) -> bool:
 def _labels_count(d: str) -> int:
     return _norm(d).count(".") + 1
 
+_IPV4_SHAPE = re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
+_LABEL_CHARS = re.compile(r"[a-zA-Z0-9-]+")
+
 def _is_valid_domain(d: str, trusted: bool = False) -> bool:
     """trusted: the domain comes from an authoritative source (resolv.conf
     search list, /etc/hosts FQDN), so skip the public-TLD whitelist — internal
@@ -117,22 +178,23 @@ def _is_valid_domain(d: str, trusted: bool = False) -> bool:
     d = _norm(d)
     if "." not in d:
         return False
+    # Every test here only rejects, so their order is free. The TLD lookup
+    # goes first: a log is full of decimals, versions and file names, and
+    # this one set lookup drops nearly all of them.
+    if not trusted and d.rsplit(".", 1)[1] not in _VALID_TLDS:
+        return False
     if d in _SINGLE_LABEL_BAN or d in _PUBLIC_SUFFIXES:
         return False
-    if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", d):
+    if _IPV4_SHAPE.match(d):
         return False
     parts = d.split(".")
-    if any(len(p) == 0 for p in parts):
-        return False
     for p in parts:
-        if len(p) > 63:
+        if not p or len(p) > 63:
             return False
         if p.startswith("-") or p.endswith("-"):
             return False
-        if not re.fullmatch(r"[a-zA-Z0-9-]+", p):
+        if not _LABEL_CHARS.fullmatch(p):
             return False
-    if not trusted and parts[-1].lower() not in _VALID_TLDS:
-        return False
     # A few country-code TLDs are also common file extensions, and a capture
     # holds far more of those files than it does Somali, Lao or Papua New
     # Guinean domains. A bare name.so is the filename, so learning it renames
@@ -273,24 +335,30 @@ class DomainScrubber(Scrubber):
             return []
 
         all_domain_parts = set()
-        matches = DOMAIN_RE.finditer(text)
-        for m in matches:
-            fqdn = _norm(m.group(1))
-            if not _is_valid_domain(fqdn, trusted):
-                continue
+        # untrusted, the last label has to be a known TLD, so a run with no
+        # dot before a letter (a decimal, a version, the seconds of a time
+        # stamp) holds no domain and is left out
+        for run in _dotted_runs(text, tld_only=not trusted):
+            for raw in DOMAIN_RE.findall(run):
+                fqdn = _norm(raw)
+                if not _is_valid_domain(fqdn, trusted):
+                    continue
 
-            all_domain_parts.add(fqdn)
-            parts = fqdn.split('.')
+                all_domain_parts.add(fqdn)
+                parts = fqdn.split('.')
 
-            for i in range(1, len(parts) - 1):
-                parent_domain = '.'.join(parts[i:])
-                if _is_valid_domain(parent_domain, trusted):
-                    all_domain_parts.add(parent_domain)
+                for i in range(1, len(parts) - 1):
+                    parent_domain = '.'.join(parts[i:])
+                    if _is_valid_domain(parent_domain, trusted):
+                        all_domain_parts.add(parent_domain)
 
-        for m in _DC_RE.finditer(text):
+        # giter goes to the places that say DC= instead of trying the
+        # case-insensitive pattern at every character
+        for m in giter(_DC_RE, text):
             domain = _dc_to_domain(m.group(1))
             if _is_valid_domain(domain, trusted):
                 DomainScrubber._add_domain_and_parents(domain, all_domain_parts)
+        forget()
 
         return _sort_specific_first(all_domain_parts, trusted)
 

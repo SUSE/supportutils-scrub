@@ -10,7 +10,7 @@
 # catastrophic. We therefore DISCOVER SIDs only from strong, SAP-specific contexts and
 # skip SAP's reserved words; then we substitute the discovered SID everywhere it appears.
 import re
-from supportutils_scrub.fastsub import gsub, giter, hint_spans, iter_spans, literals
+from supportutils_scrub.fastsub import gsub, literals
 from supportutils_scrub.scrubber import Scrubber
 
 _SID = r'[A-Z][A-Z0-9]{2}'
@@ -36,17 +36,31 @@ _DISCOVERY = [
     re.compile(r'\b(' + _SID + r')_(?:D|ASCS|ERS|SCS|HDB|J|W|G)\d\d\b'),
 ]
 
-# The last pattern starts with the SID itself, three characters with no
-# literal to search for; each of its matches holds this, which starts with one.
-_INSTANCE_HINT = (re.compile(r'_(?:D|ASCS|ERS|SCS|HDB|J|W|G)\d\d'),)
+# A cluster log names its SAP resources on every line: millions of matches
+# for a handful of SIDs, and one step of Python per match took minutes on a
+# large case. For discovery only the distinct SIDs count, so the patterns
+# are run by findall, and in a form that STARTS with their fixed text: the
+# engine then jumps from one occurrence of that text to the next instead of
+# trying \b at every character. The same matches, spelled differently:
+#   \bLIT...   is  LIT(?<!\wLIT)...   (no word character before LIT)
+#   \b(SID)_X  is  _(?<=\b(SID)_)X    (the SID is read back from the "_")
+_SCAN = [
+    _DISCOVERY[0],
+    _DISCOVERY[1],
+    _DISCOVERY[2],
+    re.compile(r'rsc_(?<!\wrsc_)[A-Za-z]*SAP[A-Za-z]*_(' + _SID + r')_'),
+    re.compile(r'SAP(?<!\wSAP)(' + _SID + r')_'),
+    re.compile(r'_(?<=\b(' + _SID + r')_)(?:D|ASCS|ERS|SCS|HDB|J|W|G)\d\d\b'),
+]
 
 
-def _discoveries(text):
-    for rx in _DISCOVERY[:-1]:
-        for m in giter(rx, text):
-            yield m
-    for m in iter_spans(_DISCOVERY[-1], text, hint_spans(text, _INSTANCE_HINT)):
-        yield m
+def _discovered(text):
+    """The SIDs the _DISCOVERY patterns find in text, without the repeats:
+    per pattern in first-seen order, the patterns in their order."""
+    found = []
+    for rx in _SCAN:
+        found += dict.fromkeys(rx.findall(text))
+    return found
 
 
 # The SAP Diagnostics Agent (DAA by default) runs as its own SID with an SMDA<nn>
@@ -60,8 +74,15 @@ _AGENT = [
 ]
 
 
+# the same two, each starting with its fixed text (see _SCAN)
+_AGENT_SCAN = [
+    _AGENT[0],
+    re.compile(r'_SMDA(?<=(?<![A-Za-z0-9])(' + _SID + r')_SMDA)\d\d(?![A-Za-z0-9])'),
+]
+
+
 def _agents(text: str) -> set:
-    return {m.group(1) for rx in _AGENT for m in giter(rx, text)}
+    return {sid for rx in _AGENT_SCAN for sid in rx.findall(text)}
 
 
 def _valid(sid: str) -> bool:
@@ -91,7 +112,7 @@ class SIDScrubber(Scrubber):
         for sid in _agents(text):
             self.agent_sids.add(sid)
             self.sid_dict.pop(sid, None)
-        found = [m.group(1).upper() for m in _discoveries(text)]
+        found = [sid.upper() for sid in _discovered(text)]
         found = [s for s in dict.fromkeys(found)
                  if _valid(s) and s not in self.agent_sids]
         # a fake is never a real SID nor one already handed out, or two

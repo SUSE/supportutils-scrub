@@ -288,8 +288,10 @@ def test_sid_discovery_equals_the_patterns_over_the_whole_text():
     from supportutils_scrub import sid_scrubber as sid
     for label, text in list(_texts()) + list(_random_texts(150, 6)):
         fastsub.forget()
-        plain = [m.group(1) for rx in sid._DISCOVERY for m in rx.finditer(text)]
-        assert [m.group(1) for m in sid._discoveries(text)] == plain, label
+        plain = []
+        for rx in sid._DISCOVERY:
+            plain += dict.fromkeys(m.group(1) for m in rx.finditer(text))
+        assert sid._discovered(text) == plain, label
 
 
 # --- the subnet allocator: same choices as the loop it replaced -------------
