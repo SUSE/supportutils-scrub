@@ -33,6 +33,14 @@ from supportutils_scrub.modes import folder as folder_mode
 from supportutils_scrub.scrub_config import ScrubConfig
 
 
+def _gzip(data):
+    """gzip.compress(data, mtime=0), which Python 3.6 does not take."""
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode='wb', mtime=0) as fh:
+        fh.write(data)
+    return buf.getvalue()
+
+
 class _Logger:
     def __init__(self):
         self.infos, self.warnings, self.errors = [], [], []
@@ -186,7 +194,12 @@ class TestFolderMode:
         _assert_dumps_intact_and_text_scrubbed(out)
 
 
-_RNG_BYTES = random.Random(0).randbytes(256 * 1024)
+def _randbytes(seed, size):
+    """random.Random(seed).randbytes(size), which Python 3.6 does not have."""
+    return random.Random(seed).getrandbits(size * 8).to_bytes(size, 'little')
+
+
+_RNG_BYTES = _randbytes(0, 256 * 1024)
 
 
 def _compressed_tree(tmp_path):
@@ -195,9 +208,9 @@ def _compressed_tree(tmp_path):
     src = tmp_path / "compressed_tree"
     src.mkdir()
     (src / "vmcore.xz").write_bytes(lzma.compress(_makedumpfile() + _RNG_BYTES + _TEXT_BAIT))
-    (src / "core.4321.gz").write_bytes(gzip.compress(_elf_core() + _RNG_BYTES, mtime=0))
-    (src / "capture.pcap.gz").write_bytes(gzip.compress(
-        b"\xd4\xc3\xb2\xa1\x02\x00\x04\x00" + _RNG_BYTES + _TEXT_BAIT, mtime=0))
+    (src / "core.4321.gz").write_bytes(_gzip(_elf_core() + _RNG_BYTES))
+    (src / "capture.pcap.gz").write_bytes(_gzip(
+        b"\xd4\xc3\xb2\xa1\x02\x00\x04\x00" + _RNG_BYTES + _TEXT_BAIT))
     rng = random.Random(1)
     log = "".join(f"line {i} peer 198.51.100.77 id {rng.random()}\n" for i in range(4000))
     (src / "messages.xz").write_bytes(lzma.compress(log.encode()))
@@ -252,7 +265,7 @@ class TestCompressedDumps:
                                                          payload, expected):
         monkeypatch.setattr(parallel, "_COMPRESSED_CHUNK_THRESHOLD", 16)
         path = tmp_path / "payload.gz"
-        path.write_bytes(gzip.compress(payload, mtime=0))
+        path.write_bytes(_gzip(payload))
         assert (parallel._stageable_compressed(str(path)) is not None) is expected
 
 
@@ -441,12 +454,12 @@ class TestCompressedDumpMembers:
     """A dump member stored compressed is judged by its decompressed head."""
 
     @pytest.mark.parametrize("name,make", [
-        ("vmcore.gz", lambda: gzip.compress(_makedumpfile(), mtime=0)),
+        ("vmcore.gz", lambda: _gzip(_makedumpfile())),
         ("vmcore.xz", lambda: lzma.compress(_makedumpfile() + _RNG_BYTES)),
         ("vmcore.bz2", lambda: bz2.compress(_kdump_compressed())),
         ("core.1234.xz", lambda: lzma.compress(_elf_core())),
         # a whole 900 KB bz2 block must be in before bz2 emits a byte
-        ("core.1234.bz2", lambda: bz2.compress(_elf_core() + random.Random(2).randbytes(2 << 20))),
+        ("core.1234.bz2", lambda: bz2.compress(_elf_core() + _randbytes(2, 2 << 20))),
         (_SYSTEMD_CORE + ".zst", lambda: _zstd(_elf_core() + _RNG_BYTES)),
         (_SYSTEMD_CORE + ".xz", lambda: lzma.compress(_elf_core())),
         (_SYSTEMD_CORE + ".lz4", lambda: _lz4(_elf_core())),
@@ -456,13 +469,13 @@ class TestCompressedDumpMembers:
         assert _stream_verdicts([(name, make())]) == {name: True}
 
     @pytest.mark.parametrize("name,make", [
-        ("vmcore.gz", lambda: gzip.compress(b"plain text 198.51.100.77\n", mtime=0)),
-        ("vmcore-dmesg.txt.gz", lambda: gzip.compress(b"[ 0.0] Linux\n", mtime=0)),
-        ("core.txt.gz", lambda: gzip.compress(b"core notes\n", mtime=0)),
+        ("vmcore.gz", lambda: _gzip(b"plain text 198.51.100.77\n")),
+        ("vmcore-dmesg.txt.gz", lambda: _gzip(b"[ 0.0] Linux\n")),
+        ("core.txt.gz", lambda: _gzip(b"core notes\n")),
         ("core.1234.xz", lambda: lzma.compress(_elf_core(e_type=2))),
-        ("vmcore.gz", lambda: gzip.compress(b"makedumpfile: saving\n", mtime=0)),
+        ("vmcore.gz", lambda: _gzip(b"makedumpfile: saving\n")),
         # a bomb: 64 MB of NUL bytes, decompressed only as far as the head
-        ("vmcore.gz", lambda: gzip.compress(b"\x00" * (64 << 20), mtime=0)),
+        ("vmcore.gz", lambda: _gzip(b"\x00" * (64 << 20))),
     ], ids=["vmcore.gz-text", "dmesg.gz", "core.txt.gz", "core.xz-elf-exec",
             "vmcore.gz-log-line", "vmcore.gz-zeros"])
     def test_compressed_non_dumps(self, name, make):
@@ -557,7 +570,7 @@ class TestMemberVerdicts:
             def decompress(self, data, n):
                 raise MemoryError()
         monkeypatch.setattr(processor, "_python_decompressor", lambda suffix: _Greedy())
-        data = gzip.compress(_makedumpfile(), mtime=0)
+        data = _gzip(_makedumpfile())
         assert _verdicts3([("vmcore.gz", data)]) == {"vmcore.gz": processor.UNKNOWN}
 
     def test_the_stream_listing_never_raises_a_memory_error(self, tmp_path, monkeypatch):
@@ -574,8 +587,8 @@ class TestMemberVerdicts:
             {"vmcore.gz": processor.DUMP, "core.7.zst": processor.DUMP}
 
     @pytest.mark.parametrize("name,payload", [
-        ("core.txt.gz", gzip.compress(b"core notes 198.51.100.77\n" * 20, mtime=0)),
-        ("vmcore.gz", gzip.compress(b"hi\n", mtime=0)),        # shorter than a head
+        ("core.txt.gz", _gzip(b"core notes 198.51.100.77\n" * 20)),
+        ("vmcore.gz", _gzip(b"hi\n")),        # shorter than a head
         ("vmcore.xz", lzma.compress(b"plain text\n" * 20)),
         ("vmcore", b"hello"),
     ], ids=["core.txt.gz", "vmcore.gz-short", "vmcore.xz-text", "vmcore-short-text"])
@@ -840,7 +853,7 @@ class TestExpandNestedArchives:
         assert len(logger.errors) == 1 and "could not inspect" in logger.errors[0]
 
     def test_a_damaged_archive_of_a_decodable_text_core_txt_gz_is_removed(self, tmp_path):
-        full = _tar_bytes([("core.txt.gz", gzip.compress(b"notes\n" * 50000, mtime=0)),
+        full = _tar_bytes([("core.txt.gz", _gzip(b"notes\n" * 50000)),
                            ("messages", b"x" * 8000)])
         with tarfile.open(fileobj=io.BytesIO(full)) as tar:
             cut = tar.getmember("messages").offset_data + 1000

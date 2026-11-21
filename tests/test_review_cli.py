@@ -242,6 +242,7 @@ def test_preload_of_an_archive_learns_no_extraction_folder_name(tmp_path, crm):
 
 
 def test_preload_keeps_an_encrypted_mapping_encrypted(monkeypatch, tmp_path):
+    pytest.importorskip('cryptography')    # an optional package
     import getpass
     from test_preload import _node, _args, _Logger as _PLogger
     from supportutils_scrub.modes import preload as preload_mode

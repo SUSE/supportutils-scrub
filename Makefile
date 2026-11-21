@@ -1,4 +1,4 @@
-.PHONY: test test-verbose test-quick lint
+.PHONY: test test-verbose test-quick lint check
 
 test:
 	python3 -m pytest tests/ -v --tb=short
@@ -12,3 +12,6 @@ test-quick:
 lint:
 	python3 -m py_compile src/supportutils_scrub/*.py
 	python3 -m py_compile src/supportutils_scrub/modes/*.py
+
+check:
+	scripts/ci-check.sh --no-rpm

@@ -1,0 +1,32 @@
+name: ci
+
+# Every push and every pull request: the RPM is built and installed on each
+# system the package is shipped for, a made-up capture is scrubbed with the
+# installed tool and searched for what must be gone, and the unit tests run
+# with that system's Python. scripts/ci-check.sh is the whole check; run it
+# locally before pushing.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "SLE 15 SP5 (Python 3.6)", image: "registry.suse.com/bci/bci-base:15.5" }
+          - { name: "SLE 15 SP6 (Python 3.6)", image: "registry.suse.com/bci/bci-base:15.6" }
+          - { name: "SLE 15 SP7 (Python 3.6)", image: "registry.suse.com/bci/bci-base:15.7" }
+          - { name: "SLES 16.0 (Python 3.13)", image: "registry.suse.com/bci/bci-base:16.0" }
+          - { name: "Tumbleweed (newest Python)", image: "registry.opensuse.org/opensuse/tumbleweed:latest" }
+    steps:
+      - name: Tools the check needs
+        run: zypper -n --gpg-auto-import-keys install -y python3 rpm-build tar gzip xz findutils grep
+      - uses: actions/checkout@v4
+      - name: Build, install, scrub, test
+        run: scripts/ci-check.sh

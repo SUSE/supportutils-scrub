@@ -72,7 +72,8 @@ def test_preload_learns_names_from_every_capture_and_touches_nothing(tmp_path):
     m = json.load(open(mapping))
     assert {"nodea", "nodeb", "nodec"} <= set(m["hostname"])
     assert m.get("det_key")
-    assert _snapshot(tmp_path) == before | {str(mapping): _snapshot(tmp_path)[str(mapping)]}
+    assert _snapshot(tmp_path) == dict(
+        before, **{str(mapping): _snapshot(tmp_path)[str(mapping)]})
 
 
 def test_preload_is_idempotent_and_keeps_existing_fakes(tmp_path):
