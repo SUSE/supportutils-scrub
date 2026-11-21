@@ -1,4 +1,21 @@
 -------------------------------------------------------------------
+Sat Nov 21 22:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
+
+- Update to version 1.10
+  + Speed of the name learning (--preload and the pre-scan of every
+    run), with the same mapping and the same output. On a set of 789
+    large logs a --preload split over 16 processes took 69 s and takes
+    12 s; the pre-scan of a 9 GB log folder took 21 s and takes 15 s
+  + Domains are looked for in the distinct words of a log that hold a
+    dot before a letter, not at every character: a log repeats the
+    same names, numbers and time stamps millions of times
+  + SAP system IDs and the diagnostics agent are found by patterns
+    that start with their fixed text, and each distinct ID is judged
+    once: a cluster log names its SAP resources on every line
+  + The host of an RFC 5424 line is counted in one pass, and a line is
+    given only to the account patterns that can match it
+
+-------------------------------------------------------------------
 Fri Nov 20 12:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
 
 - Update to version 1.9
