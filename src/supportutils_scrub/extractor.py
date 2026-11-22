@@ -1,6 +1,8 @@
 # extractor.py
 
 import os
+import sys
+import fcntl
 import shutil
 import stat
 import logging
@@ -43,16 +45,23 @@ def _common_top_level(members):
     """
     tops = set()
     for m in members:
-        name = (m.name or "").strip("/")
-        if not name:
-            continue
-        if "/" not in name:
-            if m.isdir():
-                tops.add(name)
-                continue
+        top = _top_of(m)
+        if top is None:
             return None          # a file at the archive root: nothing to strip
-        tops.add(name.split("/", 1)[0])
+        if top:
+            tops.add(top)
     return tops.pop() if len(tops) == 1 else None
+
+
+def _top_of(member):
+    """What one member says about the wrapper: its top-level directory, ''
+    when it says nothing (no name), None for a file at the archive root."""
+    name = (member.name or "").strip("/")
+    if not name:
+        return ''
+    if "/" not in name:
+        return name if member.isdir() else None
+    return name.split("/", 1)[0]
 
 
 def _member_relative_path(member, top_level):
@@ -229,7 +238,7 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
             unzst = archive + '.scrubtmp' if archive.lower().endswith(_ZST_TAR_SUFFIXES) else None
             try:
                 zst_error = _unzstd(archive, unzst) if unzst else None
-                with tarfile.open(unzst or archive, 'r:*') as tar:
+                with tarfile.open(unzst or archive, 'r:*', **_COPY_KW) as tar:
                     try:
                         os.makedirs(dest)
                         created = True
@@ -290,57 +299,107 @@ def expand_nested_archives(root_dir, logger=None, max_depth=5):
                     logger.error(f"Failed to remove nested archive {rel}: {e}")
     return unpacked
 
-# Extraction through a multi-threaded decompressor when one is installed:
+# Extraction through an external decompressor when one is installed:
 # Python's lzma/gzip/bz2 modules are single-threaded, and on a 128-core box
 # the extract phase ran on one of them (22 s p99) while the repack already
 # streamed through `xz -T0`. The tar is parsed by tarfile in stream mode, so
 # wrapper stripping and the traversal guard are the same code as before.
+#
+# Per tar mode, the commands to try in order with the binary each needs.
+# bzip2: lbzip2 decodes any stream on several threads, pbzip2 only a stream
+# it wrote itself (measured on a 7 GB log tarball: bz2 module 71 s, pbzip2
+# no faster, lbzip2 6 s). 16 threads: from there on the tar reader is the
+# limit, more threads only cost memory.
 _EXTERNAL_DECOMPRESS = True
+_BZ2_THREADS = str(min(16, os.cpu_count() or 1))
 _DECOMPRESSORS = {
-    'r:xz': (['xz', '-T0', '-dc'], ['xz']),
-    'r:gz': (['pigz', '-dc'], ['pigz']),
-    'r:bz2': (['pbzip2', '-dc'], ['pbzip2']),
+    'r:xz': ((['xz', '-T0', '-dc'], 'xz'),),
+    'r:gz': ((['pigz', '-dc'], 'pigz'),),
+    'r:bz2': ((['lbzip2', '-dc', '-n', _BZ2_THREADS], 'lbzip2'),
+              (['pbzip2', '-dc'], 'pbzip2')),
 }
+
+# Buffers of the tar reader. The defaults (a 64 KiB kernel pipe, 10 KiB tar
+# blocks, 16 KiB file copies) made Python the slow end of the pipe: the same
+# 7 GB tarball took 18 s to extract behind a decompressor that needs 2 s,
+# and 6 s with these. tarfile has copybufsize from Python 3.7 on.
+_STREAM_BYTES = 1 << 20
+_COPY_KW = {'copybufsize': _STREAM_BYTES} if sys.version_info >= (3, 7) else {}
+_F_SETPIPE_SZ = getattr(fcntl, 'F_SETPIPE_SZ', 1031)
 
 
 def _decompressor_cmd(mode):
     """The external decompressor command for `mode`, or None."""
     if not _EXTERNAL_DECOMPRESS:
         return None
-    entry = _DECOMPRESSORS.get(mode)
-    if not entry:
-        return None
-    cmd, need = entry
-    return cmd if all(shutil.which(b) for b in need) else None
+    for cmd, binary in _DECOMPRESSORS.get(mode, ()):
+        if shutil.which(binary):
+            return cmd
+    return None
 
 
 def _stream_members(archive_path, cmd):
     """Yield (tar, member) over a tar stream fed by `cmd`; the tar object is
-    needed to extract the current member. Caller consumes strictly in order."""
+    needed to extract the current member. Caller consumes strictly in order.
+    A stream read to its end behind a decompressor that failed raises: a
+    damaged archive can end between two members, which tarfile takes for
+    the end of the archive. A caller that stops early closes the generator."""
     with open(archive_path, 'rb') as src:
-        proc = subprocess.Popen(cmd, stdin=src, stdout=subprocess.PIPE)
+        proc = subprocess.Popen(cmd, stdin=src, stdout=subprocess.PIPE, bufsize=0)
+        done = False
         try:
-            with tarfile.open(fileobj=proc.stdout, mode='r|') as tar:
+            try:
+                fcntl.fcntl(proc.stdout, _F_SETPIPE_SZ, _STREAM_BYTES)
+            except OSError:
+                pass             # the pipe keeps its default size: slower, not wrong
+            with tarfile.open(fileobj=proc.stdout, mode='r|', bufsize=_STREAM_BYTES,
+                              **_COPY_KW) as tar:
                 for member in tar:
                     yield tar, member
+            done = True
         finally:
             proc.stdout.close()
-            if proc.wait() != 0:
-                raise RuntimeError(f"{cmd[0]} exited with status {proc.returncode}")
+            status = proc.wait()
+            if done and status != 0:
+                raise RuntimeError(f"{cmd[0]} exited with status {status}")
+
+
+_NO_GUESS = object()
 
 
 def _extract_streaming(archive_path, cmd, clean_folder_path, clean_folder_name,
                        tar_extract_base):
-    """Two streamed passes: the first learns the member list (the wrapper
-    decision needs all of it), the second extracts. Decompression runs in
-    the external tool, multi-threaded, both times."""
-    members = [m for _tar, m in _stream_members(archive_path, cmd)]
-    top_level = _common_top_level(members)
-    skipped = 0
-    for tar, member in _stream_members(archive_path, cmd):
-        skipped += not _extract_top_member(tar, member, top_level, clean_folder_path,
-                                           clean_folder_name, tar_extract_base)
-    return skipped
+    """One streamed pass where the archive has the usual single wrapper
+    folder, which every supportconfig has. The wrapper to strip is decided
+    by ALL members (_common_top_level) and a stream knows them only at its
+    end, so the pass extracts under the wrapper its first member names and
+    holds every later member against it. An archive that turns out to have
+    no single wrapper is extracted once more from the start with nothing
+    stripped: the tree two passes gave, at their cost. Decompressing twice
+    to list first was half of the extraction time of every capture."""
+    stripped = True
+    while True:
+        guess, skipped, clash = _NO_GUESS, 0, False
+        stream = _stream_members(archive_path, cmd)
+        try:
+            for tar, member in stream:
+                top = _top_of(member)
+                if stripped and top != '':
+                    if guess is _NO_GUESS:
+                        guess = top
+                    elif guess is not None and top != guess:
+                        clash = True
+                        break
+                top_level = guess if stripped and guess is not _NO_GUESS else None
+                skipped += not _extract_top_member(tar, member, top_level, clean_folder_path,
+                                                   clean_folder_name, tar_extract_base)
+        finally:
+            stream.close()
+        if not clash:
+            return skipped
+        stripped = False
+        shutil.rmtree(clean_folder_path, ignore_errors=True)
+        os.makedirs(clean_folder_path, exist_ok=True)
 
 
 def _extract_top_member(tar, member, top_level, clean_folder_path,
@@ -427,7 +486,7 @@ def extract_tgz_archive(archive_path, logger, extract_base=None, mode="r:gz"):
             shutil.rmtree(clean_folder_path, ignore_errors=True)
             os.makedirs(clean_folder_path, exist_ok=True)
 
-    with tarfile.open(archive_path, mode) as tar:
+    with tarfile.open(archive_path, mode, **_COPY_KW) as tar:
         members = tar.getmembers()
         top_level = _common_top_level(members)
         skipped = 0

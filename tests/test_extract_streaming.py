@@ -98,3 +98,152 @@ def test_sid_pre_scan_reads_in_segments_and_still_finds_a_late_sid(tmp_path, mon
     sids = pipeline.extract_sids([str(log)], {})
     assert "PRD" in sids
     assert seen and seen[0] == 1 << 20
+
+
+# One decode pass instead of two, and the bzip2 decoder that is parallel on
+# any stream. The plain forms below are what the faster ones must equal.
+
+def _plain_common_top_level(members):
+    tops = set()
+    for m in members:
+        name = (m.name or "").strip("/")
+        if not name:
+            continue
+        if "/" not in name:
+            if m.isdir():
+                tops.add(name)
+                continue
+            return None
+        tops.add(name.split("/", 1)[0])
+    return tops.pop() if len(tops) == 1 else None
+
+
+def _member(name, kind=tarfile.REGTYPE):
+    m = tarfile.TarInfo(name)
+    m.type = kind
+    return m
+
+
+_SHAPES = {
+    "wrapped": [("w", tarfile.DIRTYPE), ("w/a.txt",), ("w/etc/hosts",)],
+    "wrapped, no folder entry": [("w/a.txt",), ("w/etc/hosts",)],
+    "two roots": [("a/x.txt",), ("b/y.txt",)],
+    "root file first": [("readme.txt",), ("w/a.txt",)],
+    "root file last": [("w/a.txt",), ("w/b.txt",), ("readme.txt",)],
+    "second root last": [("w", tarfile.DIRTYPE), ("w/a.txt",), ("v/b.txt",)],
+    "dot slash": [("./w/a.txt",), ("./w/b.txt",)],
+    "only folders": [("w", tarfile.DIRTYPE), ("w/sub", tarfile.DIRTYPE)],
+    "empty": [],
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_SHAPES))
+def test_the_wrapper_decision_is_the_plain_one(shape):
+    members = [_member(*m) for m in _SHAPES[shape]]
+    assert extractor._common_top_level(members) == _plain_common_top_level(members)
+
+
+def _archive(tmp_path, shape, mode="w:xz", ext=".txz"):
+    arc = tmp_path / ("bundle" + ext)
+    with tarfile.open(arc, mode) as tar:
+        for m in _SHAPES[shape]:
+            info = _member(*m)
+            if info.isdir():
+                info.mode = 0o755
+                tar.addfile(info)
+            else:
+                data = ("payload of " + m[0]).encode()
+                info.size = len(data)
+                import io
+                tar.addfile(info, io.BytesIO(data))
+    return str(arc)
+
+
+@pytest.mark.skipif(not shutil.which("xz"), reason="xz binary needed")
+@pytest.mark.parametrize("shape,passes", [("wrapped", 1), ("wrapped, no folder entry", 1),
+                                          ("root file first", 1), ("only folders", 1),
+                                          ("two roots", 2), ("root file last", 2),
+                                          ("second root last", 2)])
+def test_one_decode_pass_unless_the_archive_has_no_single_wrapper(tmp_path, monkeypatch,
+                                                                  shape, passes):
+    arc = _archive(tmp_path, shape)
+    py_out = tmp_path / "py"; py_out.mkdir()
+    st_out = tmp_path / "st"; st_out.mkdir()
+    monkeypatch.setattr(extractor, "_EXTERNAL_DECOMPRESS", False)
+    extract_tgz_archive(arc, logger=None, extract_base=str(py_out), mode="r:xz")
+    monkeypatch.setattr(extractor, "_EXTERNAL_DECOMPRESS", True)
+    opened = []
+    real = extractor._stream_members
+    monkeypatch.setattr(extractor, "_stream_members",
+                        lambda path, cmd: (opened.append(cmd[0]) or real(path, cmd)))
+    extract_tgz_archive(arc, logger=None, extract_base=str(st_out), mode="r:xz")
+    assert opened == ["xz"] * passes
+    assert _tree(st_out) == _tree(py_out)
+    assert sorted(os.listdir(st_out)) == sorted(os.listdir(py_out))
+
+
+@pytest.mark.parametrize("tool,mode,ext,wmode", [("lbzip2", "r:bz2", ".tbz", "w:bz2"),
+                                                 ("pbzip2", "r:bz2", ".tbz", "w:bz2"),
+                                                 ("pigz", "r:gz", ".tgz", "w:gz")])
+def test_each_external_decompressor_gives_the_python_tree(tmp_path, monkeypatch, tool, mode,
+                                                          ext, wmode):
+    if not shutil.which(tool):
+        pytest.skip(f"{tool} not installed")
+    arc = _archive(tmp_path, "wrapped", wmode, ext)
+    py_out = tmp_path / "py"; py_out.mkdir()
+    st_out = tmp_path / "st"; st_out.mkdir()
+    monkeypatch.setattr(extractor, "_EXTERNAL_DECOMPRESS", False)
+    extract_tgz_archive(arc, logger=None, extract_base=str(py_out), mode=mode)
+    monkeypatch.setattr(extractor, "_EXTERNAL_DECOMPRESS", True)
+    which = shutil.which
+    monkeypatch.setattr(extractor.shutil, "which", lambda b: which(b) if b == tool else None)
+    assert extractor._decompressor_cmd(mode)[0] == tool
+    extract_tgz_archive(arc, logger=None, extract_base=str(st_out), mode=mode)
+    assert _tree(st_out) == _tree(py_out) and _tree(st_out)
+
+
+def test_bzip2_archives_prefer_the_decoder_that_is_parallel_on_any_stream(monkeypatch):
+    monkeypatch.setattr(extractor.shutil, "which", lambda b: "/usr/bin/" + b)
+    assert extractor._decompressor_cmd("r:bz2")[0] == "lbzip2"
+    monkeypatch.setattr(extractor.shutil, "which",
+                        lambda b: None if b == "lbzip2" else "/usr/bin/" + b)
+    assert extractor._decompressor_cmd("r:bz2")[0] == "pbzip2"
+    monkeypatch.setattr(extractor.shutil, "which", lambda b: None)
+    assert extractor._decompressor_cmd("r:bz2") is None
+
+
+def _plain_tar(tmp_path):
+    arc = tmp_path / "plain.tar"
+    with tarfile.open(arc, "w") as tar:
+        for name in ("w/a.txt", "w/b.txt", "w/c.txt"):
+            info = _member(name)
+            info.size = 2000
+            import io
+            tar.addfile(info, io.BytesIO(b"x" * 2000))
+    return str(arc)
+
+
+def test_a_decoder_that_fails_between_two_members_is_an_error(tmp_path):
+    """tarfile takes a stream that ends between two members for the end of
+    the archive; only the decoder's exit status says it was cut short."""
+    arc = _plain_tar(tmp_path)
+    cut = ["sh", "-c", "head -c 2560; exit 3"]          # exactly one member
+    with pytest.raises(RuntimeError, match="status 3"):
+        assert [m.name for _t, m in extractor._stream_members(arc, cut)] == ["w/a.txt"]
+    names = [m.name for _t, m in extractor._stream_members(arc, ["cat"])]
+    assert names == ["w/a.txt", "w/b.txt", "w/c.txt"]
+
+
+def test_a_reader_that_stops_early_raises_nothing(tmp_path):
+    arc = _plain_tar(tmp_path)
+    stream = extractor._stream_members(arc, ["cat"])
+    assert next(stream)[1].name == "w/a.txt"
+    stream.close()
+
+
+def test_a_failed_decoder_falls_back_to_the_python_extractor(tmp_path, monkeypatch):
+    arc = _archive(tmp_path, "wrapped")
+    monkeypatch.setattr(extractor, "_decompressor_cmd", lambda mode: ["sh", "-c", "exit 5"])
+    out = tmp_path / "out"; out.mkdir()
+    extract_tgz_archive(arc, logger=None, extract_base=str(out), mode="r:xz")
+    assert sorted(_tree(out)) == ["bundle_scrubbed/a.txt", "bundle_scrubbed/etc/hosts"]
