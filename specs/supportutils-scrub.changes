@@ -1,4 +1,24 @@
 -------------------------------------------------------------------
+Sun Nov 22 21:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
+
+- Update to version 1.11
+  + An archive is decompressed once instead of twice when all of it
+    sits in one top folder, as a supportconfig does: the folder is
+    taken from the first entries and checked on every later one, and
+    an archive that turns out to have more than one is extracted
+    again as it is. A 2.5 GB supportconfig extracts in 7 s instead
+    of 14 s, the same tree
+  + A bzip2 archive is decompressed by lbzip2 on up to 16 threads
+    where it is installed (pbzip2 after it, the Python module without
+    either): the same supportconfig as .tbz extracts in 2 s instead
+    of 72 s
+  + The archive reader works with a 1 MiB pipe, block and copy
+    buffer instead of 64, 10 and 16 KiB
+  + A decompressor that fails in the middle of an archive stops the
+    extraction with an error and the Python reader takes over; it is
+    no longer taken for the end of the archive
+
+-------------------------------------------------------------------
 Sat Nov 21 22:00:00 UTC 2026 - Ronald Pina <rpina@suse.com>
 
 - Update to version 1.10
